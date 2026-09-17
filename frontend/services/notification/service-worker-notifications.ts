@@ -63,6 +63,22 @@ export function isServiceWorkerSupported(): boolean {
 }
 
 /**
+ * Whether this browser can receive a server-sent push.
+ *
+ * Deliberately not the same question as `isMobileDevice()`. That one asks
+ * how a notification the PAGE raises should be displayed, and the answer is
+ * device-specific because `new Notification()` throws on Android. Background
+ * delivery asks something else entirely — whether a push service can wake a
+ * worker here — and every modern desktop browser can, so the two must not
+ * share a gate. Requires a secure context, which is checked by the caller so
+ * a plain-HTTP origin can be reported as its own cause.
+ */
+export function isBackgroundPushSupported(): boolean {
+	if (typeof window === 'undefined') return false;
+	return isServiceWorkerSupported() && 'PushManager' in window && isPushSecureContext();
+}
+
+/**
  * Service workers, and therefore Web Push, only exist in a secure context —
  * HTTPS or `localhost`. Clopen is routinely opened over plain HTTP on a LAN
  * address (`http://192.168.1.5:9141`), where `navigator.serviceWorker` is

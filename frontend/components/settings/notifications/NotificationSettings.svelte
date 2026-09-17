@@ -11,9 +11,8 @@
 		type DevicePushStatus
 	} from '$frontend/services/notification/push-subscription.service';
 	import {
-		isMobileDevice,
-		isPushSecureContext,
-		isServiceWorkerSupported
+		isBackgroundPushSupported,
+		isPushSecureContext
 	} from '$frontend/services/notification/service-worker-notifications';
 	import { uniqueNotificationTag } from '$frontend/services/notification/native-notification';
 	import type { NotificationBlockReason } from '$frontend/services/notification';
@@ -247,6 +246,21 @@
 	}
 
 	/**
+	 * Why background delivery specifically is unavailable.
+	 *
+	 * Kept apart from `osNotificationHint()` because the two have different
+	 * audiences: a plain-HTTP origin denies background push while leaving
+	 * page-raised notifications working perfectly, so pointing a failed local
+	 * toast at HTTPS would send the user chasing the wrong thing.
+	 */
+	function backgroundPushHint(): string {
+		if (!isPushSecureContext()) {
+			return 'Background push needs a secure origin (HTTPS or localhost). Open Clopen through its HTTPS address — the Remote Access tunnel provides one — and try again.';
+		}
+		return osNotificationHint();
+	}
+
+	/**
 	 * Where to look when the browser accepted a notification but nothing
 	 * appeared. Every desktop hides notifications behind a different switch,
 	 * so a single Windows-flavoured hint is noise on the other platforms.
@@ -256,11 +270,6 @@
 	 */
 	function osNotificationHint(): string {
 		const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
-		// Checked before the per-OS hints: on a plain-HTTP LAN address no OS
-		// setting can help, because the browser never exposes push at all.
-		if (isMobileDevice() && !isPushSecureContext()) {
-			return 'Background push needs a secure origin (HTTPS or localhost). Open Clopen through its HTTPS address — the Remote Access tunnel provides one — and try again.';
-		}
 		if (/android/i.test(ua)) {
 			return 'On Android, allow notifications for this site in Chrome > Site settings, enable system notifications for Chrome, and turn off Do Not Disturb.';
 		}
@@ -343,20 +352,20 @@
 			// permission prompt. Flipping the setting without asking left the
 			// switch on while every notification was silently dropped.
 			if (await pushNotification.initialize()) {
-				// Mobile additionally registers this device with the server so
-				// completions arrive after Chrome is closed. Desktop skips
-				// this entirely — its tab-local path is unchanged.
+				// Register this device with the server so completions arrive
+				// with no tab open. Every browser exposing a PushManager over
+				// a secure origin takes part, desktop included.
 				//
 				// A failed registration must never take away what already
 				// worked: the toggle still turns on for foreground (tab-open)
 				// notifications, with a warning that background is off.
-				if (isMobileDevice() && isPushSecureContext() && isServiceWorkerSupported()) {
+				if (isBackgroundPushSupported()) {
 					const sync = await ensurePushSubscription();
 					if (sync !== 'synced') {
 						addNotification({
 							type: 'warning',
 							title: 'Background Push Off',
-							message: `Push is on for the open tab, but this device could not be registered for background notifications (after Chrome is closed). ${osNotificationHint()}`,
+							message: `Push is on for the open tab, but this device could not be registered for background notifications (delivered with no tab open). ${backgroundPushHint()}`,
 							duration: 6000
 						});
 					}
@@ -376,9 +385,14 @@
 	}
 
 	/**
-	 * Mobile Test Push: server → push service → this device first, the same
-	 * journey a chat completion takes when Chrome is closed. A pass is
+	 * Test Push over the real server → push service → this device path, the
+	 * same journey a chat completion takes with no tab open. A pass is
 	 * evidence about background delivery, not about a local toast.
+	 *
+	 * Preferred over the local test wherever it is available, because both
+	 * end at the same OS notification centre — so a server push appearing
+	 * also proves the page-raised path would appear, while the reverse says
+	 * nothing about the network leg.
 	 *
 	 * When the background route is unavailable, fall back to the local test
 	 * instead of failing outright — the tab-open path proving itself is
@@ -395,7 +409,7 @@
 					type: 'success',
 					title: 'Push Notification Test',
 					message:
-						'Background push is working — notifications will arrive even after Chrome is closed',
+						'Background push is working — notifications will arrive with no Clopen tab open',
 					duration: 4000
 				});
 				return;
@@ -421,7 +435,7 @@
 				title: 'Push Notification Test',
 				message: synced
 					? 'Native push notification is working correctly'
-					: 'Foreground push works, but background push (after Chrome is closed) is not registered. Turn the push toggle off and on again to register this device.',
+					: `Foreground push works, but background push (with no tab open) is not registered. ${backgroundPushHint()}`,
 				duration: synced ? 3000 : 6000
 			});
 		} else if (local.outcome === 'unconfirmed') {
@@ -454,11 +468,10 @@
 			// sound off still gets a silent push test.
 			void soundNotification.play();
 
-			// Mobile proves the background path: the server pushes through
-			// the push service exactly like a chat completion does, so a pass
-			// means notifications arrive even after Chrome is closed.
-			// Desktop keeps the local test untouched.
-			if (isMobileDevice() && isPushSecureContext() && isServiceWorkerSupported()) {
+			// Prove the background path wherever it exists: the server pushes
+			// through the push service exactly like a chat completion does,
+			// so a pass means notifications arrive with no tab open.
+			if (isBackgroundPushSupported()) {
 				await testPushViaServer();
 				return;
 			}
@@ -785,27 +798,25 @@
 						{/if}
 					</button>
 				</div>
-				{#if isMobileDevice()}
-					<div class="text-xs text-slate-600 dark:text-slate-500">
-						{#if devicePushStatus === 'active'}
-							<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
-							Background push active on this device — notifications arrive even after Chrome is closed.
-						{:else if devicePushStatus === 'inactive'}
-							<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
-							Background push off on this device — turn the toggle off and on again to register.
-						{:else if devicePushStatus === 'permission-needed'}
-							<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
-							Notification permission not granted yet.
-						{:else if devicePushStatus === 'insecure-context'}
-							<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
-							Background push needs an HTTPS address — this page was opened over plain HTTP, where
-							browsers disable it. Reach Clopen through its Remote Access tunnel URL.
-						{:else}
-							<span class="font-semibold text-slate-400">●</span>
-							Background push is not supported in this browser.
-						{/if}
-					</div>
-				{/if}
+				<div class="text-xs text-slate-600 dark:text-slate-500">
+					{#if devicePushStatus === 'active'}
+						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
+						Background push active on this device — notifications arrive with no Clopen tab open.
+					{:else if devicePushStatus === 'inactive'}
+						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+						Background push off on this device — turn the toggle off and on again to register.
+					{:else if devicePushStatus === 'permission-needed'}
+						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+						Notification permission not granted yet.
+					{:else if devicePushStatus === 'insecure-context'}
+						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+						Background push needs an HTTPS address — this page was opened over plain HTTP, where
+						browsers disable it. Reach Clopen through its Remote Access tunnel URL.
+					{:else}
+						<span class="font-semibold text-slate-400">●</span>
+						Background push is not supported in this browser.
+					{/if}
+				</div>
 			</div>
 		</div>
 	</div>

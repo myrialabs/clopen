@@ -1,10 +1,12 @@
 /**
- * Web Push subscription management (mobile background path).
+ * Web Push subscription management (the background delivery path).
  *
- * Desktop never touches this module: its notifications are raised locally by
- * the open tab. On mobile, enabling the push toggle additionally registers a
- * PushSubscription with the server, so chat completions fan out through the
- * push service and arrive even after Chrome is closed.
+ * Enabling the push toggle registers a PushSubscription with the server, so
+ * chat completions fan out through the push service and arrive even with no
+ * Clopen tab open. Every browser that exposes a PushManager over a secure
+ * origin takes part — desktop included. How a notification is *displayed*
+ * still differs per device (see `push.service.ts`), but who can receive one
+ * in the background does not.
  *
  * Presence in the server table IS the opt-in: only subscribed devices ever
  * receive server pushes, so the send path needs no per-user setting lookup.
@@ -18,7 +20,7 @@ import { authStore } from '$frontend/stores/features/auth.svelte';
 import { debug } from '$shared/utils/logger';
 import {
 	ensurePushServiceWorker,
-	isMobileDevice,
+	isBackgroundPushSupported,
 	isPushSecureContext,
 	isServiceWorkerSupported
 } from './service-worker-notifications';
@@ -31,7 +33,7 @@ export type ServerTestResult = 'shown' | 'unconfirmed' | 'no-subscription' | 'fa
  * - `insecure-context`: the app was opened over plain HTTP (a LAN address),
  *   where no browser exposes service workers. Fixed by the origin, not the
  *   browser — hence its own state rather than `unsupported`.
- * - `unsupported`: not a mobile browser, or no service worker / push manager.
+ * - `unsupported`: no service worker or no push manager in this browser.
  * - `permission-needed`: notifications not granted yet.
  * - `active`: this device holds a push subscription (background works).
  * - `inactive`: permission granted but no subscription (toggle it to register).
@@ -45,9 +47,11 @@ export type DevicePushStatus =
 
 /** Local device state only — never implies the server still holds the row. */
 export async function getDevicePushStatus(): Promise<DevicePushStatus> {
-	if (!isMobileDevice()) return 'unsupported';
+	// Secure context first: on a plain-HTTP origin `navigator.serviceWorker`
+	// is simply absent, so checking support first would misreport an origin
+	// problem as an unsupported browser.
 	if (!isPushSecureContext()) return 'insecure-context';
-	if (!isServiceWorkerSupported()) return 'unsupported';
+	if (!isBackgroundPushSupported()) return 'unsupported';
 	if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
 		return 'permission-needed';
 	}
@@ -86,9 +90,7 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
  * Idempotent: an existing subscription is re-synced, never duplicated.
  */
 export async function ensurePushSubscription(): Promise<SubscriptionSyncResult> {
-	if (!isMobileDevice() || !isPushSecureContext() || !isServiceWorkerSupported()) {
-		return 'unavailable';
-	}
+	if (!isBackgroundPushSupported()) return 'unavailable';
 	if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
 		return 'failed';
 	}

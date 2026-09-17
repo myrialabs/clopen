@@ -15,7 +15,7 @@
 import { soundNotification, pushNotification } from '$frontend/services/notification';
 import { warmNotificationIcon } from '$frontend/services/notification/notification-icon';
 import {
-  isMobileDevice,
+  isBackgroundPushSupported,
   warmPushServiceWorker
 } from '$frontend/services/notification/service-worker-notifications';
 import { ensurePushSubscription } from '$frontend/services/notification/push-subscription.service';
@@ -44,16 +44,16 @@ class GlobalStreamMonitor {
     // Rasterise the notification icon now rather than when a chat finishes,
     // so the first notification of the session is not the one that pays for it.
     warmNotificationIcon();
-    // Register the service worker early so the mobile notification route
-    // (Chrome on Android, installed PWA on iOS) is ready before the first
-    // chat completion needs it. No-op on desktop.
+    // Register the service worker early so the background route is ready
+    // before the first chat completion needs it. This is also what raises
+    // notifications on Android, where a page cannot.
     warmPushServiceWorker();
 
     // Re-sync the server subscription for users who enabled push before this
     // device was registered (or whose subscription the push service expired).
     // Silent best-effort: the toggle handler reports failures loudly.
     if (
-      isMobileDevice() &&
+      isBackgroundPushSupported() &&
       settings.pushNotifications &&
       typeof Notification !== 'undefined' &&
       Notification.permission === 'granted'
