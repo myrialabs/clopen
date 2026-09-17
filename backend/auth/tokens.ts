@@ -6,12 +6,14 @@
  * - clp_pat_* — Personal Access Tokens (cross-device login, permanent)
  * - clp_inv_* — Invite tokens (for inviting new users)
  * - clp_dev_* — Device-pairing codes (one-time, short TTL; Remote Access "Add a device")
+ * - clp_fsh_* — File-share tokens (single-file download links, finite TTL)
  */
 
 const SESSION_PREFIX = 'clp_ses_';
 const PAT_PREFIX = 'clp_pat_';
 const INVITE_PREFIX = 'clp_inv_';
 const DEVICE_PREFIX = 'clp_dev_';
+const FILE_SHARE_PREFIX = 'clp_fsh_';
 
 function randomHex(bytes: number): string {
 	const arr = new Uint8Array(bytes);
@@ -38,6 +40,11 @@ export function generateDeviceCode(): string {
 	return DEVICE_PREFIX + randomHex(TOKEN_BYTES);
 }
 
+/** Single-file share token for "Share Link…" download links. */
+export function generateFileShareToken(): string {
+	return FILE_SHARE_PREFIX + randomHex(TOKEN_BYTES);
+}
+
 /**
  * SHA-256 hash a token string.
  * Uses Bun native CryptoHasher for performance.
@@ -51,10 +58,11 @@ export function hashToken(token: string): string {
 /**
  * Determine token type from prefix
  */
-export function getTokenType(token: string): 'session' | 'pat' | 'invite' | 'device' | 'unknown' {
+export function getTokenType(token: string): 'session' | 'pat' | 'invite' | 'device' | 'file-share' | 'unknown' {
 	if (token.startsWith(SESSION_PREFIX)) return 'session';
 	if (token.startsWith(PAT_PREFIX)) return 'pat';
 	if (token.startsWith(INVITE_PREFIX)) return 'invite';
 	if (token.startsWith(DEVICE_PREFIX)) return 'device';
+	if (token.startsWith(FILE_SHARE_PREFIX)) return 'file-share';
 	return 'unknown';
 }

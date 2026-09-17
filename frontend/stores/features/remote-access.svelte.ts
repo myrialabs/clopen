@@ -116,6 +116,15 @@ export const remoteAccessStore = {
 	/** URL for a given invite id, if it was generated on this device. */
 	inviteURL(id: string): string | undefined { return state.inviteURLs[id]; },
 
+	/**
+	 * Resolve the public origin every share link is built against. Exposed so
+	 * other share surfaces (file links) reuse this resolution — including its
+	 * tunnel side effect — instead of calling `share:ensure-origin` themselves.
+	 */
+	ensureOrigin(): Promise<{ origin: string; source: PublicOriginSource }> {
+		return ensureOrigin();
+	},
+
 	/** Refresh the active-connection count from the server. */
 	async refreshSummary(): Promise<void> {
 		try {

@@ -114,7 +114,8 @@ export const crudHandler = createRouter()
 			projectOrder: t.Union([t.Array(t.String()), t.Null()]),
 			pinnedProjectIds: t.Union([t.Array(t.String()), t.Null()]),
 			archivedProjectIds: t.Union([t.Array(t.String()), t.Null()]),
-			commandUsage: t.Union([t.Any(), t.Null()])
+			commandUsage: t.Union([t.Any(), t.Null()]),
+			fileShareDefaults: t.Union([t.Any(), t.Null()])
 		})
 	}, async ({ conn }) => {
 		const userId = ws.getUserId(conn);
@@ -128,6 +129,7 @@ export const crudHandler = createRouter()
 		const pinnedProjectIds = getUserState(userId, 'pinnedProjectIds');
 		const archivedProjectIds = getUserState(userId, 'archivedProjectIds');
 		const commandUsage = getUserState(userId, 'commandUsage');
+		const fileShareDefaults = getUserState(userId, 'fileShareDefaults');
 
 		debug.log('user', `Restored state for ${userId}:`, {
 			currentProjectId,
@@ -146,7 +148,8 @@ export const crudHandler = createRouter()
 			projectOrder: Array.isArray(projectOrder) ? projectOrder : null,
 			pinnedProjectIds: Array.isArray(pinnedProjectIds) ? pinnedProjectIds : null,
 			archivedProjectIds: Array.isArray(archivedProjectIds) ? archivedProjectIds : null,
-			commandUsage: commandUsage ?? null
+			commandUsage: commandUsage ?? null,
+			fileShareDefaults: fileShareDefaults ?? null
 		};
 	})
 
@@ -163,7 +166,7 @@ export const crudHandler = createRouter()
 		const userId = ws.getUserId(conn);
 
 		// Validate allowed keys to prevent arbitrary data storage
-		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState', 'projectOrder', 'pinnedProjectIds', 'archivedProjectIds', 'commandUsage'];
+		const allowedKeys = ['currentProjectId', 'lastView', 'settings', 'unreadSessions', 'todoPanelState', 'projectOrder', 'pinnedProjectIds', 'archivedProjectIds', 'commandUsage', 'fileShareDefaults'];
 		if (!allowedKeys.includes(data.key)) {
 			throw new Error(`Invalid state key: ${data.key}. Allowed: ${allowedKeys.join(', ')}`);
 		}

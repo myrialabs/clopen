@@ -32,6 +32,7 @@ export interface UserServerState {
 	pinnedProjectIds: string[] | null;
 	archivedProjectIds: string[] | null;
 	commandUsage: RestoredValue;
+	fileShareDefaults: RestoredValue;
 }
 
 let loaded: UserServerState | null = null;

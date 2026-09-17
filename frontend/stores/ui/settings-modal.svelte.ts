@@ -17,6 +17,7 @@ export type SettingsSection =
 	| 'subagents'
 	| 'instructions'
 	| 'permissions'
+	| 'file-shares'
 	| 'memory'
 	| 'memory-graph'
 	| 'profiles'
@@ -143,6 +144,18 @@ export const settingsSections: SettingsSectionMeta[] = [
 		description: 'Cloudflare tunnel services',
 		group: 'infrastructure',
 		adminOnly: true
+	},
+	{
+		id: 'file-shares',
+		label: 'File Shares',
+		icon: 'lucide:link',
+		// Infrastructure, not Artifacts & Access: a share link is a way out of
+		// this server, like a tunnel — nothing to do with what an engine can
+		// reach. Not adminOnly either, because any member can mint one from the
+		// Explorer and therefore needs somewhere to withdraw it; the server
+		// scopes the list, admins see every link.
+		description: 'Links that expose a single file',
+		group: 'infrastructure'
 	},
 	{
 		id: 'integrations',

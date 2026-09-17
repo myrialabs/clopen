@@ -1,7 +1,9 @@
 /**
  * Expired Session Cleanup Scheduler
  *
- * Periodically removes expired auth sessions from the database.
+ * Periodically removes expired auth sessions from the database, along with
+ * the other one-time bearer credentials that age out the same way
+ * (device-pairing codes, file-share links).
  * Without this, the auth_sessions table grows unbounded as expired
  * sessions are never purged in long-running deployments.
  *
@@ -9,6 +11,7 @@
  */
 
 import { authQueries } from '../database/queries';
+import { sweepStaleFileShares } from '../files/file-shares';
 import { debug } from '$shared/utils/logger';
 
 /** How often to sweep for expired sessions (1 hour) */
@@ -42,6 +45,12 @@ class SessionCleanupScheduler {
 			const staleCodes = authQueries.deleteStaleDeviceCodes();
 			if (staleCodes > 0) {
 				debug.log('auth', `Session cleanup: removed ${staleCodes} stale device code(s)`);
+			}
+			// Same shape again: one-time file-share links that can no longer
+			// serve bytes (expired, or drained out after their single use).
+			const staleShares = sweepStaleFileShares();
+			if (staleShares > 0) {
+				debug.log('auth', `Session cleanup: removed ${staleShares} stale file share(s)`);
 			}
 		} catch (error) {
 			debug.warn('auth', 'Session cleanup failed:', error);

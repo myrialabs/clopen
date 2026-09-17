@@ -19,6 +19,7 @@ import { revealHandler } from './reveal';
 import { clipboardHandler } from './clipboard';
 import { imageEditHandler } from './image-edit';
 import { fileSearchHandler } from './search';
+import { fileShareHandler } from './share';
 import { watchHandler } from './watch';
 import { filesStateHandler } from './state';
 
@@ -40,6 +41,9 @@ export const filesRouter = createRouter()
 
 	// Search Operations (HTTP)
 	.merge(fileSearchHandler)
+
+	// Single-file share links (HTTP)
+	.merge(fileShareHandler)
 
 	// Watch Operations (Events)
 	.merge(watchHandler)

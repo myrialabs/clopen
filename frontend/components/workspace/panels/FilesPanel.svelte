@@ -72,6 +72,7 @@
 	import { onMount, onDestroy } from 'svelte';
 	import ws from '$frontend/utils/ws';
 	import CompressDialog from '$frontend/components/files/CompressDialog.svelte';
+	import FileShareModal from '$frontend/components/files/FileShareModal.svelte';
 	import { stripArchiveExtension, extensionFor, type ArchiveFormat, type ZipMethod } from '$frontend/utils/archive';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { authStore } from '$frontend/stores/features/auth.svelte';
@@ -202,6 +203,10 @@
 	// Compress dialog (format / method / level / password) — opened from the tree.
 	let compressDialogOpen = $state(false);
 	let compressTargets = $state<FileNode[]>([]);
+
+	// Share Link… — opened from the tree for a single file.
+	let shareModalOpen = $state(false);
+	let shareTarget = $state<FileNode | null>(null);
 
 	// Password prompt shown when extracting an encrypted archive.
 	let passwordDialogOpen = $state(false);
@@ -2758,7 +2763,7 @@
 		| 'copy-path' | 'copy-relative-path'
 		| 'rename' | 'duplicate' | 'delete' | 'select-all'
 		| 'new-file' | 'new-folder' | 'upload'
-		| 'refresh' | 'zip' | 'extract' | 'download'
+		| 'refresh' | 'zip' | 'extract' | 'download' | 'share'
 		| 'reveal-in-file-manager';
 
 	async function runExplorerAction(action: ExplorerAction, file: FileNode | null): Promise<void> {
@@ -2841,6 +2846,12 @@
 				break;
 			case 'download':
 				if (file && file.type === 'file') await downloadFileNode(file);
+				break;
+			case 'share':
+				if (file && file.type === 'file') {
+					shareTarget = file;
+					shareModalOpen = true;
+				}
 				break;
 			case 'reveal-in-file-manager':
 				if (!file) return;
@@ -4442,6 +4453,13 @@
 		itemCount={compressTargets.length}
 		onConfirm={onCompressConfirm}
 		onClose={() => { compressDialogOpen = false; compressTargets = []; }}
+	/>
+
+	<!-- Share Link… (single file) -->
+	<FileShareModal
+		file={shareTarget}
+		isOpen={shareModalOpen}
+		onClose={() => { shareModalOpen = false; }}
 	/>
 
 	<!-- Password prompt for extracting encrypted archives -->

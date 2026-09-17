@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
+	import { copyText } from '$frontend/utils/clipboard';
 	import Icon from '../../common/display/Icon.svelte';
 	import Dialog from '../../common/overlay/Dialog.svelte';
-	import TunnelQRCode from '../../tunnel/TunnelQRCode.svelte';
+	import ShareLinkCard from '../../common/share/ShareLinkCard.svelte';
 	import { tunnelConfigStore, type RemoteConfigItem, type LocalConfigItem } from '$frontend/stores/features/tunnel-config.svelte';
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -34,8 +35,6 @@
 	let zoneInput = $state('');
 
 	// Copy & QR
-	let copiedUrl = $state<string | null>(null);
-	let qrUrl = $state('');
 
 	// Local domain add
 	let domainConfigId = $state<string | null>(null);
@@ -203,13 +202,12 @@
 
 	async function copyLoginUrl() {
 		if (!loginUrl) return;
-		try {
-			await navigator.clipboard.writeText(loginUrl);
-			loginUrlCopied = true;
-			setTimeout(() => { loginUrlCopied = false; }, 2000);
-		} catch {
-			// Silently fail
-		}
+		// copyText, not navigator.clipboard: that API is undefined on the plain
+		// HTTP origins this app is routinely reached on, where the copy button
+		// would otherwise do nothing at all.
+		if (!(await copyText(loginUrl))) return;
+		loginUrlCopied = true;
+		setTimeout(() => { loginUrlCopied = false; }, 2000);
 	}
 
 	async function handleSetZone() {
@@ -318,14 +316,12 @@
 		}
 	}
 
-	async function copyUrl(url: string) {
-		try {
-			await navigator.clipboard.writeText(url);
-			copiedUrl = url;
+	// ShareLinkCard performs the copy; this reports the outcome.
+	function notifyCopied(ok: boolean) {
+		if (ok) {
 			addNotification({ type: 'success', title: 'Copied', message: 'URL copied to clipboard' });
-			setTimeout(() => { copiedUrl = null; }, 2000);
-		} catch (error) {
-			debug.error('tunnel', 'Failed to copy:', error);
+		} else {
+			debug.error('tunnel', 'Failed to copy tunnel URL');
 			addNotification({ type: 'error', title: 'Error', message: 'Failed to copy URL' });
 		}
 	}
@@ -456,50 +452,18 @@
 										<div class="mt-2 pt-2 border-t border-slate-200 dark:border-slate-700/30 space-y-2">
 											{#each hostRules as rule}
 												{@const ruleUrl = `https://${rule.hostname}`}
-												<div>
-													<div class="flex items-start justify-between gap-2">
-														<a
-															href={ruleUrl}
-															target="_blank"
-															rel="noopener noreferrer"
-															class="flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline break-all"
-														>
-															<Icon name="lucide:globe" class="w-3.5 h-3.5 text-orange-500 shrink-0" />
-															{rule.hostname}
-														</a>
-														<div class="flex items-center gap-1 shrink-0">
-															<button
-																type="button"
-																class="flex p-1.5 rounded transition-colors cursor-pointer {copiedUrl === ruleUrl
-																	? 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/20'
-																	: 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}"
-																onclick={() => copyUrl(ruleUrl)}
-																title="Copy URL"
-															>
-																<Icon name={copiedUrl === ruleUrl ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
-															</button>
-															<button
-																type="button"
-																class="flex p-1.5 rounded transition-colors cursor-pointer {qrUrl === ruleUrl
-																	? 'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/20'
-																	: 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}"
-																onclick={() => { qrUrl = qrUrl === ruleUrl ? '' : ruleUrl; }}
-																title="Show QR Code"
-															>
-																<Icon name="lucide:qr-code" class="w-3.5 h-3.5" />
-															</button>
-														</div>
-													</div>
-													<div class="flex items-center gap-2 pl-5.5 text-xs text-slate-500 dark:text-slate-400">
+												<ShareLinkCard
+													url={ruleUrl}
+													display={rule.hostname}
+													linkify
+													qr="toggle"
+													onCopied={notifyCopied}
+												>
+													{#snippet meta()}
 														<Icon name="lucide:arrow-right" class="w-3 h-3 shrink-0" />
 														<span class="font-mono">{rule.service}</span>
-													</div>
-													{#if qrUrl === ruleUrl}
-														<div class="mt-2 ml-5.5 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-															<TunnelQRCode value={ruleUrl} />
-														</div>
-													{/if}
-												</div>
+													{/snippet}
+												</ShareLinkCard>
 											{/each}
 										</div>
 									{:else}
@@ -889,60 +853,31 @@
 									{#if config.ingress.length > 0}
 										{#each config.ingress as rule}
 											{@const ruleUrl = `https://${rule.hostname}`}
-											<div>
-												<div class="flex items-start justify-between gap-2">
-													<a
-														href={ruleUrl}
-														target="_blank"
-														rel="noopener noreferrer"
-														class="flex items-center gap-2 text-sm font-medium text-violet-600 dark:text-violet-400 hover:underline break-all"
-													>
-														<Icon name="lucide:globe" class="w-3.5 h-3.5 text-blue-500 shrink-0" />
-														{rule.hostname}
-													</a>
-													<div class="flex items-center gap-1 shrink-0">
+											<ShareLinkCard
+												url={ruleUrl}
+												display={rule.hostname}
+												linkify
+												qr="toggle"
+												onCopied={notifyCopied}
+											>
+												{#snippet actions()}
+													{#if !config.isActive}
 														<button
 															type="button"
-															class="flex p-1.5 rounded transition-colors cursor-pointer {copiedUrl === ruleUrl
-																? 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-900/20'
-																: 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}"
-															onclick={() => copyUrl(ruleUrl)}
-															title="Copy URL"
+															class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:text-red-500 dark:hover:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/30 transition-all shrink-0 cursor-pointer"
+															onclick={() => handleRemoveDomain(config.id, rule.hostname)}
+															title="Remove subdomain"
+															aria-label="Remove subdomain"
 														>
-															<Icon name={copiedUrl === ruleUrl ? 'lucide:check' : 'lucide:copy'} class="w-3.5 h-3.5" />
+															<Icon name="lucide:x" class="w-3.5 h-3.5" />
 														</button>
-														<button
-															type="button"
-															class="flex p-1.5 rounded transition-colors cursor-pointer {qrUrl === ruleUrl
-																? 'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/20'
-																: 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'}"
-															onclick={() => { qrUrl = qrUrl === ruleUrl ? '' : ruleUrl; }}
-															title="Show QR Code"
-														>
-															<Icon name="lucide:qr-code" class="w-3.5 h-3.5" />
-														</button>
-														{#if !config.isActive}
-															<button
-																type="button"
-																class="flex p-1.5 text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors shrink-0 cursor-pointer"
-																onclick={() => handleRemoveDomain(config.id, rule.hostname)}
-																title="Remove subdomain"
-															>
-																<Icon name="lucide:x" class="w-3.5 h-3.5" />
-															</button>
-														{/if}
-													</div>
-												</div>
-												<div class="flex items-center gap-2 pl-5.5 text-xs text-slate-500 dark:text-slate-400">
+													{/if}
+												{/snippet}
+												{#snippet meta()}
 													<Icon name="lucide:arrow-right" class="w-3 h-3 shrink-0" />
 													<span class="font-mono">{rule.service}</span>
-												</div>
-												{#if qrUrl === ruleUrl}
-													<div class="mt-2 ml-5.5 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
-														<TunnelQRCode value={ruleUrl} />
-													</div>
-												{/if}
-											</div>
+												{/snippet}
+											</ShareLinkCard>
 										{/each}
 									{:else}
 										<p class="text-sm text-slate-400 dark:text-slate-500 italic">No subdomains configured yet</p>
