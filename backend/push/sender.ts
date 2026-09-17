@@ -18,6 +18,7 @@ import {
 	encryptPushPayload
 } from './webpush-crypto';
 import { getVapidKeys, getVapidSubject } from './vapid-keys';
+import { PUSH_TTL_SECONDS } from '$shared/constants/notification-messages';
 
 export interface PushPayload {
 	title: string;
@@ -27,22 +28,6 @@ export interface PushPayload {
 	/** Where tapping the notification lands. Defaults to `/`. */
 	url?: string;
 }
-
-/**
- * How long a push service holds a notification for a device it cannot reach.
- *
- * This is the whole mechanism behind "notify me even though I closed the
- * browser". A phone with the screen off, or a laptop whose browser is not
- * running, is simply unreachable: the push service queues the message and
- * replays it the moment that device reconnects. A TTL shorter than the gap
- * throws the notification away instead — which is the one outcome this
- * feature exists to prevent.
- *
- * Twelve hours covers a laptop closed overnight or a phone left face-down
- * through a working day, and still expires before a completion notice turns
- * into archaeology.
- */
-const PUSH_TTL_SECONDS = 12 * 3600;
 
 /**
  * Push services cap a record at 4096 bytes, and that budget covers the

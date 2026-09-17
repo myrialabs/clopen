@@ -11,6 +11,12 @@
 import { settings } from '$frontend/stores/features/settings.svelte';
 
 import { debug } from '$shared/utils/logger';
+import {
+	chatNotificationMessage,
+	TEST_PUSH_MESSAGES,
+	type ChatNotificationContext,
+	type ChatNotificationEvent
+} from '$shared/constants/notification-messages';
 import { notificationIcon } from './notification-icon';
 import { uniqueNotificationTag, waitForNotificationShown } from './native-notification';
 import {
@@ -173,19 +179,19 @@ async function createNotification(
  * omitted, a fresh tag is minted exactly as before.
  */
 async function sendChatNotification(
-	title: string,
-	body: string,
-	tagPrefix: string,
+	event: ChatNotificationEvent,
+	context: ChatNotificationContext,
 	explicitTag?: string
 ): Promise<void> {
 	if (!settings.pushNotifications) return;
 
+	const { title, body } = chatNotificationMessage(event, context);
 	await createNotification(title, {
 		body,
 		// A fresh tag per notification. Reusing one replaces the live
 		// notification instead of raising a new one, silently on Chrome, so
 		// several finished chats collapsed into a single toast.
-		tag: explicitTag ?? uniqueNotificationTag(tagPrefix)
+		tag: explicitTag ?? uniqueNotificationTag(`chat-${event}`)
 	});
 }
 
@@ -218,31 +224,22 @@ export const pushNotification = {
 	blockReason,
 
 	/**
-	 * Send notification for chat response completion.
+	 * Raise the local copy of a chat notification.
+	 *
+	 * Callers pass the event and its context, never a finished sentence: the
+	 * wording comes from the shared message builder, which is the only way this
+	 * toast and the server push that replaces it stay word-for-word identical.
 	 *
 	 * `tag` is the shared server/local identity for one event (e.g.
 	 * `chat-<streamId>`). Omit it and the previous unique-per-toast behaviour
 	 * applies untouched.
 	 */
-	async sendChatComplete(message?: string, tag?: string): Promise<void> {
-		await sendChatNotification(
-			'Claude Response Complete',
-			message || 'Your chat response is ready',
-			'chat-complete',
-			tag
-		);
-	},
-
-	/**
-	 * Send notification for chat error
-	 */
-	async sendChatError(error?: string, tag?: string): Promise<void> {
-		await sendChatNotification(
-			'Claude Response Error',
-			error || 'There was an error with your chat response',
-			'chat-error',
-			tag
-		);
+	async sendChatEvent(
+		event: ChatNotificationEvent,
+		context: ChatNotificationContext = {},
+		tag?: string
+	): Promise<void> {
+		await sendChatNotification(event, context, tag);
 	},
 
 	/**
@@ -255,8 +252,8 @@ export const pushNotification = {
 	 * few platforms display notifications without emitting `show`.
 	 */
 	async testNotification(): Promise<TestNotificationResult> {
-		const created = await createNotification('Test Notification', {
-			body: 'Push notifications are working correctly',
+		const created = await createNotification(TEST_PUSH_MESSAGES.local.title, {
+			body: TEST_PUSH_MESSAGES.local.body,
 			tag: uniqueNotificationTag('test')
 		});
 

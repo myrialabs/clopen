@@ -19,6 +19,7 @@ import { getVapidKeys } from '../push/vapid-keys';
 import { isValidSubscriptionKeys, sendPushToUser } from '../push/sender';
 import { uniquePushTag } from '../push/tags';
 import { authenticateRequest, type AuthIdentity } from './bearer-auth';
+import { TEST_PUSH_MESSAGES } from '$shared/constants/notification-messages';
 
 function unauthorized(error: unknown): Response {
 	const status = (error as { status?: number }).status ?? 401;
@@ -142,8 +143,7 @@ export const pushRoute = new Elysia()
 		// This goes through the real server→push-service→device path, so a
 		// passing test proves background delivery — not just a local toast.
 		const sent = await sendPushToUser(identity.userId, {
-			title: 'Test Notification',
-			body: 'Push notifications are working correctly',
+			...TEST_PUSH_MESSAGES.background,
 			tag
 		});
 		return Response.json({ sent, tag });

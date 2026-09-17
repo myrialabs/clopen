@@ -18,8 +18,35 @@ import { broadcastPresence } from '../projects/status';
 import { projectQueries, sessionQueries, messageQueries } from '../../database/queries';
 import { sendPushToUser } from '../../push/sender';
 import { chatStreamPushTag, waitingInputPushTag } from '../../push/tags';
+import {
+	chatNotificationMessage,
+	type ChatNotificationContext
+} from '$shared/constants/notification-messages';
 import { requireSessionAccess } from '../access';
 import { resolveSessionPath } from '../../worktrees';
+
+/**
+ * Where a notification-worthy event happened, resolved once on the server.
+ *
+ * The browser cannot do this itself: the sessions store only holds the project
+ * currently open, and these notifications exist precisely for the chats the
+ * user is *not* looking at. Shipping the resolved names in the event payload
+ * also keeps the tab's local toast worded identically to the server push that
+ * replaces it — they share a tag, so any difference would read as the
+ * notification rewriting itself.
+ *
+ * Missing rows yield `undefined`, never a placeholder: the composer drops an
+ * absent segment, which says more than the word "Unknown" did.
+ */
+function resolveNotificationContext(
+	projectId: string,
+	chatSessionId: string | undefined
+): ChatNotificationContext {
+	return {
+		projectName: projectQueries.getById(projectId)?.name || undefined,
+		sessionTitle: chatSessionId ? sessionQueries.getById(chatSessionId)?.title || undefined : undefined
+	};
+}
 
 /**
  * Broadcast presence + notify project members when a chat message may flip the
@@ -54,11 +81,14 @@ function handleWaitingInputChange(
 
 	// Notify all project members when AskUserQuestion arrives (sound + push)
 	if (askToolUse && projectId) {
+		const context = resolveNotificationContext(projectId, chatSessionId);
+
 		ws.emit.projectMembers(projectId, 'chat:waiting-input', {
 			projectId,
 			chatSessionId,
 			toolUseId: askToolUse.id,
-			timestamp: event.data?.timestamp || new Date().toISOString()
+			timestamp: event.data?.timestamp || new Date().toISOString(),
+			...context
 		});
 
 		// Background route: reach the requester's devices even when Chrome is
@@ -69,10 +99,8 @@ function handleWaitingInputChange(
 			projectId
 		)?.requestedByUserId;
 		if (requestedByUserId) {
-			const projectName = projectQueries.getById(projectId)?.name || 'Unknown';
 			void sendPushToUser(requestedByUserId, {
-				title: 'Claude Response Complete',
-				body: `Waiting for your input in "${projectName}"`,
+				...chatNotificationMessage('waiting-input', context),
 				tag: waitingInputPushTag(askToolUse.id)
 			}).catch((error) => {
 				debug.warn('notification', 'Background waiting-input push failed:', error);
@@ -103,6 +131,11 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 		}
 	}
 
+	// Resolved once and shared: the payload below carries it to the open tab,
+	// and the background push below that reuses the very same values, so the
+	// two copies of one event cannot word themselves differently.
+	const context = resolveNotificationContext(projectId, chatSessionId);
+
 	// Notify all project members (cross-project notification for sound + push)
 	ws.emit.projectMembers(projectId, 'chat:stream-finished', {
 		projectId,
@@ -110,7 +143,8 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 		streamId,
 		status: status as 'completed' | 'error' | 'cancelled',
 		timestamp,
-		reason
+		reason,
+		...context
 	});
 
 	// Background route: the open tab notifies locally via the WS event above;
@@ -118,22 +152,12 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 	// deterministic tag means an open tab's local toast is replaced, never
 	// duplicated. Never throws — chat completion must not depend on push.
 	if (requestedByUserId && reason !== 'session-deleted') {
-		const projectName = projectQueries.getById(projectId)?.name || 'Unknown';
-		const payload =
-			status === 'error'
-				? {
-						title: 'Claude Response Error',
-						body: `Chat error in "${projectName}"`
-					}
-				: {
-						title: 'Claude Response Complete',
-						body:
-							status === 'cancelled'
-								? `Chat interrupted in "${projectName}"`
-								: `Chat response ready in "${projectName}"`
-					};
+		// `cancelled` gets its own title. Filing it under a "complete" heading
+		// with an "interrupted" body made the notification contradict itself.
+		const notificationEvent =
+			status === 'error' ? 'error' : status === 'cancelled' ? 'cancelled' : 'completed';
 		void sendPushToUser(requestedByUserId, {
-			...payload,
+			...chatNotificationMessage(notificationEvent, context),
 			tag: chatStreamPushTag(streamId)
 		}).catch((error) => {
 			debug.warn('notification', 'Background stream-finished push failed:', error);
@@ -1144,20 +1168,28 @@ export const streamHandler = createRouter()
 		timestamp: t.String()
 	}))
 
+	// `projectName` / `sessionTitle` are resolved server-side and carried here
+	// so the tab can word its local notification exactly like the background
+	// push that replaces it. Optional because either row may be gone, and
+	// because a tab left open across a server upgrade will not send them.
 	.emit('chat:stream-finished', t.Object({
 		projectId: t.String(),
 		chatSessionId: t.String(),
 		streamId: t.Optional(t.String()),
 		status: t.Union([t.Literal('completed'), t.Literal('error'), t.Literal('cancelled')]),
 		timestamp: t.String(),
-		reason: t.Optional(t.String())
+		reason: t.Optional(t.String()),
+		projectName: t.Optional(t.String()),
+		sessionTitle: t.Optional(t.String())
 	}))
 
 	.emit('chat:waiting-input', t.Object({
 		projectId: t.String(),
 		chatSessionId: t.String(),
 		toolUseId: t.String(),
-		timestamp: t.String()
+		timestamp: t.String(),
+		projectName: t.Optional(t.String()),
+		sessionTitle: t.Optional(t.String())
 	}))
 
 	.emit('snapshot:captured', t.Object({

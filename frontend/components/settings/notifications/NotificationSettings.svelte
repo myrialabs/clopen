@@ -24,6 +24,7 @@
 		NOTIFICATION_SOUND_MAX_BYTES,
 		isValidNotificationSoundExt
 	} from '$shared/constants/notification-sounds';
+	import { pushTtlLabel } from '$shared/constants/notification-messages';
 	import { detectPlatform } from '$frontend/utils/platform';
 	import Icon from '../../common/display/Icon.svelte';
 	import { onMount } from 'svelte';
@@ -38,9 +39,14 @@
 	let isUploading = $state(false);
 	let hasCustomSound = $state(false);
 	let customFileInput: HTMLInputElement | null = $state(null);
-	// Background (server-driven) push state for this device. Desktop never
-	// reads it — the line below the Test Push button only renders on mobile.
+	// Background (server-driven) push state for this device. Read on every
+	// platform — desktop browsers take part in background push too, and the
+	// status line under Test Push renders for all of them.
 	let devicePushStatus = $state<DevicePushStatus>('unsupported');
+	// The delivery explainer is collapsed by default. Left expanded it was four
+	// sentences of muted prose directly under a one-word status, and the status
+	// — the only part that changes — was the part nobody read.
+	let showDeliveryDetail = $state(false);
 
 	async function refreshDevicePushStatus() {
 		try {
@@ -256,7 +262,7 @@
 	 */
 	function backgroundPushHint(): string {
 		if (!isPushSecureContext()) {
-			return 'Background push needs a secure origin (HTTPS or localhost). Open Clopen through its HTTPS address — the Remote Access tunnel provides one — and try again.';
+			return 'Background push needs HTTPS or localhost. Open Clopen through its Remote Access URL and try again.';
 		}
 		return osNotificationHint();
 	}
@@ -289,6 +295,93 @@
 		}
 	}
 
+	/**
+	 * The status line under Test Push: one short state, one short consequence,
+	 * and — only where it applies — a collapsed explainer.
+	 *
+	 * It used to be a single paragraph that ran three unrelated things
+	 * together: the state, a Chrome-only configuration tip, and the delivery
+	 * guarantee. The tip was shown to Firefox and Safari users who have no such
+	 * setting, and the state it was supposed to report was buried at the front
+	 * of sixty words of grey text.
+	 */
+	interface PushStatusLine {
+		tone: 'ok' | 'warn' | 'off';
+		label: string;
+		caption: string;
+		detail?: string;
+	}
+
+	/**
+	 * Which browsers can actually be told to keep running after their last
+	 * window closes. Naming a menu path that does not exist in the reader's
+	 * browser is worse than saying nothing.
+	 */
+	function backgroundRunHint(): string | null {
+		const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+		if (/edg\//i.test(ua)) return 'Edge: Settings → System and performance';
+		if (/chrome\//i.test(ua) && !/opr\//i.test(ua)) return 'Chrome: Settings → System';
+		return null;
+	}
+
+	function deliveryDetail(): string {
+		const hint = backgroundRunHint();
+		const keepRunning = hint
+			? `Notifications reach this device through the browser, so it has to be running. It can keep doing that after you close every window (${hint}). `
+			: 'Notifications reach this device through the browser, so it has to be running. ';
+		return `${keepRunning}Anything sent while it is fully quit is delivered the next time you open it, for up to ${pushTtlLabel()}.`;
+	}
+
+	const pushStatus = $derived.by((): PushStatusLine => {
+		switch (devicePushStatus) {
+			case 'active':
+				// A phone keeps its push connection alive at the OS level, so the
+				// desktop caveat about a quit browser simply does not apply.
+				return isMobileDevice()
+					? {
+							tone: 'ok',
+							label: 'Background push active',
+							caption: 'Notifications arrive even with the browser closed.'
+						}
+					: {
+							tone: 'ok',
+							label: 'Background push active',
+							caption: 'Notifications arrive with no Clopen tab open.',
+							detail: deliveryDetail()
+						};
+			case 'inactive':
+				return {
+					tone: 'warn',
+					label: 'Background push off',
+					caption: 'Turn the toggle off and on again to register this device.'
+				};
+			case 'permission-needed':
+				return {
+					tone: 'warn',
+					label: 'Notification permission not granted',
+					caption: 'Allow notifications for this site, then turn the toggle off and on again.'
+				};
+			case 'insecure-context':
+				return {
+					tone: 'warn',
+					label: 'Background push needs an HTTPS address',
+					caption: 'Browsers disable it on plain HTTP — reach Clopen through its Remote Access URL.'
+				};
+			default:
+				return {
+					tone: 'off',
+					label: 'Background push not supported here',
+					caption: 'This browser has no Push API.'
+				};
+		}
+	});
+
+	const PUSH_STATUS_TONES = {
+		ok: { dot: 'bg-emerald-500 dark:bg-emerald-400', label: 'text-emerald-600 dark:text-emerald-400' },
+		warn: { dot: 'bg-amber-500 dark:bg-amber-400', label: 'text-amber-600 dark:text-amber-400' },
+		off: { dot: 'bg-slate-400 dark:bg-slate-500', label: 'text-slate-600 dark:text-slate-400' }
+	} as const;
+
 	const RETRY_TEST = 'then test again';
 	const RETRY_TOGGLE = 'then turn the toggle on again';
 
@@ -299,7 +392,7 @@
 	function blockReasonMessage(reason: NotificationBlockReason, retry: string): string {
 		switch (reason) {
 			case 'insecure-context':
-				return `Browsers only expose notifications on a secure origin, so a plain http:// address other than localhost cannot show them. Open the app via http://localhost or over HTTPS, ${retry}.`;
+				return `Notifications need a secure origin, so a plain http:// address other than localhost cannot show them. Open Clopen via localhost or HTTPS, ${retry}.`;
 			case 'unsupported':
 				return 'This browser does not support native notifications.';
 			case 'permission-denied':
@@ -366,7 +459,7 @@
 						addNotification({
 							type: 'warning',
 							title: 'Background Push Off',
-							message: `Push is on for the open tab, but this device could not be registered for background notifications (delivered with no tab open). ${backgroundPushHint()}`,
+							message: `Push works while a tab is open, but this device could not register for background delivery. ${backgroundPushHint()}`,
 							duration: 6000
 						});
 					}
@@ -409,8 +502,7 @@
 				addNotification({
 					type: 'success',
 					title: 'Push Notification Test',
-					message:
-						'Background push is working — notifications will arrive with no Clopen tab open',
+					message: 'Background push works — notifications arrive with no Clopen tab open.',
 					duration: 4000
 				});
 				return;
@@ -419,7 +511,7 @@
 				addNotification({
 					type: 'warning',
 					title: 'Push Notification Unconfirmed',
-					message: `The server sent the notification but this device never confirmed it appeared. ${osNotificationHint()}`,
+					message: `The server sent it, but this device never confirmed it appeared. ${osNotificationHint()}`,
 					duration: 6000
 				});
 				return;
@@ -435,15 +527,15 @@
 				type: 'success',
 				title: 'Push Notification Test',
 				message: synced
-					? 'Native push notification is working correctly'
-					: `Foreground push works, but background push (with no tab open) is not registered. ${backgroundPushHint()}`,
+					? 'Native push notification is working correctly.'
+					: `Shown by this tab, but background delivery is not registered. ${backgroundPushHint()}`,
 				duration: synced ? 3000 : 6000
 			});
 		} else if (local.outcome === 'unconfirmed') {
 			addNotification({
 				type: 'warning',
 				title: 'Push Notification Unconfirmed',
-				message: `The browser sent the notification but the system never confirmed it appeared. ${osNotificationHint()}`,
+				message: `The browser sent it, but the system never confirmed it appeared. ${osNotificationHint()}`,
 				duration: 6000
 			});
 		} else {
@@ -492,7 +584,7 @@
 				addNotification({
 					type: 'warning',
 					title: 'Push Notification Unconfirmed',
-					message: `The browser sent the notification but the system never confirmed it appeared. ${osNotificationHint()}`,
+					message: `The browser sent it, but the system never confirmed it appeared. ${osNotificationHint()}`,
 					duration: 6000
 				});
 			} else {
@@ -799,29 +891,44 @@
 						{/if}
 					</button>
 				</div>
-				<div class="text-xs text-slate-600 dark:text-slate-500">
-					{#if devicePushStatus === 'active' && isMobileDevice()}
-						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
-						Background push active on this device — notifications arrive even with the browser closed.
-					{:else if devicePushStatus === 'active'}
-						<span class="font-semibold text-emerald-600 dark:text-emerald-400">●</span>
-						Background push active on this device — notifications arrive with no Clopen tab open. To
-						receive them after the browser's windows are closed, let it keep running in the background
-						(Chrome: Settings → System). Anything sent while it is fully quit is delivered the next
-						time you open it, for up to 12 hours.
-					{:else if devicePushStatus === 'inactive'}
-						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
-						Background push off on this device — turn the toggle off and on again to register.
-					{:else if devicePushStatus === 'permission-needed'}
-						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
-						Notification permission not granted yet.
-					{:else if devicePushStatus === 'insecure-context'}
-						<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
-						Background push needs an HTTPS address — this page was opened over plain HTTP, where
-						browsers disable it. Reach Clopen through its Remote Access tunnel URL.
-					{:else}
-						<span class="font-semibold text-slate-400">●</span>
-						Background push is not supported in this browser.
+				<!--
+					The dot is a shrink-0 flex sibling rather than an inline glyph: as an
+					inline span every wrapped line indented itself underneath it, so a
+					two-line status read as a hanging fragment.
+				-->
+				<div class="flex flex-col gap-1.5">
+					<div class="flex items-start gap-2">
+						<span
+							class="w-1.5 h-1.5 mt-1.5 rounded-full shrink-0 {PUSH_STATUS_TONES[pushStatus.tone].dot}"
+						></span>
+						<div class="flex flex-col gap-0.5 min-w-0">
+							<span class="text-xs font-semibold {PUSH_STATUS_TONES[pushStatus.tone].label}">
+								{pushStatus.label}
+							</span>
+							<span class="text-xs text-slate-600 dark:text-slate-500">{pushStatus.caption}</span>
+						</div>
+					</div>
+
+					{#if pushStatus.detail}
+						<button
+							type="button"
+							onclick={() => (showDeliveryDetail = !showDeliveryDetail)}
+							aria-expanded={showDeliveryDetail}
+							class="inline-flex items-center gap-1 self-start ml-3.5 text-xs text-slate-500 dark:text-slate-500 hover:text-violet-600 dark:hover:text-violet-400 transition-colors cursor-pointer"
+						>
+							<Icon
+								name="lucide:chevron-right"
+								class="w-3 h-3 transition-transform duration-150 {showDeliveryDetail ? 'rotate-90' : ''}"
+							/>
+							<span>How delivery works</span>
+						</button>
+						{#if showDeliveryDetail}
+							<p
+								class="ml-3.5 pl-2.5 border-l-2 border-slate-200 dark:border-slate-700 text-xs leading-relaxed text-slate-600 dark:text-slate-500"
+							>
+								{pushStatus.detail}
+							</p>
+						{/if}
 					{/if}
 				</div>
 			</div>
