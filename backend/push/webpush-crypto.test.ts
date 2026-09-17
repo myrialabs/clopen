@@ -133,7 +133,7 @@ describe('encryptPushPayload', () => {
 	test('encrypts so the subscription owner can decrypt (full round-trip)', async () => {
 		const sub = await makeBrowserSubscription();
 		const payload = textEncoder.encode(
-			JSON.stringify({ title: 'Claude Response Complete', body: 'Balasan AI siap', tag: 't-1' })
+			JSON.stringify({ title: 'Response ready', body: 'MyApp — "Fix login bug"', tag: 't-1' })
 		);
 
 		const { body } = await encryptPushPayload(sub.p256dh, sub.auth, payload);

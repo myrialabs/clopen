@@ -20,7 +20,6 @@ import {
 } from '$frontend/services/notification/service-worker-notifications';
 import { ensurePushSubscription } from '$frontend/services/notification/push-subscription.service';
 import { settings } from '$frontend/stores/features/settings.svelte';
-import { projectState } from '$frontend/stores/core/projects.svelte';
 import { debug } from '$shared/utils/logger';
 import ws from '$frontend/utils/ws';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
@@ -67,13 +66,16 @@ class GlobalStreamMonitor {
 
     // Stream finished — notify on completion
     ws.on('chat:stream-finished', async (data) => {
-      const { projectId, status, chatSessionId, streamId, reason } = data as {
-        projectId: string;
-        status: string;
-        chatSessionId: string;
-        streamId?: string;
-        reason?: string;
-      };
+      const { projectId, status, chatSessionId, streamId, reason, projectName, sessionTitle } =
+        data as {
+          projectId: string;
+          status: string;
+          chatSessionId: string;
+          streamId?: string;
+          reason?: string;
+          projectName?: string;
+          sessionTitle?: string;
+        };
 
       debug.log('notification', 'GlobalStreamMonitor: Stream finished', { projectId, status, reason });
 
@@ -95,16 +97,22 @@ class GlobalStreamMonitor {
       // streams keep distinct tags, so chats never collapse into one toast.
       const tag = streamId ? `chat-${streamId}` : undefined;
 
-      // Send push notification with project context
+      // Send push notification with project context.
+      //
+      // The context comes off the wire rather than out of a local store: the
+      // sessions store only holds the project currently open, and this handler
+      // exists for the chats the user is *not* looking at. A server upgrade
+      // under an open tab can leave the fields absent, and the shared message
+      // builder drops an absent segment instead of inventing one.
       try {
-        const projectName = projectState.projects.find(p => p.id === projectId)?.name || 'Unknown';
+        const context = { projectName, sessionTitle };
 
         if (status === 'completed') {
-          await pushNotification.sendChatComplete(`Chat response ready in "${projectName}"`, tag);
+          await pushNotification.sendChatEvent('completed', context, tag);
         } else if (status === 'error') {
-          await pushNotification.sendChatError(`Chat error in "${projectName}"`, tag);
+          await pushNotification.sendChatEvent('error', context, tag);
         } else if (status === 'cancelled') {
-          await pushNotification.sendChatComplete(`Chat interrupted in "${projectName}"`, tag);
+          await pushNotification.sendChatEvent('cancelled', context, tag);
         }
       } catch (error) {
         debug.error('notification', 'Error sending push notification:', error);
@@ -113,7 +121,13 @@ class GlobalStreamMonitor {
 
     // Waiting for input — notify once per AskUserQuestion
     ws.on('chat:waiting-input', async (data) => {
-      const { projectId, chatSessionId, toolUseId } = data;
+      const { projectId, chatSessionId, toolUseId, projectName, sessionTitle } = data as {
+        projectId: string;
+        chatSessionId: string;
+        toolUseId: string;
+        projectName?: string;
+        sessionTitle?: string;
+      };
 
       // Deduplicate: only notify once per tool_use ID
       if (this.notifiedToolUseIds.has(toolUseId)) return;
@@ -131,9 +145,9 @@ class GlobalStreamMonitor {
       // Send push notification. Shared tag with the server push for the
       // same question so the two copies collapse into one toast.
       try {
-        const projectName = projectState.projects.find(p => p.id === projectId)?.name || 'Unknown';
-        await pushNotification.sendChatComplete(
-          `Waiting for your input in "${projectName}"`,
+        await pushNotification.sendChatEvent(
+          'waiting-input',
+          { projectName, sessionTitle },
           `waiting-${toolUseId}`
         );
       } catch (error) {
