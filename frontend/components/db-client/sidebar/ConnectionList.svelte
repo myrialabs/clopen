@@ -80,7 +80,7 @@
 		onSelect?.();
 	}
 
-	function startEdit(connection: DbClientConnection, e: MouseEvent): void {
+	function startEdit(connection: DbClientConnection, e: Event): void {
 		e.stopPropagation();
 		mode = { kind: 'edit', connection };
 	}
@@ -94,7 +94,7 @@
 		onSelect?.();
 	}
 
-	async function onDelete(connection: DbClientConnection, e: MouseEvent): Promise<void> {
+	async function onDelete(connection: DbClientConnection, e: Event): Promise<void> {
 		e.stopPropagation();
 		// A managed connection is removed by dropping its LINK — deleting the row
 		// would leave the account owning a connection that no longer exists, and
@@ -198,33 +198,36 @@
 				</div>
 			{:else}
 				{#each filtered as connection (connection.id)}
-					<div class="group relative">
-						<ConnectionBadge
-							{connection}
-							health={health[connection.id]}
-							active={activeId === connection.id}
-							onClick={() => onSelectConnection(connection)}
-						/>
-						<div
-							class="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
-						>
+					<!-- Actions are always visible (no hover dependency) so they work
+					     with mouse, touch, and pen alike. Flex row instead of an
+					     absolute overlay so the buttons never cover the badge text. -->
+					<div class="flex items-center gap-0 rounded-md pr-1 {activeId === connection.id ? 'bg-violet-500/10' : 'hover:bg-slate-100 dark:hover:bg-slate-800/60'} transition-colors">
+						<div class="flex-1 min-w-0">
+							<ConnectionBadge
+								{connection}
+								health={health[connection.id]}
+								active={activeId === connection.id}
+								onClick={() => onSelectConnection(connection)}
+							/>
+						</div>
+						<div class="flex items-center gap-0 shrink-0">
 							<button
 								type="button"
-								class="flex items-center justify-center w-6 h-6 rounded-md bg-white/80 dark:bg-slate-800/80 text-slate-500 hover:text-violet-600 hover:bg-violet-500/10"
+								class="flex items-center justify-center w-7 h-7 min-w-[28px] min-h-[28px] rounded-md text-slate-500 hover:text-violet-600 hover:bg-violet-500/10 active:bg-violet-500/15 touch-manipulation cursor-pointer transition-colors"
 								onclick={(e) => startEdit(connection, e)}
 								aria-label="Edit connection"
 								title={connection.managedBy ? 'Managed by an account — open to see where it points' : 'Edit'}
 							>
-								<Icon name="lucide:pencil" class="w-3 h-3" />
+								<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 							</button>
 							<button
 								type="button"
-								class="flex items-center justify-center w-6 h-6 rounded-md bg-white/80 dark:bg-slate-800/80 text-slate-500 hover:text-red-600 hover:bg-red-500/10"
+								class="flex items-center justify-center w-7 h-7 min-w-[28px] min-h-[28px] rounded-md text-slate-500 hover:text-red-600 hover:bg-red-500/10 active:bg-red-500/15 touch-manipulation cursor-pointer transition-colors"
 								onclick={(e) => onDelete(connection, e)}
 								aria-label={connection.managedBy ? 'Unlink connection' : 'Delete connection'}
 								title={connection.managedBy ? 'Unlink' : 'Delete'}
 							>
-								<Icon name="lucide:trash-2" class="w-3 h-3" />
+								<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
 							</button>
 						</div>
 					</div>

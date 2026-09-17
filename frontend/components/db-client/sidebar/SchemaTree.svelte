@@ -9,13 +9,19 @@
 
 	interface Props {
 		connectionId: string;
-		onContextMenu?: (e: MouseEvent, node: DbClientSchemaNode) => void;
-		onScopeMenu?: (e: MouseEvent) => void;
+		onContextMenu?: (e: MouseEvent | PointerEvent, node: DbClientSchemaNode, anchor?: HTMLElement | null) => void;
+		onScopeMenu?: (e: MouseEvent | PointerEvent, anchor?: HTMLElement | null) => void;
 		onBackToConnections?: () => void;
 		onCreateTable?: (database?: string) => void;
 		onCreateView?: (database?: string) => void;
 		onCreateFunction?: (database?: string) => void;
 		onCreateProcedure?: (database?: string) => void;
+		/**
+		 * Bump to open the New database dialog (e.g. from the header ⋮ menu,
+		 * which lives outside this tree). Count, not boolean, so picking the
+		 * same menu item twice still fires.
+		 */
+		createDbNonce?: number;
 	}
 
 	const {
@@ -26,7 +32,8 @@
 		onCreateTable,
 		onCreateView,
 		onCreateFunction,
-		onCreateProcedure
+		onCreateProcedure,
+		createDbNonce = 0
 	}: Props = $props();
 
 	let loading = $state(false);
@@ -51,7 +58,6 @@
 
 	const objects = $derived<DbClientSchemaNode[]>(dbClientStore.schema[connectionId] ?? []);
 
-	const canCreateDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mssql');
 	const canCreateTable = $derived(driver !== 'redis');
 
 	$effect(() => {
@@ -67,6 +73,14 @@
 	$effect(() => {
 		if (createDbOpen && createDbInputEl) {
 			createDbInputEl.focus();
+		}
+	});
+
+	// Opened from the header ⋮ menu ("New database…"), which lives outside
+	// this tree in DbClientModal — see createDbNonce prop.
+	$effect(() => {
+		if (createDbNonce > 0) {
+			openCreateDb();
 		}
 	});
 
@@ -156,6 +170,40 @@
 			case 'procedure': return 'lucide:terminal';
 			default: return 'lucide:table';
 		}
+	}
+
+	/**
+	 * Attach the open database to a node so the menu acts on the right scope.
+	 * Single helper so right-click, long-press, and the ⋮ button all resolve
+	 * the same target — no interaction depends on hover or on right-click.
+	 */
+	function scopedNode(node: DbClientSchemaNode, database?: string | null): DbClientSchemaNode {
+		if (!database) return node;
+		return { ...node, meta: { ...node.meta, database } };
+	}
+
+	function handleRowContextMenu(e: MouseEvent, node: DbClientSchemaNode, database?: string | null): void {
+		e.preventDefault();
+		e.stopPropagation();
+		onContextMenu?.(e, scopedNode(node, database), null);
+	}
+
+	function handleRowMenuButton(e: Event, node: DbClientSchemaNode, database?: string | null): void {
+		e.stopPropagation();
+		e.preventDefault();
+		const anchor = e.currentTarget as HTMLElement | null;
+		// A synthetic MouseEvent carries the tap point for the menu fallback;
+		// the anchor lets the menu dock below the ⋮ button when there is room.
+		const pointer = e as unknown as MouseEvent;
+		onContextMenu?.(pointer, scopedNode(node, database), anchor);
+	}
+
+	function handleScopeMenuButton(e: Event): void {
+		e.stopPropagation();
+		e.preventDefault();
+		const anchor = e.currentTarget as HTMLElement | null;
+		const pointer = e as unknown as MouseEvent;
+		onScopeMenu?.(pointer, anchor);
 	}
 
 	function openCreateDb(): void {
@@ -285,7 +333,7 @@
 </script>
 
 <div class="flex flex-col h-full min-h-0">
-	<div class="flex items-center gap-2 px-3 py-2.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
+	<div class="flex items-center gap-1.5 px-3 py-2.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
 		{#if useDatabaseTree && currentDb !== null}
 			<button
 				type="button"
@@ -308,30 +356,21 @@
 			</button>
 		{/if}
 		{#if connection}
-			<DriverIcon driver={connection.driver} class="w-4 h-4 shrink-0" />
-			<span class="min-w-0 flex-1 text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
-				{#if useDatabaseTree && currentDb !== null}
-					{connection.name}<span class="ml-1.5">/ {currentDb}</span>
-				{:else}
-					{connection.name}
-				{/if}
-			</span>
+			<div class="flex items-center gap-2.5 min-w-0 flex-1">
+				<DriverIcon driver={connection.driver} class="w-4 h-4 shrink-0" />
+				<span class="min-w-0 flex-1 text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">
+					{#if useDatabaseTree && currentDb !== null}
+						{connection.name}<span class="ml-1.5">/ {currentDb}</span>
+					{:else}
+						{connection.name}
+					{/if}
+				</span>
+			</div>
 		{/if}
-		<div class="flex items-center gap-1.5 shrink-0">
-			{#if showingDatabases && canCreateDatabase}
-				<button
-					type="button"
-					class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors"
-					onclick={openCreateDb}
-					aria-label="New database"
-					title="New database"
-				>
-					<Icon name="lucide:plus" class="w-4 h-4" />
-				</button>
-			{/if}
+		<div class="flex items-center gap-0 shrink-0">
 			<button
 				type="button"
-				class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors disabled:opacity-50"
+				class="flex items-center justify-center w-7 h-7 min-w-[28px] min-h-[28px] rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 active:bg-violet-500/15 touch-manipulation cursor-pointer transition-colors disabled:opacity-50"
 				onclick={refresh}
 				disabled={loading}
 				aria-label="Refresh"
@@ -339,15 +378,16 @@
 			>
 				<Icon name={loading ? 'lucide:loader' : 'lucide:refresh-cw'} class="w-3.5 h-3.5 {loading ? 'animate-spin' : ''}" />
 			</button>
-			{#if !showingDatabases && onScopeMenu}
+			{#if onScopeMenu}
 				<button
 					type="button"
-					class="flex items-center justify-center w-7 h-7 rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 transition-colors"
-					onclick={(e) => onScopeMenu?.(e)}
+					class="flex items-center justify-center w-7 h-7 min-w-[28px] min-h-[28px] rounded-md text-slate-500 hover:bg-violet-500/10 hover:text-violet-600 active:bg-violet-500/15 touch-manipulation cursor-pointer transition-colors"
+					onclick={handleScopeMenuButton}
 					aria-label="Database actions"
+					aria-haspopup="menu"
 					title="Database actions"
 				>
-					<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+					<Icon name="lucide:ellipsis" class="w-3.5 h-3.5" />
 				</button>
 			{/if}
 		</div>
@@ -414,7 +454,7 @@
 				</button>
 				<button
 					type="button"
-					class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
+					class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation transition-colors cursor-pointer"
 					onclick={() => {
 						isObjectSearchOpen = !isObjectSearchOpen;
 						if (!isObjectSearchOpen) searchQuery = '';
@@ -450,15 +490,27 @@
 					</div>
 				{/if}
 				{#each filteredDatabases as db (db.name)}
-					<button
-						type="button"
-						class="flex items-center gap-2 w-full px-2.5 py-1.5 rounded text-left text-sm hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300"
+					<div
+						class="group flex items-center gap-2 w-full pl-2.5 pr-1 py-0.5 rounded text-sm hover:bg-slate-100 dark:hover:bg-slate-800/60 active:bg-slate-200 dark:active:bg-slate-800 text-slate-700 dark:text-slate-300 touch-manipulation"
+						role="button"
+						tabindex="0"
 						onclick={() => openDatabase(db.name)}
-						oncontextmenu={(e) => { e.preventDefault(); onContextMenu?.(e, db); }}
+						onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openDatabase(db.name); } }}
+						oncontextmenu={(e) => handleRowContextMenu(e, db)}
 					>
 						<Icon name="lucide:database" class="w-4 h-4 text-slate-400 shrink-0" />
-						<span class="truncate">{db.name}</span>
-					</button>
+						<span class="flex-1 min-w-0 truncate py-1.5">{db.name}</span>
+						<button
+							type="button"
+							class="flex p-1.5 -my-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition-colors rounded-md hover:bg-slate-200/50 dark:hover:bg-slate-700/50 touch-manipulation cursor-pointer shrink-0"
+							onclick={(e) => handleRowMenuButton(e, db)}
+							aria-label={`Actions for database ${db.name}`}
+							aria-haspopup="menu"
+							title="Database actions"
+						>
+							<Icon name="lucide:ellipsis" class="w-3 h-3" />
+						</button>
+					</div>
 				{:else}
 					{#if !loading}
 						<div class="px-3 py-2 text-sm text-slate-400">No databases</div>
@@ -491,7 +543,7 @@
 					<div class="flex items-center gap-1">
 						<button
 							type="button"
-							class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
+							class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation transition-colors cursor-pointer"
 							onclick={() => {
 								isObjectSearchOpen = !isObjectSearchOpen;
 								if (!isObjectSearchOpen) searchQuery = '';
@@ -503,7 +555,7 @@
 						{#if !showingDatabases && canCreateTable && onCreateTable}
 							<button
 								type="button"
-								class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors cursor-pointer"
+								class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation transition-colors cursor-pointer"
 								onclick={() => onCreateTable(currentDb ?? undefined)}
 								aria-label="New table"
 								title="New table"
@@ -563,7 +615,7 @@
 										<div class="flex items-center gap-1 mt-1.5">
 											<button
 												type="button"
-												class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 												onclick={() => {
 													isFolderSearchOpen.tables = !isFolderSearchOpen.tables;
 													if (!isFolderSearchOpen.tables) folderSearchQueries.tables = '';
@@ -575,12 +627,24 @@
 											{#if !showingDatabases && canCreateTable && onCreateTable}
 												<button
 													type="button"
-													class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+													class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 													onclick={() => onCreateTable(currentDb ?? undefined)}
 													aria-label="New table"
 													title="New table"
 												>
 													<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+												</button>
+											{/if}
+											{#if !showingDatabases && onScopeMenu}
+												<button
+													type="button"
+													class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
+													onclick={handleScopeMenuButton}
+													aria-label="Tables folder actions"
+													aria-haspopup="menu"
+													title="Folder actions"
+												>
+													<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
 												</button>
 											{/if}
 										</div>
@@ -612,17 +676,29 @@
 										{/if}
 										<div class="mt-0.5 space-y-0">
 											{#each tablesList as node (node.name)}
-												<button
-													type="button"
-													class="flex items-center gap-2 w-full pl-5 pr-2.5 py-1.5 rounded text-left text-sm {isActiveNode(node.name, currentDb ?? undefined)
+												<div
+													class="group flex items-center gap-1 w-full pl-5 pr-1 py-0.5 rounded text-sm touch-manipulation {isActiveNode(node.name, currentDb ?? undefined)
 														? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
-														: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+														: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 active:bg-slate-200 dark:active:bg-slate-800 text-slate-700 dark:text-slate-300'}"
+													role="button"
+													tabindex="0"
 													onclick={() => onObjectClick(node, currentDb ?? undefined)}
-													oncontextmenu={(e) => { e.preventDefault(); onContextMenu?.(e, currentDb ? { ...node, meta: { ...node.meta, database: currentDb } } : node); }}
+													onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onObjectClick(node, currentDb ?? undefined); } }}
+													oncontextmenu={(e) => handleRowContextMenu(e, node, currentDb)}
 												>
 													<Icon name={nodeIcon(node)} class="w-4 h-4 text-slate-400 shrink-0" />
-													<span class="truncate">{node.name}</span>
-												</button>
+													<span class="flex-1 min-w-0 truncate py-1.5">{node.name}</span>
+													<button
+														type="button"
+														class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 active:bg-slate-300 dark:active:bg-slate-600 touch-manipulation cursor-pointer transition-colors shrink-0"
+														onclick={(e) => handleRowMenuButton(e, node, currentDb)}
+														aria-label={`Actions for ${node.name}`}
+														aria-haspopup="menu"
+														title="Actions"
+													>
+														<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+													</button>
+												</div>
 											{:else}
 												{#if folderSearchQueries.tables}
 													<div class="pl-5 pr-2.5 py-1.5 text-xs text-slate-400">No results</div>
@@ -634,17 +710,29 @@
 							{:else}
 								<div class="mt-0.5 space-y-0">
 									{#each tablesList as node (node.name)}
-										<button
-											type="button"
-											class="flex items-center gap-2 w-full px-2.5 py-1.5 rounded text-left text-sm {isActiveNode(node.name, currentDb ?? undefined)
+										<div
+											class="group flex items-center gap-1 w-full px-2.5 pr-1 py-0.5 rounded text-sm touch-manipulation {isActiveNode(node.name, currentDb ?? undefined)
 												? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
-												: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+												: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 active:bg-slate-200 dark:active:bg-slate-800 text-slate-700 dark:text-slate-300'}"
+											role="button"
+											tabindex="0"
 											onclick={() => onObjectClick(node, currentDb ?? undefined)}
-											oncontextmenu={(e) => { e.preventDefault(); onContextMenu?.(e, currentDb ? { ...node, meta: { ...node.meta, database: currentDb } } : node); }}
+											onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onObjectClick(node, currentDb ?? undefined); } }}
+											oncontextmenu={(e) => handleRowContextMenu(e, node, currentDb)}
 										>
 											<Icon name={nodeIcon(node)} class="w-4 h-4 text-slate-400 shrink-0" />
-											<span class="truncate">{node.name}</span>
-										</button>
+											<span class="flex-1 min-w-0 truncate py-1.5">{node.name}</span>
+											<button
+												type="button"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 active:bg-slate-300 dark:active:bg-slate-600 touch-manipulation cursor-pointer transition-colors shrink-0"
+												onclick={(e) => handleRowMenuButton(e, node, currentDb)}
+												aria-label={`Actions for ${node.name}`}
+												aria-haspopup="menu"
+												title="Actions"
+											>
+												<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+											</button>
+										</div>
 									{/each}
 								</div>
 							{/if}
@@ -665,7 +753,7 @@
 									<div class="flex items-center gap-1 mt-1.5">
 										<button
 											type="button"
-											class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+											class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 											onclick={() => {
 												isFolderSearchOpen.views = !isFolderSearchOpen.views;
 												if (!isFolderSearchOpen.views) folderSearchQueries.views = '';
@@ -677,12 +765,24 @@
 										{#if !showingDatabases && onCreateView}
 											<button
 												type="button"
-												class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 												onclick={() => onCreateView(currentDb ?? undefined)}
 												aria-label="New view"
 												title="New view"
 											>
 												<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+											</button>
+										{/if}
+										{#if !showingDatabases && onScopeMenu}
+											<button
+												type="button"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
+												onclick={handleScopeMenuButton}
+												aria-label="Views folder actions"
+												aria-haspopup="menu"
+												title="Folder actions"
+											>
+												<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
 											</button>
 										{/if}
 									</div>
@@ -714,17 +814,29 @@
 									{/if}
 									<div class="mt-0.5 space-y-0">
 										{#each viewsList as node (node.name)}
-											<button
-												type="button"
-												class="flex items-center gap-2 w-full pl-5 pr-2.5 py-1.5 rounded text-left text-sm {isActiveNode(node.name, currentDb ?? undefined)
+											<div
+												class="group flex items-center gap-1 w-full pl-5 pr-1 py-0.5 rounded text-sm touch-manipulation {isActiveNode(node.name, currentDb ?? undefined)
 													? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
-													: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+													: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 active:bg-slate-200 dark:active:bg-slate-800 text-slate-700 dark:text-slate-300'}"
+												role="button"
+												tabindex="0"
 												onclick={() => onObjectClick(node, currentDb ?? undefined)}
-												oncontextmenu={(e) => { e.preventDefault(); onContextMenu?.(e, currentDb ? { ...node, meta: { ...node.meta, database: currentDb } } : node); }}
+												onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onObjectClick(node, currentDb ?? undefined); } }}
+												oncontextmenu={(e) => handleRowContextMenu(e, node, currentDb)}
 											>
 												<Icon name={nodeIcon(node)} class="w-4 h-4 text-slate-400 shrink-0" />
-												<span class="truncate">{node.name}</span>
-											</button>
+												<span class="flex-1 min-w-0 truncate py-1.5">{node.name}</span>
+												<button
+													type="button"
+													class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 active:bg-slate-300 dark:active:bg-slate-600 touch-manipulation cursor-pointer transition-colors shrink-0"
+													onclick={(e) => handleRowMenuButton(e, node, currentDb)}
+													aria-label={`Actions for ${node.name}`}
+													aria-haspopup="menu"
+													title="Actions"
+												>
+													<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+												</button>
+											</div>
 										{:else}
 											{#if folderSearchQueries.views}
 												<div class="pl-5 pr-2.5 py-1.5 text-xs text-slate-400">No results</div>
@@ -750,7 +862,7 @@
 									<div class="flex items-center gap-1 mt-1.5">
 										<button
 											type="button"
-											class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+											class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 											onclick={() => {
 												isFolderSearchOpen.functions = !isFolderSearchOpen.functions;
 												if (!isFolderSearchOpen.functions) folderSearchQueries.functions = '';
@@ -762,12 +874,24 @@
 										{#if !showingDatabases && onCreateFunction}
 											<button
 												type="button"
-												class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 												onclick={() => onCreateFunction(currentDb ?? undefined)}
 												aria-label="New function"
 												title="New function"
 											>
 												<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+											</button>
+										{/if}
+										{#if !showingDatabases && onScopeMenu}
+											<button
+												type="button"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
+												onclick={handleScopeMenuButton}
+												aria-label="Functions folder actions"
+												aria-haspopup="menu"
+												title="Folder actions"
+											>
+												<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
 											</button>
 										{/if}
 									</div>
@@ -799,17 +923,29 @@
 									{/if}
 									<div class="mt-0.5 space-y-0">
 										{#each functionsList as node (node.name)}
-											<button
-												type="button"
-												class="flex items-center gap-2 w-full pl-5 pr-2.5 py-1.5 rounded text-left text-sm {isActiveNode(node.name, currentDb ?? undefined)
+											<div
+												class="group flex items-center gap-1 w-full pl-5 pr-1 py-0.5 rounded text-sm touch-manipulation {isActiveNode(node.name, currentDb ?? undefined)
 													? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
-													: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+													: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 active:bg-slate-200 dark:active:bg-slate-800 text-slate-700 dark:text-slate-300'}"
+												role="button"
+												tabindex="0"
 												onclick={() => onObjectClick(node, currentDb ?? undefined)}
-												oncontextmenu={(e) => { e.preventDefault(); onContextMenu?.(e, currentDb ? { ...node, meta: { ...node.meta, database: currentDb } } : node); }}
+												onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onObjectClick(node, currentDb ?? undefined); } }}
+												oncontextmenu={(e) => handleRowContextMenu(e, node, currentDb)}
 											>
 												<Icon name={nodeIcon(node)} class="w-4 h-4 text-slate-400 shrink-0" />
-												<span class="truncate">{node.name}</span>
-											</button>
+												<span class="flex-1 min-w-0 truncate py-1.5">{node.name}</span>
+												<button
+													type="button"
+													class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 active:bg-slate-300 dark:active:bg-slate-600 touch-manipulation cursor-pointer transition-colors shrink-0"
+													onclick={(e) => handleRowMenuButton(e, node, currentDb)}
+													aria-label={`Actions for ${node.name}`}
+													aria-haspopup="menu"
+													title="Actions"
+												>
+													<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+												</button>
+											</div>
 										{:else}
 											{#if folderSearchQueries.functions}
 												<div class="pl-5 pr-2.5 py-1.5 text-xs text-slate-400">No results</div>
@@ -835,7 +971,7 @@
 									<div class="flex items-center gap-1 mt-1.5">
 										<button
 											type="button"
-											class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+											class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 											onclick={() => {
 												isFolderSearchOpen.procedures = !isFolderSearchOpen.procedures;
 												if (!isFolderSearchOpen.procedures) folderSearchQueries.procedures = '';
@@ -847,14 +983,26 @@
 										{#if !showingDatabases && onCreateProcedure}
 											<button
 												type="button"
-												class="flex items-center justify-center w-5 h-5 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors shrink-0"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
 												onclick={() => onCreateProcedure(currentDb ?? undefined)}
 												aria-label="New procedure"
 												title="New procedure"
 											>
 												<Icon name="lucide:plus" class="w-3.5 h-3.5" />
 											</button>
-												{/if}
+										{/if}
+										{#if !showingDatabases && onScopeMenu}
+											<button
+												type="button"
+												class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 active:bg-slate-300 dark:active:bg-slate-700 touch-manipulation cursor-pointer transition-colors shrink-0"
+												onclick={handleScopeMenuButton}
+												aria-label="Procedures folder actions"
+												aria-haspopup="menu"
+												title="Folder actions"
+											>
+												<Icon name="lucide:ellipsis-vertical" class="w-3.5 h-3.5" />
+											</button>
+										{/if}
 									</div>
 								</div>
 								{#if expandedFolders.procedures}
@@ -884,17 +1032,29 @@
 									{/if}
 									<div class="mt-0.5 space-y-0">
 										{#each proceduresList as node (node.name)}
-											<button
-												type="button"
-												class="flex items-center gap-2 w-full pl-5 pr-2.5 py-1.5 rounded text-left text-sm {isActiveNode(node.name, currentDb ?? undefined)
+											<div
+												class="group flex items-center gap-1 w-full pl-5 pr-1 py-0.5 rounded text-sm touch-manipulation {isActiveNode(node.name, currentDb ?? undefined)
 													? 'bg-violet-500/10 text-violet-700 dark:text-violet-300'
-													: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 text-slate-700 dark:text-slate-300'}"
+													: 'hover:bg-slate-100 dark:hover:bg-slate-800/60 active:bg-slate-200 dark:active:bg-slate-800 text-slate-700 dark:text-slate-300'}"
+												role="button"
+												tabindex="0"
 												onclick={() => onObjectClick(node, currentDb ?? undefined)}
-												oncontextmenu={(e) => { e.preventDefault(); onContextMenu?.(e, currentDb ? { ...node, meta: { ...node.meta, database: currentDb } } : node); }}
+												onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onObjectClick(node, currentDb ?? undefined); } }}
+												oncontextmenu={(e) => handleRowContextMenu(e, node, currentDb)}
 											>
 												<Icon name={nodeIcon(node)} class="w-4 h-4 text-slate-400 shrink-0" />
-												<span class="truncate">{node.name}</span>
-											</button>
+												<span class="flex-1 min-w-0 truncate py-1.5">{node.name}</span>
+												<button
+													type="button"
+													class="flex items-center justify-center w-8 h-8 min-w-[32px] min-h-[32px] rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-700 active:bg-slate-300 dark:active:bg-slate-600 touch-manipulation cursor-pointer transition-colors shrink-0"
+													onclick={(e) => handleRowMenuButton(e, node, currentDb)}
+													aria-label={`Actions for ${node.name}`}
+													aria-haspopup="menu"
+													title="Actions"
+												>
+													<Icon name="lucide:ellipsis-vertical" class="w-4 h-4" />
+												</button>
+											</div>
 										{:else}
 											{#if folderSearchQueries.procedures}
 												<div class="pl-5 pr-2.5 py-1.5 text-xs text-slate-400">No results</div>

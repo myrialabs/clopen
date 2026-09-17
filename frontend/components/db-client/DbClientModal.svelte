@@ -50,7 +50,11 @@
 	let menuItems = $state<ContextMenuItem[]>([]);
 	let menuX = $state(0);
 	let menuY = $state(0);
+	let menuAlignRight = $state(false);
 	let menuNode = $state<DbClientSchemaNode | null>(null);
+	// Bumped when the header ⋮ menu picks "New database…"; SchemaTree opens
+	// its inline create dialog in response (the dialog state lives there).
+	let createDbNonce = $state(0);
 
 	let renameOpen = $state(false);
 	let renameValue = $state('');
@@ -93,6 +97,7 @@
 	let duplicateSource = $state<{ name: string; database?: string } | null>(null);
 
 	const driver = $derived(activeConnection?.driver);
+	const canCreateDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mssql');
 	const canDropDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'mongodb' || driver === 'mssql');
 	const canRenameDatabase = $derived(driver === 'postgres' || driver === 'mysql' || driver === 'mssql');
 	const canEmptyDatabase = $derived(driver === 'mysql' || driver === 'postgres' || driver === 'sqlite' || driver === 'mongodb' || driver === 'mssql');
@@ -297,82 +302,135 @@
 		switch (node.type) {
 			case 'database': {
 				const items: ContextMenuItem[] = [
-					{ id: 'open-db', label: 'Open' },
+					{ id: 'open-db', label: 'Open', icon: 'lucide:folder-open' },
 					{ id: 'sep0', label: '', separator: true },
-					{ id: 'refresh', label: 'Refresh' },
+					{ id: 'refresh', label: 'Refresh', icon: 'lucide:refresh-cw' },
 					{ id: 'sep1', label: '', separator: true },
-					{ id: 'new-table', label: 'New table…' },
-					{ id: 'new-view', label: 'New view…' }
+					{ id: 'new-table', label: 'New table…', icon: 'lucide:plus' },
+					{ id: 'new-view', label: 'New view…', icon: 'lucide:eye' }
 				];
 				if (canEmptyDatabase || canRenameDatabase || canDropDatabase) {
 					items.push({ id: 'sep2', label: '', separator: true });
 				}
-				if (canEmptyDatabase) items.push({ id: 'empty-database', label: 'Empty database…', danger: true });
-				if (canRenameDatabase) items.push({ id: 'rename-database', label: 'Rename database…' });
-				if (canDropDatabase) items.push({ id: 'drop-database', label: 'Drop database…', danger: true });
+				if (canEmptyDatabase) items.push({ id: 'empty-database', label: 'Empty database…', icon: 'lucide:eraser', danger: true });
+				if (canRenameDatabase) items.push({ id: 'rename-database', label: 'Rename database…', icon: 'lucide:pencil' });
+				if (canDropDatabase) items.push({ id: 'drop-database', label: 'Drop database…', icon: 'lucide:trash-2', danger: true });
 				return items;
 			}
 			case 'table':
 			case 'collection': {
 				const items: ContextMenuItem[] = [
-					{ id: 'open-data', label: 'Open data' },
-					{ id: 'open-structure', label: 'Open structure' },
-					{ id: 'new-query', label: 'Query (SELECT *)' },
+					{ id: 'open-data', label: 'Open data', icon: 'lucide:table' },
+					{ id: 'open-structure', label: 'Open structure', icon: 'lucide:layout-list' },
+					{ id: 'new-query', label: 'Query (SELECT *)', icon: 'lucide:terminal' },
 					{ id: 'sep1', label: '', separator: true },
-					{ id: 'copy-name', label: 'Copy name' }
+					{ id: 'copy-name', label: 'Copy name', icon: 'lucide:copy' }
 				];
-				if (canCopyCreate) items.push({ id: 'copy-create', label: 'Copy CREATE statement' });
-				items.push({ id: 'export-object', label: 'Export…' });
-				if (canDuplicateTable) items.push({ id: 'duplicate', label: 'Duplicate…' });
+				if (canCopyCreate) items.push({ id: 'copy-create', label: 'Copy CREATE statement', icon: 'lucide:file-text' });
+				items.push({ id: 'export-object', label: 'Export…', icon: 'lucide:download' });
+				if (canDuplicateTable) items.push({ id: 'duplicate', label: 'Duplicate…', icon: 'lucide:copy-plus' });
 				items.push({ id: 'sep2', label: '', separator: true });
-				items.push({ id: 'rename', label: 'Rename…' });
-				items.push({ id: 'truncate', label: 'Truncate', danger: true });
-				if (canResetTable) items.push({ id: 'reset', label: 'Reset (empty + reset counter)', danger: true });
-				items.push({ id: 'drop', label: 'Drop', danger: true });
+				items.push({ id: 'rename', label: 'Rename…', icon: 'lucide:pencil' });
+				items.push({ id: 'truncate', label: 'Truncate', icon: 'lucide:eraser', danger: true });
+				if (canResetTable) items.push({ id: 'reset', label: 'Reset counter', icon: 'lucide:rotate-ccw', danger: true });
+				items.push({ id: 'drop', label: 'Drop', icon: 'lucide:trash-2', danger: true });
 				return items;
 			}
 			case 'view': {
 				const items: ContextMenuItem[] = [
-					{ id: 'open-query', label: 'Query view' },
+					{ id: 'open-query', label: 'Query view', icon: 'lucide:terminal' },
 					{ id: 'sep1', label: '', separator: true },
-					{ id: 'copy-name', label: 'Copy name' }
+					{ id: 'copy-name', label: 'Copy name', icon: 'lucide:copy' }
 				];
-				if (canCopyCreate) items.push({ id: 'copy-create', label: 'Copy CREATE statement' });
+				if (canCopyCreate) items.push({ id: 'copy-create', label: 'Copy CREATE statement', icon: 'lucide:file-text' });
 				items.push({ id: 'sep2', label: '', separator: true });
-				items.push({ id: 'drop', label: 'Drop', danger: true });
+				items.push({ id: 'drop', label: 'Drop', icon: 'lucide:trash-2', danger: true });
 				return items;
 			}
 			case 'index':
-				return [{ id: 'drop-index', label: 'Drop index', danger: true }];
+				return [{ id: 'drop-index', label: 'Drop index', icon: 'lucide:trash-2', danger: true }];
+			case 'function':
+			case 'procedure':
+				return [
+					{ id: 'copy-name', label: 'Copy name', icon: 'lucide:copy' },
+					{ id: 'refresh', label: 'Refresh', icon: 'lucide:refresh-cw' }
+				];
 			default:
-				return [{ id: 'copy-name', label: 'Copy name' }, { id: 'refresh', label: 'Refresh' }];
+				return [
+					{ id: 'copy-name', label: 'Copy name', icon: 'lucide:copy' },
+					{ id: 'refresh', label: 'Refresh', icon: 'lucide:refresh-cw' }
+				];
 		}
 	}
 
 	function scopeMenuItems(): ContextMenuItem[] {
+		// Database-list level (no database opened yet): the header ⋮ carries
+		// what the old "+" button did, so creating a database stays reachable.
+		// Refresh is always present so the button never opens an empty menu.
+		// Separators mirror the Files menu (one action group per section).
+		if (atConnectionScope) {
+			const items: ContextMenuItem[] = [];
+			if (canCreateDatabase) items.push({ id: 'new-database', label: 'New database…', icon: 'lucide:plus' });
+			if (items.length > 0) items.push({ id: 'sep-scope-0', label: '', separator: true });
+			items.push({ id: 'refresh-scope', label: 'Refresh', icon: 'lucide:refresh-cw' });
+			return items;
+		}
 		const items: ContextMenuItem[] = [];
-		if (canEmptyDatabase) items.push({ id: 'empty-scope', label: 'Empty database…', danger: true });
-		if (canFlushDatabase) items.push({ id: 'flush-scope', label: 'Flush database (FLUSHDB)…', danger: true });
-		if (canRenameDatabase) items.push({ id: 'rename-scope', label: 'Rename database…' });
-		if (canDropDatabase) items.push({ id: 'drop-scope', label: 'Drop database…', danger: true });
+		if (canEmptyDatabase) items.push({ id: 'empty-scope', label: 'Empty database…', icon: 'lucide:eraser', danger: true });
+		if (canFlushDatabase) {
+			if (items.length > 0) items.push({ id: 'sep-scope-0', label: '', separator: true });
+			items.push({ id: 'flush-scope', label: 'Flush database (FLUSHDB)…', icon: 'lucide:eraser', danger: true });
+		}
+		if (canRenameDatabase) {
+			if (items.length > 0) items.push({ id: 'sep-scope-1', label: '', separator: true });
+			items.push({ id: 'rename-scope', label: 'Rename database…', icon: 'lucide:pencil' });
+		}
+		if (canDropDatabase) {
+			if (items.length > 0) items.push({ id: 'sep-scope-2', label: '', separator: true });
+			items.push({ id: 'drop-scope', label: 'Drop database…', icon: 'lucide:trash-2', danger: true });
+		}
 		return items;
 	}
 
-	function onContextMenu(e: MouseEvent, node: DbClientSchemaNode): void {
+	/**
+	 * Resolve where the menu opens.
+	 *
+	 * Right-click / long-press gives a point (clientX/Y); a ⋮ tap gives an
+	 * anchor button. With an anchor the menu opens to the RIGHT of the button
+	 * (left edge = button right + 4px, top aligned with button top), so it
+	 * never covers the row that opened it — same position on mouse, touch,
+	 * and pen. The menu itself measures and flips to the left / above when
+	 * room runs out, so it never leaves the viewport.
+	 */
+	function resolveMenuPoint(e: MouseEvent | PointerEvent, anchor?: HTMLElement | null): { x: number; y: number; alignRight: boolean } {
+		if (anchor) {
+			const rect = anchor.getBoundingClientRect();
+			return { x: rect.right + 4, y: rect.top, alignRight: false };
+		}
+		const x = typeof e.clientX === 'number' ? e.clientX : window.innerWidth / 2;
+		const y = typeof e.clientY === 'number' ? e.clientY : window.innerHeight / 3;
+		return { x, y, alignRight: false };
+	}
+
+	function onContextMenu(e: MouseEvent | PointerEvent, node: DbClientSchemaNode, anchor?: HTMLElement | null): void {
 		menuNode = node;
 		menuItems = itemsForNode(node);
-		menuX = e.clientX;
-		menuY = e.clientY;
+		const p = resolveMenuPoint(e, anchor);
+		menuX = p.x;
+		menuY = p.y;
+		menuAlignRight = p.alignRight;
 		menuOpen = true;
 	}
 
-	function onScopeMenu(e: MouseEvent): void {
+	function onScopeMenu(e: MouseEvent | PointerEvent, anchor?: HTMLElement | null): void {
 		const items = scopeMenuItems();
 		if (items.length === 0) return;
 		menuNode = null;
 		menuItems = items;
-		menuX = e.clientX;
-		menuY = e.clientY;
+		const p = resolveMenuPoint(e, anchor);
+		menuX = p.x;
+		menuY = p.y;
+		menuAlignRight = p.alignRight;
 		menuOpen = true;
 	}
 
@@ -395,8 +453,15 @@
 		const conn = activeConnection;
 		if (!conn) return;
 
-		// Scope-level actions (header ⋯ menu) operate on the open database.
+		// Scope-level actions (header ⋯ menu). Most operate on the open
+		// database; new-database / refresh-scope act at the database-list level.
 		switch (id) {
+			case 'new-database':
+				createDbNonce += 1;
+				return;
+			case 'refresh-scope':
+				dbClientStore.requestSchemaReload();
+				return;
 			case 'empty-scope':
 				if (!scopeDb) return;
 				// Confirm against the database name — that's what gets emptied.
@@ -809,6 +874,7 @@
 									connectionId={activeConnection.id}
 									{onContextMenu}
 									{onScopeMenu}
+									createDbNonce={createDbNonce}
 									onBackToConnections={backToConnections}
 									onCreateTable={(db) => { createTableDb = db; createTableOpen = true; }}
 									onCreateView={(db) => {
@@ -1252,6 +1318,7 @@
 		items={menuItems}
 		x={menuX}
 		y={menuY}
+		alignRight={menuAlignRight}
 		onSelect={onMenuSelect}
 		onClose={() => (menuOpen = false)}
 	/>
