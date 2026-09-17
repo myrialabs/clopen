@@ -70,6 +70,22 @@ export const pushSubscriptionQueries = {
 	},
 
 	/**
+	 * Drop every device this user registered.
+	 *
+	 * `pushNotifications` is one per-user setting shared by all of their
+	 * devices, so turning it off anywhere has to stop the pushes everywhere —
+	 * deleting only the calling device's endpoint would leave a phone
+	 * receiving notifications the settings screen says are off.
+	 */
+	deleteAllByUser(userId: string): number {
+		const db = getDatabase();
+		const result = db
+			.prepare('DELETE FROM push_subscriptions WHERE user_id = ?')
+			.run(userId) as { changes: number | bigint };
+		return Number(result.changes ?? 0);
+	},
+
+	/**
 	 * Delete regardless of owner. Used when a push service reports the
 	 * endpoint expired (404/410) — the stored user may be stale too.
 	 */

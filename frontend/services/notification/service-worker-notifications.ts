@@ -13,10 +13,38 @@
  */
 
 import { debug } from '$shared/utils/logger';
+import { notificationIcon } from './notification-icon';
 
-/** Pure UA check, kept separate so it can be pinned by tests. */
-export function isMobileUserAgent(ua: string): boolean {
-	return /android|iphone|ipad|ipod|windows phone|mobile/i.test(ua);
+/**
+ * Where the page leaves a rasterised notification icon for the worker.
+ *
+ * `static/sw.js` cannot rasterise `/favicon.svg` itself — it has no DOM and
+ * Chromium's notification pipeline has no SVG decoder, so a server-sent push
+ * would show with no icon at all on Android, which is the platform this
+ * whole path exists for (see `notification-icon.ts` for the desktop half of
+ * the same bug). The page therefore writes the PNG data URL into the Cache
+ * API, which survives the worker being torn down between push events, and
+ * the worker reads the text back out. Nothing else is cached, and no `fetch`
+ * handler is involved: the cached body is a data URL string, used directly
+ * as the notification's `icon`.
+ */
+const ICON_CACHE = 'clopen-notification-icon';
+const ICON_CACHE_KEY = '/__clopen/notification-icon';
+
+/**
+ * Pure UA check, kept separate so it can be pinned by tests.
+ *
+ * `maxTouchPoints` is not decoration: iPadOS 13+ Safari requests desktop
+ * sites by default and sends a UA byte-identical to macOS Safari — no
+ * `iPad`, no `Mobile`. A UA-only check therefore routes every modern iPad to
+ * the desktop path, where `new Notification()` does not exist on iOS/iPadOS
+ * at all, so the notification is silently lost. Touch points separate the
+ * two: a Mac reports 0, an iPad reports 5. Windows touch laptops are not
+ * caught by this branch because it is gated on a Macintosh UA.
+ */
+export function isMobileUserAgent(ua: string, maxTouchPoints = 0): boolean {
+	if (/android|iphone|ipad|ipod|windows phone|mobile/i.test(ua)) return true;
+	return /macintosh/i.test(ua) && maxTouchPoints > 1;
 }
 
 /**
@@ -26,12 +54,25 @@ export function isMobileUserAgent(ua: string): boolean {
  */
 export function isMobileDevice(): boolean {
 	if (typeof window === 'undefined' || typeof window.navigator === 'undefined') return false;
-	return isMobileUserAgent(window.navigator.userAgent || '');
+	return isMobileUserAgent(window.navigator.userAgent || '', window.navigator.maxTouchPoints ?? 0);
 }
 
 export function isServiceWorkerSupported(): boolean {
 	if (typeof window === 'undefined') return false;
 	return 'serviceWorker' in window.navigator;
+}
+
+/**
+ * Service workers, and therefore Web Push, only exist in a secure context —
+ * HTTPS or `localhost`. Clopen is routinely opened over plain HTTP on a LAN
+ * address (`http://192.168.1.5:9141`), where `navigator.serviceWorker` is
+ * simply absent. That is an origin problem, not a browser problem, so it is
+ * reported separately: the fix is to reach the app over HTTPS (the
+ * Cloudflare tunnel from Remote Access does this), not to switch browsers.
+ */
+export function isPushSecureContext(): boolean {
+	if (typeof window === 'undefined') return false;
+	return window.isSecureContext === true;
 }
 
 let registrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
@@ -63,9 +104,27 @@ export function ensurePushServiceWorker(): Promise<ServiceWorkerRegistration | n
 	return registrationPromise;
 }
 
+/**
+ * Hand the rasterised icon to the worker. Best-effort: on failure the worker
+ * falls back to `/favicon.svg`, which is exactly today's behaviour.
+ */
+async function publishNotificationIconForWorker(): Promise<void> {
+	if (typeof caches === 'undefined') return;
+	try {
+		const icon = await notificationIcon();
+		if (!icon.startsWith('data:')) return;
+		const cache = await caches.open(ICON_CACHE);
+		await cache.put(ICON_CACHE_KEY, new Response(icon, { headers: { 'Content-Type': 'text/plain' } }));
+	} catch (error) {
+		debug.warn('notification', 'Failed to publish the notification icon to the worker:', error);
+	}
+}
+
 /** Register ahead of the first notification; callers do not wait on this. */
 export function warmPushServiceWorker(): void {
-	void ensurePushServiceWorker();
+	void ensurePushServiceWorker().then((registration) => {
+		if (registration) void publishNotificationIconForWorker();
+	});
 }
 
 /**

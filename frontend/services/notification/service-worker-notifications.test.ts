@@ -43,6 +43,44 @@ describe('isMobileUserAgent', () => {
 		).toBe(false);
 	});
 
+	// iPadOS 13+ Safari requests desktop sites by default and sends the macOS
+	// UA verbatim. Matching on the UA alone routes every modern iPad to the
+	// desktop path, where iOS/iPadOS has no `Notification` constructor at all
+	// and the notification is silently lost. Touch points are the only signal
+	// that separates the two devices.
+	test('matches iPadOS Safari sending the desktop macOS user agent', () => {
+		expect(
+			isMobileUserAgent(
+				'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+				5
+			)
+		).toBe(true);
+	});
+
+	test('still does not match a Mac, which reports zero touch points', () => {
+		expect(
+			isMobileUserAgent(
+				'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+				0
+			)
+		).toBe(false);
+	});
+
+	test('does not promote a Windows touchscreen laptop to the mobile path', () => {
+		expect(
+			isMobileUserAgent(
+				'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+				10
+			)
+		).toBe(false);
+	});
+
+	test('matches Firefox on Android', () => {
+		expect(
+			isMobileUserAgent('Mozilla/5.0 (Android 14; Mobile; rv:121.0) Gecko/121.0 Firefox/121.0')
+		).toBe(true);
+	});
+
 	test('does not match Linux desktop Chrome', () => {
 		expect(
 			isMobileUserAgent(

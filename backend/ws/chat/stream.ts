@@ -289,28 +289,28 @@ export const streamHandler = createRouter()
 				workingRoot
 			});
 
-		// The WS user id is server-trusted (unlike the client-supplied sender)
-		// and routes background Web Push to the requester's devices. Missing
-		// context must not break the stream — push is best-effort.
-		let requestedByUserId: string | undefined;
-		try {
-			requestedByUserId = ws.getUserId(conn);
-		} catch {
-			requestedByUserId = undefined;
-		}
+			// The WS user id is server-trusted (unlike the client-supplied sender)
+			// and routes background Web Push to the requester's devices. Missing
+			// context must not break the stream — push is best-effort.
+			let requestedByUserId: string | undefined;
+			try {
+				requestedByUserId = ws.getUserId(conn);
+			} catch {
+				requestedByUserId = undefined;
+			}
 
-		// Start background stream
-		const streamId = await streamManager.startStream({
-			projectPath: workingRoot,
-			projectId,
-			prompt: data.prompt,
-			chatSessionId: data.chatSessionId,
-			engine: data.engine,
-			sender: data.sender,
-			profileId: data.profileId,
-			reasoningEffort: data.reasoningEffort,
-			requestedByUserId
-		});
+			// Start background stream
+			const streamId = await streamManager.startStream({
+				projectPath: workingRoot,
+				projectId,
+				prompt: data.prompt,
+				chatSessionId: data.chatSessionId,
+				engine: data.engine,
+				sender: data.sender,
+				profileId: data.profileId,
+				reasoningEffort: data.reasoningEffort,
+				requestedByUserId
+			});
 
 			debug.log('chat', 'Stream started with ID:', streamId);
 

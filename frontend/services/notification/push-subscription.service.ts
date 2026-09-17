@@ -6,9 +6,11 @@
  * PushSubscription with the server, so chat completions fan out through the
  * push service and arrive even after Chrome is closed.
  *
- * Presence in the server table IS the opt-in: toggling off unsubscribes, and
- * only subscribed devices ever receive server pushes — no per-user setting
- * lookup needed on the hot path.
+ * Presence in the server table IS the opt-in: only subscribed devices ever
+ * receive server pushes, so the send path needs no per-user setting lookup.
+ * The toggle keeps that true in both directions — switching it off purges
+ * every device this user registered, not just the one in front of them,
+ * because `pushNotifications` is one setting shared across their devices.
  */
 
 import { authStore } from '$frontend/stores/features/auth.svelte';
@@ -17,6 +19,7 @@ import { debug } from '$shared/utils/logger';
 import {
 	ensurePushServiceWorker,
 	isMobileDevice,
+	isPushSecureContext,
 	isServiceWorkerSupported
 } from './service-worker-notifications';
 
@@ -25,16 +28,26 @@ export type ServerTestResult = 'shown' | 'unconfirmed' | 'no-subscription' | 'fa
 
 /**
  * What the settings UI reports under the Test Push button.
+ * - `insecure-context`: the app was opened over plain HTTP (a LAN address),
+ *   where no browser exposes service workers. Fixed by the origin, not the
+ *   browser — hence its own state rather than `unsupported`.
  * - `unsupported`: not a mobile browser, or no service worker / push manager.
  * - `permission-needed`: notifications not granted yet.
  * - `active`: this device holds a push subscription (background works).
  * - `inactive`: permission granted but no subscription (toggle it to register).
  */
-export type DevicePushStatus = 'unsupported' | 'permission-needed' | 'active' | 'inactive';
+export type DevicePushStatus =
+	| 'insecure-context'
+	| 'unsupported'
+	| 'permission-needed'
+	| 'active'
+	| 'inactive';
 
 /** Local device state only — never implies the server still holds the row. */
 export async function getDevicePushStatus(): Promise<DevicePushStatus> {
-	if (!isMobileDevice() || !isServiceWorkerSupported()) return 'unsupported';
+	if (!isMobileDevice()) return 'unsupported';
+	if (!isPushSecureContext()) return 'insecure-context';
+	if (!isServiceWorkerSupported()) return 'unsupported';
 	if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
 		return 'permission-needed';
 	}
@@ -73,7 +86,9 @@ function urlBase64ToUint8Array(base64: string): Uint8Array {
  * Idempotent: an existing subscription is re-synced, never duplicated.
  */
 export async function ensurePushSubscription(): Promise<SubscriptionSyncResult> {
-	if (!isMobileDevice() || !isServiceWorkerSupported()) return 'unavailable';
+	if (!isMobileDevice() || !isPushSecureContext() || !isServiceWorkerSupported()) {
+		return 'unavailable';
+	}
 	if (typeof Notification === 'undefined' || Notification.permission !== 'granted') {
 		return 'failed';
 	}
@@ -122,25 +137,35 @@ export async function ensurePushSubscription(): Promise<SubscriptionSyncResult> 
 }
 
 /**
- * Remove this device's subscription everywhere. Best-effort: a failure here
- * must never trap the toggle in the on position.
+ * Turn background push off for this user, everywhere.
+ *
+ * `pushNotifications` is a single per-user setting synced across devices, so
+ * switching it off on a laptop has to silence the phone too — otherwise the
+ * phone keeps buzzing while every settings screen reads "off". The server
+ * purge therefore runs unconditionally, including from desktops that never
+ * registered a subscription of their own; the local `unsubscribe()` below is
+ * the extra step only a registered device can take.
+ *
+ * Best-effort throughout: a failure here must never trap the toggle in the
+ * on position.
  */
 export async function removePushSubscription(): Promise<void> {
+	const headers = authJsonHeaders();
+	if (headers) {
+		await fetch('/api/push/subscriptions', {
+			method: 'DELETE',
+			headers,
+			body: JSON.stringify({ all: true })
+		}).catch((error) => {
+			debug.warn('notification', 'Failed to purge push subscriptions:', error);
+		});
+	}
+
 	try {
 		if (!isServiceWorkerSupported()) return;
 		const registration = await ensurePushServiceWorker();
 		const subscription = await registration?.pushManager.getSubscription();
-		if (!subscription) return;
-
-		const headers = authJsonHeaders();
-		if (headers) {
-			await fetch('/api/push/subscriptions', {
-				method: 'DELETE',
-				headers,
-				body: JSON.stringify({ endpoint: subscription.endpoint })
-			}).catch(() => {});
-		}
-		await subscription.unsubscribe().catch(() => false);
+		await subscription?.unsubscribe().catch(() => false);
 	} catch (error) {
 		debug.warn('notification', 'Push unsubscription failed:', error);
 	}

@@ -92,21 +92,29 @@ export const pushRoute = new Elysia()
 			return unauthorized(error);
 		}
 
-		let body: { endpoint?: unknown };
+		let body: { endpoint?: unknown; all?: unknown };
 		try {
 			body = (await request.json()) as typeof body;
 		} catch {
-			return new Response('Invalid JSON body', { status: 400 });
+			// A device that never registered has no endpoint to send; an empty
+			// body is a valid "purge whatever I have" request.
+			body = {};
 		}
 
+		// `all` is what the settings toggle sends. The push setting is one
+		// per-user value, so switching it off on a laptop that holds no
+		// subscription still has to silence the phone that does.
+		const removeAll = body.all === true;
 		const endpoint = typeof body.endpoint === 'string' ? body.endpoint : '';
-		if (!endpoint) {
+		if (!removeAll && !endpoint) {
 			return new Response('Missing endpoint', { status: 400 });
 		}
 
 		try {
-			pushSubscriptionQueries.deleteByEndpoint(identity.userId, endpoint);
-			return Response.json({ removed: true });
+			const removed = removeAll
+				? pushSubscriptionQueries.deleteAllByUser(identity.userId)
+				: Number(pushSubscriptionQueries.deleteByEndpoint(identity.userId, endpoint));
+			return Response.json({ removed });
 		} catch (error) {
 			debug.error('notification', 'Failed to remove subscription:', error);
 			return new Response('Failed to remove subscription', { status: 500 });

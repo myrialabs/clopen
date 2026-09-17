@@ -28,16 +28,38 @@ export interface PushPayload {
 	url?: string;
 }
 
-/** How long a push service holds a notification for an offline device. */
-const PUSH_TTL_SECONDS = 24 * 3600;
+/**
+ * How long a push service holds a notification for an offline device.
+ *
+ * One hour, not a day: every payload here is "your chat just finished" or
+ * "something is waiting for input". Delivered the next morning that is not a
+ * notification, it is a puzzle — the turn is long over and the state it
+ * describes no longer exists. A phone that stays offline past the hour finds
+ * the result in the app instead.
+ */
+const PUSH_TTL_SECONDS = 3600;
+
+/**
+ * Push services cap a record at 4096 bytes, and that budget covers the
+ * ciphertext, not the JSON. Project names are user-supplied and unbounded, so
+ * a long one would otherwise turn a chat completion into a 413 from the push
+ * service. Clamping here keeps the failure impossible rather than rare.
+ */
+const MAX_TITLE_CHARS = 120;
+const MAX_BODY_CHARS = 400;
+const MAX_URL_CHARS = 512;
+
+function clamp(value: string, max: number): string {
+	return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
 
 function encodePayload(payload: PushPayload): Uint8Array {
 	return new TextEncoder().encode(
 		JSON.stringify({
-			title: payload.title,
-			body: payload.body,
+			title: clamp(payload.title, MAX_TITLE_CHARS),
+			body: clamp(payload.body, MAX_BODY_CHARS),
 			tag: payload.tag,
-			url: payload.url ?? '/'
+			url: clamp(payload.url ?? '/', MAX_URL_CHARS)
 		})
 	);
 }
@@ -65,7 +87,11 @@ async function postPush(
 			encodePayload(payload)
 		));
 	} catch (error) {
-		debug.warn('notification', `Dropping subscription with undecryptable keys for user ${subscription.user_id}`);
+		debug.warn(
+			'notification',
+			`Dropping subscription with undecryptable keys for user ${subscription.user_id}:`,
+			error
+		);
 		return 'stale';
 	}
 

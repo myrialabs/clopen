@@ -12,6 +12,7 @@
 	} from '$frontend/services/notification/push-subscription.service';
 	import {
 		isMobileDevice,
+		isPushSecureContext,
 		isServiceWorkerSupported
 	} from '$frontend/services/notification/service-worker-notifications';
 	import { uniqueNotificationTag } from '$frontend/services/notification/native-notification';
@@ -255,6 +256,11 @@
 	 */
 	function osNotificationHint(): string {
 		const ua = typeof navigator !== 'undefined' ? navigator.userAgent : '';
+		// Checked before the per-OS hints: on a plain-HTTP LAN address no OS
+		// setting can help, because the browser never exposes push at all.
+		if (isMobileDevice() && !isPushSecureContext()) {
+			return 'Background push needs a secure origin (HTTPS or localhost). Open Clopen through its HTTPS address — the Remote Access tunnel provides one — and try again.';
+		}
 		if (/android/i.test(ua)) {
 			return 'On Android, allow notifications for this site in Chrome > Site settings, enable system notifications for Chrome, and turn off Do Not Disturb.';
 		}
@@ -344,7 +350,7 @@
 				// A failed registration must never take away what already
 				// worked: the toggle still turns on for foreground (tab-open)
 				// notifications, with a warning that background is off.
-				if (isMobileDevice() && isServiceWorkerSupported()) {
+				if (isMobileDevice() && isPushSecureContext() && isServiceWorkerSupported()) {
 					const sync = await ensurePushSubscription();
 					if (sync !== 'synced') {
 						addNotification({
@@ -452,7 +458,7 @@
 			// the push service exactly like a chat completion does, so a pass
 			// means notifications arrive even after Chrome is closed.
 			// Desktop keeps the local test untouched.
-			if (isMobileDevice() && isServiceWorkerSupported()) {
+			if (isMobileDevice() && isPushSecureContext() && isServiceWorkerSupported()) {
 				await testPushViaServer();
 				return;
 			}
@@ -790,6 +796,10 @@
 						{:else if devicePushStatus === 'permission-needed'}
 							<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
 							Notification permission not granted yet.
+						{:else if devicePushStatus === 'insecure-context'}
+							<span class="font-semibold text-amber-600 dark:text-amber-400">●</span>
+							Background push needs an HTTPS address — this page was opened over plain HTTP, where
+							browsers disable it. Reach Clopen through its Remote Access tunnel URL.
 						{:else}
 							<span class="font-semibold text-slate-400">●</span>
 							Background push is not supported in this browser.

@@ -14,8 +14,10 @@
 
 import { soundNotification, pushNotification } from '$frontend/services/notification';
 import { warmNotificationIcon } from '$frontend/services/notification/notification-icon';
-import { warmPushServiceWorker } from '$frontend/services/notification/service-worker-notifications';
-import { isMobileDevice } from '$frontend/services/notification/service-worker-notifications';
+import {
+  isMobileDevice,
+  warmPushServiceWorker
+} from '$frontend/services/notification/service-worker-notifications';
 import { ensurePushSubscription } from '$frontend/services/notification/push-subscription.service';
 import { settings } from '$frontend/stores/features/settings.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
