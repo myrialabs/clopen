@@ -116,6 +116,12 @@ export const interactPreviewHandler = createRouter()
 			// Mark tab activity to prevent automatic cleanup
 			previewService.markActiveTabActivity();
 
+			// A tab nobody was watching is frozen: its task queues are suspended,
+			// so an input event dispatched now would sit unprocessed until the
+			// page happened to be woken by something else. Awaited rather than
+			// nudged — the click has to land on a running page, not the next one.
+			await previewService.ensureTabAwake(tabId);
+
 			// Execute the interaction based on type with navigation-safe error handling
 			try {
 				switch (action.type) {

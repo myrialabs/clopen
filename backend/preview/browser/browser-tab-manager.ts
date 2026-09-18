@@ -41,20 +41,18 @@ export type TabAilment = 'browser-gone' | 'session-gone' | 'page-gone';
  *
  * ARCHITECTURE:
  * - Tabs are the primary unit (no separate "session" concept)
- * - Each tab has its own isolated browser context + page from the pool
- * - 1 shared browser + isolated contexts = ~20 MB per tab
+ * - Each tab is a page, in a window of its own, in the workspace's profile
  * - Active tab tracking for operations
  * - Event-driven for frontend sync
  * - **PROJECT ISOLATION**: Sessions are prefixed with projectId
  *
  * ISOLATION GUARANTEE:
- * Each tab gets its own BrowserContext which provides:
- * - Separate cookies
- * - Separate localStorage/sessionStorage
- * - Separate cache
- * - Separate service workers
- * - No data leakage between tabs
- * - No data leakage between projects (via projectId-prefixed sessionIds)
+ * The boundary is the workspace, not the tab. Every tab of one workspace
+ * shares a Chrome profile — the same cookies, storage, cache and service
+ * workers — which is what makes two previews of one app behave like two tabs
+ * of one browser rather than two private windows, and what keeps a login
+ * across a restart. Between workspaces nothing is shared: the profile is
+ * keyed by the workspace scope, so no project can see another's data.
  */
 export class BrowserTabManager extends EventEmitter {
 	private tabs = new Map<string, BrowserTab>();
@@ -87,19 +85,25 @@ export class BrowserTabManager extends EventEmitter {
 	 */
 	private tabSetupHooks = new Map<string, (page: Page, tabId: string) => Promise<void>>();
 
+	/** Popup watchers, one per context the manager has seen. */
+	private contextWatchers = new Map<BrowserContext, (target: Target) => void>();
+
 	/**
-	 * The listeners a tab holds on objects that outlive its page — the shared
-	 * browser and its own context. A rebuild has to take these off before it
-	 * fits new ones: left attached, the old popup watcher would see the tab's
-	 * replacement page as a popup and close it on sight.
+	 * How many pages we are opening right now. Read by the popup watcher, which
+	 * must not mistake one of them for a `window.open`.
+	 */
+	private adoptingPages = 0;
+
+	/**
+	 * The listeners a tab holds on the shared browser, which outlives its page.
+	 * A rebuild takes them off before fitting new ones, so a dead page's
+	 * handlers cannot ask for a second recovery of a tab already being rebuilt.
 	 */
 	private tabListeners = new Map<
 		string,
 		{
 			browser: Browser;
 			onDisconnected: () => void;
-			context: BrowserContext;
-			onTargetCreated: (target: Target) => void;
 		}
 	>();
 
@@ -153,14 +157,17 @@ export class BrowserTabManager extends EventEmitter {
 		let page: Page;
 
 		try {
-			// Create project-scoped sessionId for isolation
-			// Format: "projectId:tabId" ensures complete isolation between projects
+			// Project-scoped sessionId. The prefix is also the profile key, so
+			// isolation runs between workspaces while tabs inside one share a
+			// profile the way a browser's tabs do.
 			const sessionId = `${this.projectId}:${tabId}`;
 
-			// Create isolated context via puppeteer-cluster
-			// This provides full isolation: cookies, localStorage, sessionStorage, cache
-			const pooledSession = await browserPool.createSession(sessionId);
-			browser = await browserPool.getBrowser();
+			// One profile per workspace, shared by its tabs: same cookies, same
+			// storage, one HTTP cache — what two tabs of a browser share, and
+			// kept on disk so it survives a restart. Isolation still holds
+			// where it matters, between workspaces.
+			const pooledSession = await this.adopt(() => browserPool.createSession(sessionId, this.projectId));
+			browser = pooledSession.browser;
 			context = pooledSession.context;
 			page = pooledSession.page;
 
@@ -170,7 +177,7 @@ export class BrowserTabManager extends EventEmitter {
 			throw poolError;
 		}
 
-		debug.log('preview', `✅ Isolated context created for tab: ${tabId}`);
+		debug.log('preview', `✅ Page ready for tab: ${tabId}`);
 
 		// Setup page (viewport, headers, etc.)
 		debug.log('preview', `⚙️ Setting up page...`);
@@ -367,7 +374,7 @@ export class BrowserTabManager extends EventEmitter {
 			// Wait a moment for streaming loop to detect the flags and stop
 			await new Promise(resolve => setTimeout(resolve, 500));
 
-			// Clean up the isolated context
+			// Close the page. The workspace profile is deliberately left alone.
 			await this.cleanupContext(tab);
 
 			// Remove from map
@@ -760,10 +767,9 @@ export class BrowserTabManager extends EventEmitter {
 
 			// Keeps the context — and so the cookies and storage the tab has
 			// built up — whenever the context itself survived.
-			pooled = await browserPool.renewSessionPage(sessionId);
-			const browser = await browserPool.getBrowser();
+			pooled = await this.adopt(() => browserPool.renewSessionPage(sessionId, this.projectId));
 
-			tab.browser = browser;
+			tab.browser = pooled.browser;
 			tab.context = pooled.context;
 			tab.page = pooled.page;
 			tab.isStreaming = false;
@@ -782,7 +788,7 @@ export class BrowserTabManager extends EventEmitter {
 				await setupHook(pooled.page, tabId);
 			}
 
-			this.setupBrowserHandlers(tabId, browser, pooled.context, pooled.page);
+			this.setupBrowserHandlers(tabId, pooled.browser, pooled.context, pooled.page);
 
 			// `url` over `currentUrl`: the navigation tracker keeps the former
 			// current through redirects and SPA pushState, while the latter only
@@ -813,14 +819,21 @@ export class BrowserTabManager extends EventEmitter {
 		}
 	}
 
-	/** Take a tab's browser- and context-level listeners back off. */
+	/** Take a tab's browser-level listeners back off. */
 	private detachTabListeners(tabId: string): void {
 		const entry = this.tabListeners.get(tabId);
 		if (!entry) return;
 
 		entry.browser.off('disconnected', entry.onDisconnected);
-		entry.context.off('targetcreated', entry.onTargetCreated);
 		this.tabListeners.delete(tabId);
+	}
+
+	/** Stop watching every context this manager attached a popup watcher to. */
+	private detachContextWatchers(): void {
+		for (const [context, handler] of this.contextWatchers) {
+			context.off('targetcreated', handler);
+		}
+		this.contextWatchers.clear();
 	}
 
 	/**
@@ -1204,40 +1217,83 @@ export class BrowserTabManager extends EventEmitter {
 			this.requestRecovery(tabId, 'page-gone');
 		});
 
-		// Handle popup/new window events within this context
-		const onTargetCreated = async (target: Target) => {
-			if (target.type() === 'page') {
-				const newPage = await target.page();
-				if (newPage && newPage !== page) {
-					const popupUrl = newPage.url();
-
-					// Emit event for frontend to handle
-					this.emit('new-window', {
-						tabId,
-						url: popupUrl,
-						timestamp: Date.now()
-					});
-
-					// Close the popup to prevent resource leak
-					try {
-						await newPage.close();
-					} catch (error) {
-						debug.warn('preview', 'Failed to close popup:', error);
-					}
-				}
-			}
-		};
-
-		// Registered together so a rebuild can lift both at once, before the
-		// context is asked for the page that replaces this one.
 		this.detachTabListeners(tabId);
 		browser.on('disconnected', onDisconnected);
-		context.on('targetcreated', onTargetCreated);
-		this.tabListeners.set(tabId, { browser, onDisconnected, context, onTargetCreated });
+		this.tabListeners.set(tabId, { browser, onDisconnected });
+
+		// Popups are watched once per context, not once per tab. With a context
+		// per tab the two were the same thing; with a context shared by the
+		// workspace, a per-tab watcher would see every *other* tab's page as a
+		// popup and close it on sight.
+		this.watchContext(context);
 	}
 
 	/**
-	 * Clean up the isolated context for a tab
+	 * Watch a context for pages that appear without us opening them.
+	 *
+	 * Told apart by their opener: a page we create programmatically has none,
+	 * while a `window.open` popup is owned by the page that called it — which
+	 * is also how the popup gets attributed to the right tab. A popup opened
+	 * with `noopener` has neither, so it falls back to the tab on screen,
+	 * unless we happen to be opening a page ourselves at that moment.
+	 */
+	private watchContext(context: BrowserContext): void {
+		if (this.contextWatchers.has(context)) return;
+
+		const onTargetCreated = async (target: Target) => {
+			if (target.type() !== 'page') return;
+
+			const opener = target.opener();
+			if (!opener && this.adoptingPages > 0) return;
+
+			const newPage = await target.page().catch(() => null);
+			if (!newPage) return;
+
+			// Never a popup: it is a tab of ours that reached the context
+			// before its bookkeeping did.
+			for (const tab of this.tabs.values()) {
+				if (tab.page === newPage) return;
+			}
+
+			const openerTabId = opener
+				? (Array.from(this.tabs.values()).find((tab) => tab.page.target() === opener)?.id ?? null)
+				: null;
+
+			this.emit('new-window', {
+				tabId: openerTabId ?? this.activeTabId ?? '',
+				url: newPage.url(),
+				timestamp: Date.now()
+			});
+
+			try {
+				await newPage.close();
+			} catch (error) {
+				debug.warn('preview', 'Failed to close popup:', error);
+			}
+		};
+
+		context.on('targetcreated', onTargetCreated);
+		this.contextWatchers.set(context, onTargetCreated);
+	}
+
+	/**
+	 * Run a page-opening call with the popup watcher told to expect it.
+	 *
+	 * `targetcreated` fires while the call is still in flight, before the tab
+	 * that owns the page exists — so without this the watcher would close the
+	 * very page it was waiting for.
+	 */
+	private async adopt<T>(open: () => Promise<T>): Promise<T> {
+		this.adoptingPages += 1;
+		try {
+			return await open();
+		} finally {
+			this.adoptingPages -= 1;
+		}
+	}
+
+	/**
+	 * Close a tab's page, leaving the workspace profile untouched
 	 */
 	private async cleanupContext(tab: BrowserTab) {
 		try {
@@ -1442,6 +1498,7 @@ export class BrowserTabManager extends EventEmitter {
 
 		// Force clear tabs map
 		for (const tabId of this.tabs.keys()) this.detachTabListeners(tabId);
+		this.detachContextWatchers();
 		this.tabs.clear();
 		this.activeTabId = null;
 		this.tabActivity.clear();
@@ -1450,12 +1507,12 @@ export class BrowserTabManager extends EventEmitter {
 
 		this.shuttingDown = wasShuttingDown;
 
-		// Deliberately NOT browserPool.cleanup(): the pool holds one Chrome and
-		// every project's contexts. Closing it from one workspace's teardown —
-		// deleting a worktree, an admin "clean up all" — took every other
-		// project's preview tabs down with it. Our own sessions are already gone
-		// with the tabs above; the pool closes its browser when the last session
-		// goes, and on process shutdown.
+		// Deliberately NOT browserPool.cleanup(): that reaches every workspace's
+		// Chrome, and calling it from one workspace's teardown — deleting a
+		// worktree, an admin "clean up all" — took every other project's
+		// preview tabs down with it. Our own sessions are already gone with the
+		// tabs above; the pool closes this workspace's Chrome once its last
+		// session goes, and every Chrome on process shutdown.
 
 		debug.log('preview', '✅ All tabs cleaned up');
 	}

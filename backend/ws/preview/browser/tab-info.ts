@@ -27,7 +27,8 @@ export const tabInfoPreviewHandler = createRouter()
 			rotation: t.String(),
 			isActive: t.Boolean(),
 			canGoBack: t.Boolean(),
-			canGoForward: t.Boolean()
+			canGoForward: t.Boolean(),
+			isSleeping: t.Optional(t.Boolean())
 		})
 	}, async ({ data, conn }) => {
 		const { tabId } = data;
@@ -63,6 +64,12 @@ export const tabInfoPreviewHandler = createRouter()
 				isActive: t.Boolean(),
 				canGoBack: t.Boolean(),
 				canGoForward: t.Boolean(),
+				/**
+				 * Whether the page is frozen for want of an audience. Recovered
+				 * with everything else so a reload does not paint a suspended
+				 * page as a running one.
+				 */
+				isSleeping: t.Optional(t.Boolean()),
 				isMcpControlled: t.Boolean(),
 				/** Whether an agent is acting on this tab right now. */
 				isMcpFocused: t.Boolean(),
@@ -119,6 +126,7 @@ export const tabInfoPreviewHandler = createRouter()
 				isActive: tab.isActive,
 				canGoBack: tab.canGoBack,
 				canGoForward: tab.canGoForward,
+				isSleeping: tab.isSleeping,
 				isMcpControlled: browserMcpControl.isTabControlled(tab.id, projectId),
 				isMcpFocused: browserMcpControl.isTabFocused(tab.id),
 				mcpActivity: browserMcpControl.getActivity(tab.id) ?? undefined,

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import type { Page, ConsoleMessage as PuppeteerConsoleMessage, HTTPResponse } from 'puppeteer';
+import type { JSHandle, Page, ConsoleMessage as PuppeteerConsoleMessage, HTTPResponse } from 'puppeteer';
 import type { BrowserConsoleMessage, BrowserConsoleValue, BrowserTab } from './types';
 
 import { debug } from '$shared/utils/logger';
@@ -7,6 +7,87 @@ import { debug } from '$shared/utils/logger';
 /** Ring-buffer bounds for a tab's console history. */
 const MAX_LOGS = 1000;
 const TRIM_TO = 500;
+
+/**
+ * Per-tab ceiling on page-originated console traffic.
+ *
+ * Every message costs a structured payload to each viewer in the project, and
+ * a dev build in a re-render loop can produce thousands a second. Past the
+ * ceiling the messages are counted rather than carried, and the count is
+ * reported — a panel that says "4,812 dropped" is honest, whereas one that
+ * silently keeps up is the one that makes the whole workspace stutter.
+ */
+const RATE_WINDOW_MS = 1000;
+const MAX_MESSAGES_PER_WINDOW = 60;
+
+interface ConsoleBudget {
+	windowStart: number;
+	used: number;
+	dropped: number;
+}
+
+/** What the manager needs to know about the world outside it. */
+export interface ConsoleManagerDeps {
+	/**
+	 * Whether anyone is actually looking at this tab.
+	 *
+	 * Console capture used to be unconditional: every tab, watched or not,
+	 * paid a CDP round-trip per logged argument and a broadcast per message,
+	 * for a panel that in most cases was not even open. Unwatched tabs now
+	 * keep a text-only history — enough to read back when the panel opens,
+	 * with none of the per-message cost.
+	 */
+	isWatched(sessionId: string): boolean;
+}
+
+function shorten(text: string, limit = 200): string {
+	return text.length > limit ? `${text.slice(0, limit)}…` : text;
+}
+
+/**
+ * Read an argument's value straight off the CDP payload Chrome already sent.
+ *
+ * Primitives — which is what the overwhelming majority of logs are made of —
+ * arrive complete with the console event, so evaluating in the page to learn
+ * what `"hello"` is costs a round-trip for something already in hand. Returns
+ * null for anything that genuinely needs the page to describe it.
+ */
+function valueFromRemoteObject(handle: JSHandle): BrowserConsoleValue | null {
+	const remote = handle.remoteObject();
+
+	switch (remote.type) {
+		case 'string':
+			return { type: 'string', preview: shorten(String(remote.value), 1000) };
+		case 'number':
+			return { type: 'number', preview: remote.unserializableValue ?? String(remote.value) };
+		case 'boolean':
+			return { type: 'boolean', preview: String(remote.value) };
+		case 'undefined':
+			return { type: 'undefined', preview: 'undefined' };
+		case 'bigint':
+			return { type: 'bigint', preview: remote.unserializableValue ?? `${String(remote.value)}n` };
+		case 'symbol':
+			return { type: 'symbol', preview: remote.description ?? 'Symbol()' };
+		case 'function': {
+			// `description` is the function's source; its signature is the part
+			// before the body, which is what DevTools shows too.
+			const signature = (remote.description ?? '').split('{')[0].trim().replace(/^function\s*/, '');
+			return { type: 'function', preview: `ƒ ${shorten(signature || '()', 80)}` };
+		}
+		case 'object':
+			if (remote.subtype === 'null') return { type: 'null', preview: 'null' };
+			return null;
+		default:
+			return null;
+	}
+}
+
+/** The shape of an object, without asking the page to walk it. */
+function outlineFromRemoteObject(handle: JSHandle): BrowserConsoleValue {
+	const remote = handle.remoteObject();
+	const label = remote.className || remote.subtype || 'Object';
+	return { type: 'object', preview: remote.description ? shorten(remote.description) : label };
+}
 
 /**
  * Flatten a page value into something renderable.
@@ -160,8 +241,87 @@ function normalizeConsoleType(type: string): BrowserConsoleMessage['type'] {
 }
 
 export class BrowserConsoleManager extends EventEmitter {
-	constructor() {
+	private deps: ConsoleManagerDeps;
+	private budgets = new Map<string, ConsoleBudget>();
+
+	constructor(deps: ConsoleManagerDeps) {
 		super();
+		this.deps = deps;
+	}
+
+	private isWatched(sessionId: string): boolean {
+		try {
+			return this.deps.isWatched(sessionId);
+		} catch {
+			return true;
+		}
+	}
+
+	/**
+	 * Whether this tab may spend another message this second.
+	 *
+	 * Rolling the window is also where a burst gets reported, so the drop is
+	 * visible in the panel at the point it happened rather than inferred from
+	 * a gap in the log.
+	 */
+	private admit(session: BrowserTab): boolean {
+		const now = Date.now();
+		let budget = this.budgets.get(session.id);
+
+		if (!budget || now - budget.windowStart >= RATE_WINDOW_MS) {
+			const dropped = budget?.dropped ?? 0;
+			budget = { windowStart: now, used: 0, dropped: 0 };
+			this.budgets.set(session.id, budget);
+
+			if (dropped > 0) {
+				budget.used += 1;
+				this.record(session, {
+					id: BrowserConsoleManager.makeId('console'),
+					type: 'warn',
+					text: `${dropped} more console message${dropped === 1 ? '' : 's'} dropped (rate limit)`,
+					timestamp: now
+				});
+			}
+		}
+
+		if (budget.used >= MAX_MESSAGES_PER_WINDOW) {
+			budget.dropped += 1;
+			return false;
+		}
+
+		budget.used += 1;
+		return true;
+	}
+
+	/**
+	 * Turn a console call's arguments into renderable values.
+	 *
+	 * Primitives are read off the event itself. Objects need the page to walk
+	 * them, which is a round-trip per argument — worth paying while someone is
+	 * watching, and not worth paying at all for a tab in the background, which
+	 * gets the outline Chrome already sent instead.
+	 */
+	private async collectValues(
+		consoleMessage: PuppeteerConsoleMessage,
+		watched: boolean
+	): Promise<BrowserConsoleValue[]> {
+		const args = consoleMessage.args();
+		if (args.length === 0) return [];
+
+		// Still one Promise.all: the arguments that do need the page are walked
+		// concurrently, as they always were. What changed is how few of them
+		// reach that path at all.
+		return Promise.all(
+			args.map((arg) => {
+				const cheap = valueFromRemoteObject(arg);
+				if (cheap) return cheap;
+				if (!watched) return outlineFromRemoteObject(arg);
+
+				return arg
+					.evaluate(serializeConsoleValue as never)
+					.catch(() => ({ type: 'object', preview: '[unserializable]' }) as BrowserConsoleValue);
+			})
+		);
 	}
 
 	/**
@@ -169,7 +329,12 @@ export class BrowserConsoleManager extends EventEmitter {
 	 * a counter the way DevTools does — a page logging inside a rAF loop would
 	 * otherwise flood the panel and evict everything useful.
 	 */
-	private record(session: BrowserTab, message: BrowserConsoleMessage): void {
+	private record(session: BrowserTab, message: BrowserConsoleMessage, force = false): void {
+		// The buffer is always kept — it is what the panel reads back when it
+		// opens. Only the live broadcast is conditional: pushing a message to
+		// every viewer in the project for a tab none of them is looking at is
+		// work that ends in nothing being displayed.
+		const publish = force || this.isWatched(session.id);
 		const previous = session.consoleLogs[session.consoleLogs.length - 1];
 
 		if (
@@ -181,7 +346,7 @@ export class BrowserConsoleManager extends EventEmitter {
 		) {
 			previous.count = (previous.count ?? 1) + 1;
 			previous.timestamp = message.timestamp;
-			this.emit('console-message', { sessionId: session.id, message: previous });
+			if (publish) this.emit('console-message', { sessionId: session.id, message: previous });
 			return;
 		}
 
@@ -190,7 +355,7 @@ export class BrowserConsoleManager extends EventEmitter {
 			session.consoleLogs = session.consoleLogs.slice(-TRIM_TO);
 		}
 
-		this.emit('console-message', { sessionId: session.id, message });
+		if (publish) this.emit('console-message', { sessionId: session.id, message });
 	}
 
 	private static makeId(prefix: string): string {
@@ -206,6 +371,8 @@ export class BrowserConsoleManager extends EventEmitter {
 			if (!session.consoleEnabled) {
 				return;
 			}
+
+			if (!this.admit(session)) return;
 
 			try {
 				const text = consoleMessage.text();
@@ -226,16 +393,7 @@ export class BrowserConsoleManager extends EventEmitter {
 				// which make `jsonValue()` throw and used to be dropped entirely.
 				let values: BrowserConsoleValue[] = [];
 				try {
-					const args = consoleMessage.args();
-					if (args.length > 0) {
-						values = await Promise.all(
-							args.map((arg) =>
-								arg
-									.evaluate(serializeConsoleValue as never)
-									.catch(() => ({ type: 'object', preview: '[unserializable]' }) as BrowserConsoleValue)
-							)
-						);
-					}
+					values = await this.collectValues(consoleMessage, this.isWatched(session.id));
 				} catch (error) {
 					debug.warn('preview', 'Could not extract console message args:', error);
 				}
@@ -265,6 +423,8 @@ export class BrowserConsoleManager extends EventEmitter {
 				return;
 			}
 
+			if (!this.admit(session)) return;
+
 			try {
 				const error = err as Error;
 				this.record(session, {
@@ -283,6 +443,7 @@ export class BrowserConsoleManager extends EventEmitter {
 		page.on('response', (response: HTTPResponse) => {
 			if (!session.consoleEnabled) return;
 			if (response.ok() || response.status() < 400) return;
+			if (!this.admit(session)) return;
 
 			try {
 				this.record(session, {
@@ -307,6 +468,7 @@ export class BrowserConsoleManager extends EventEmitter {
 		// would otherwise be invisible in the panel.
 		page.on('requestfailed', (request) => {
 			if (!session.consoleEnabled) return;
+			if (!this.admit(session)) return;
 
 			try {
 				const failure = request.failure();
@@ -331,6 +493,7 @@ export class BrowserConsoleManager extends EventEmitter {
 		if (!session) return false;
 
 		session.consoleLogs = [];
+		this.budgets.delete(session.id);
 
 		// Emit clear event
 		this.emit('console-clear', {
@@ -339,6 +502,11 @@ export class BrowserConsoleManager extends EventEmitter {
 		});
 
 		return true;
+	}
+
+	/** Drop a closed tab's rate-limit bookkeeping. */
+	forgetSession(sessionId: string): void {
+		this.budgets.delete(sessionId);
 	}
 
 	toggleConsoleLogging(session: BrowserTab, enabled: boolean): boolean {
@@ -359,12 +527,16 @@ export class BrowserConsoleManager extends EventEmitter {
 	async executeConsoleCommand(session: BrowserTab, command: string): Promise<BrowserConsoleValue> {
 		if (!session) throw new Error('Session not found');
 
-		this.record(session, {
-			id: BrowserConsoleManager.makeId('input'),
-			type: 'input',
-			text: command,
-			timestamp: Date.now()
-		});
+		this.record(
+			session,
+			{
+				id: BrowserConsoleManager.makeId('input'),
+				type: 'input',
+				text: command,
+				timestamp: Date.now()
+			},
+			true
+		);
 
 		try {
 			const outcome = await session.page.evaluate(
@@ -392,24 +564,32 @@ export class BrowserConsoleManager extends EventEmitter {
 				serializeConsoleValue.toString()
 			);
 
-			this.record(session, {
-				id: BrowserConsoleManager.makeId('result'),
-				type: outcome.failed ? 'error' : 'result',
-				text: outcome.value.preview,
-				values: [outcome.value],
-				timestamp: Date.now()
-			});
+			this.record(
+				session,
+				{
+					id: BrowserConsoleManager.makeId('result'),
+					type: outcome.failed ? 'error' : 'result',
+					text: outcome.value.preview,
+					values: [outcome.value],
+					timestamp: Date.now()
+				},
+				true
+			);
 
 			return outcome.value;
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 
-			this.record(session, {
-				id: BrowserConsoleManager.makeId('result'),
-				type: 'error',
-				text: message,
-				timestamp: Date.now()
-			});
+			this.record(
+				session,
+				{
+					id: BrowserConsoleManager.makeId('result'),
+					type: 'error',
+					text: message,
+					timestamp: Date.now()
+				},
+				true
+			);
 
 			throw error;
 		}

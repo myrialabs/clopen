@@ -14,6 +14,7 @@
  * - cleanup.ts: Admin cleanup endpoints (status, perform)
  * - webcodecs.ts: WebCodecs streaming handlers
  * - native-ui.ts: Native UI handlers (dialogs, print, select, context menu)
+ * - data.ts: Browsing data (list sites, clear one or all)
  * - mcp.ts: MCP tab coordination response handlers
  * - host.ts: Viewer-answered capabilities (geolocation, camera, clipboard, files)
  *
@@ -31,6 +32,8 @@
  * - preview:browser-console-clear - Clear console logs
  * - preview:browser-console-execute - Execute console command
  * - preview:browser-console-toggle - Toggle console logging
+ * - preview:browser-data-list - List sites the workspace profile holds data for
+ * - preview:browser-data-clear - Clear one site's data, or all of it
  * - preview:browser-cleanup-status - Get cleanup status
  * - preview:browser-cleanup-perform - Perform cleanup
  * - preview:browser-stream-start - Start streaming
@@ -48,6 +51,7 @@ import { tabInfoPreviewHandler } from './browser/tab-info';
 import { statsPreviewHandler } from './browser/stats';
 import { consolePreviewHandler } from './browser/console';
 import { cleanupPreviewHandler } from './browser/cleanup';
+import { browsingDataPreviewHandler } from './browser/data';
 import { streamPreviewHandler } from './browser/webcodecs';
 import { nativeUIPreviewHandler } from './browser/native-ui';
 import { mcpPreviewHandler } from './browser/mcp';
@@ -59,6 +63,7 @@ export const previewRouter = createRouter()
 	.merge(tabInfoPreviewHandler)
 	.merge(statsPreviewHandler)
 	.merge(consolePreviewHandler)
+	.merge(browsingDataPreviewHandler)
 	.merge(cleanupPreviewHandler)
 	.merge(streamPreviewHandler)
 	.merge(nativeUIPreviewHandler)
@@ -85,6 +90,16 @@ export const previewRouter = createRouter()
 		projectId: t.String(),
 		previousTabId: t.String(),
 		newTabId: t.String(),
+		timestamp: t.Number()
+	}))
+	.emit('preview:browser-tab-lifecycle', t.Object({
+		projectId: t.String(),
+		tabId: t.String(),
+		/**
+		 * Whether the page is frozen. A sleeping tab runs no script at all —
+		 * the strip says so rather than showing it as a page still working.
+		 */
+		sleeping: t.Boolean(),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-tab-navigated', t.Object({

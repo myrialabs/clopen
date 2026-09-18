@@ -47,6 +47,8 @@ export interface ExistingTabInfo {
 	isActive: boolean;
 	canGoBack?: boolean;
 	canGoForward?: boolean;
+	/** Whether the page is frozen because nobody is watching it. */
+	isSleeping?: boolean;
 	isMcpControlled?: boolean;
 	/** Whether an agent is acting on this tab right now. */
 	isMcpFocused?: boolean;
