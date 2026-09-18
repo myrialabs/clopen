@@ -46,6 +46,15 @@
 		 * project can have two runs going, each on a tab of its own.
 		 */
 		mcpFocusedTabIds = new Set<string>(),
+		/**
+		 * Tabs whose page the server has frozen because nobody is watching.
+		 *
+		 * Marked rather than hidden: the tab is still there, still showing what
+		 * it showed, and one click brings it back. Without the mark a suspended
+		 * page reads as a page that simply stopped doing anything — which is
+		 * exactly the bug report a sleeping tab would otherwise generate.
+		 */
+		sleepingTabIds = new Set<string>(),
 
 		// Callbacks
 		onGoClick = () => {},
@@ -63,7 +72,8 @@
 		onCloseTab = (_tabId: string) => {},
 		onReorderTab = (_tabId: string, _targetTabId: string) => {},
 		onNewTab = () => {},
-		onCloseAllTabs = () => {}
+		onCloseAllTabs = () => {},
+		onOpenBrowsingData = () => {}
 	} = $props();
 
 	/**
@@ -307,6 +317,7 @@
 				{@const isActive = tab.id === activeTabId}
 				{@const isControlled = mcpControlledTabIds.has(tab.id)}
 				{@const isAgentHere = isControlled && mcpFocusedTabIds.has(tab.id)}
+				{@const isSleeping = sleepingTabIds.has(tab.id) && !isActive}
 				<button
 					type="button"
 					data-tab-id={tab.id}
@@ -358,7 +369,11 @@
 					tabindex="0"
 					title={tab.url || tab.title}
 				>
-					<span class="flex h-3.5 w-3.5 shrink-0 items-center justify-center">
+					<span
+						class="flex h-3.5 w-3.5 shrink-0 items-center justify-center {isSleeping
+							? 'opacity-40'
+							: ''}"
+					>
 						{#if tab.isLoading || tab.isLaunchingBrowser}
 							<Icon name="lucide:loader-circle" class="h-3 w-3 animate-spin" />
 						{:else if tab.favicon && !brokenFavicons.has(tab.favicon)}
@@ -378,7 +393,15 @@
 						{/if}
 					</span>
 
-					<span class="truncate max-w-28">{tab.title || 'New Tab'}</span>
+					<span class="truncate max-w-28 {isSleeping ? 'opacity-60' : ''}"
+						>{tab.title || 'New Tab'}</span
+					>
+
+					{#if isSleeping}
+						<span title="Asleep — this page is paused until you open it" class="flex">
+							<Icon name="lucide:moon" class="h-3 w-3 shrink-0 text-slate-400" />
+						</span>
+					{/if}
 
 					{#if isControlled}
 						<!--
@@ -557,6 +580,16 @@
 					<Icon name="lucide:keyboard" class="h-4 w-4" />
 				</button>
 			{/if}
+
+			<button
+				type="button"
+				onclick={() => onOpenBrowsingData()}
+				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
+				title="Preview browsing data"
+				aria-label="Preview browsing data"
+			>
+				<Icon name="lucide:cookie" class="h-4 w-4" />
+			</button>
 
 			<button
 				type="button"

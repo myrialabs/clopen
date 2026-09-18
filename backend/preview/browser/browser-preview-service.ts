@@ -8,6 +8,7 @@ import { BrowserVideoCapture } from './browser-video-capture.js';
 import { BrowserDialogHandler } from './browser-dialog-handler.js';
 import { BrowserNativeUIHandler } from './browser-native-ui-handler.js';
 import { BrowserHostBridge, type HostResponse } from './browser-host-bridge.js';
+import { BrowserTabLifecycle } from './browser-tab-lifecycle.js';
 import { browserMcpControl } from './browser-mcp-control.js';
 import { browserPool } from './browser-pool.js';
 import { ws } from '$backend/utils/ws';
@@ -15,6 +16,7 @@ import { getViewportDimensions } from '$shared/constants/preview.js';
 import { debug } from '$shared/utils/logger';
 import { scopeProjectId } from '$shared/utils/workspace-scope';
 import type {
+	BrowserSiteData,
 	BrowserTab,
 	BrowserTabInfo,
 	BrowserConsoleMessage,
@@ -40,7 +42,7 @@ import type {
  *
  * Architecture:
  * - Tabs are the primary unit (no separate session concept)
- * - Each tab = isolated browser context + page
+ * - Each tab = a page in its workspace's shared browser context
  * - Event-driven communication with frontend
  * - Manages all browser operations: streaming, interaction, console, etc.
  * - **PROJECT ISOLATION**: Each instance is isolated per project
@@ -54,6 +56,7 @@ export class BrowserPreviewService extends EventEmitter {
 	private dialogHandler: BrowserDialogHandler;
 	private nativeUIHandler: BrowserNativeUIHandler;
 	private hostBridge: BrowserHostBridge;
+	private lifecycle: BrowserTabLifecycle;
 
 	// Store context menu info for later action execution
 	private contextMenus = new Map<string, BrowserContextMenuInfo>();
@@ -84,7 +87,14 @@ export class BrowserPreviewService extends EventEmitter {
 
 		// Initialize managers with projectId for isolation
 		this.tabManager = new BrowserTabManager(projectId);
-		this.consoleManager = new BrowserConsoleManager();
+		// Built before the console manager, which asks it who is watching.
+		this.lifecycle = new BrowserTabLifecycle({
+			getPage: (tabId) => this.tabManager.peekTab(tabId)?.page ?? null,
+			isPinned: (tabId) => this.isTabPinnedAwake(tabId)
+		});
+		this.consoleManager = new BrowserConsoleManager({
+			isWatched: (tabId) => this.lifecycle.hasViewers(tabId)
+		});
 		this.interactionHandler = new BrowserInteractionHandler();
 		this.navigationTracker = new BrowserNavigationTracker();
 		this.videoCapture = new BrowserVideoCapture();
@@ -96,7 +106,48 @@ export class BrowserPreviewService extends EventEmitter {
 		this.setupEventForwarding();
 	}
 
+	/**
+	 * Tabs that must keep running even though nobody is watching them.
+	 *
+	 * An agent's tab, because the run continues whether or not a panel is open
+	 * on it; and a tab still loading or being rebuilt, because freezing one
+	 * mid-navigation would strand it half rendered with no event left to wake
+	 * it.
+	 */
+	private isTabPinnedAwake(tabId: string): boolean {
+		if (browserMcpControl.isTabControlled(tabId, this.projectId)) return true;
+
+		const tab = this.tabManager.peekTab(tabId);
+		if (!tab) return false;
+
+		return !!tab.isLoading || !!tab.isRecovering;
+	}
+
+	/** Wake a tab and wait for it — required before anything runs script in it. */
+	async ensureTabAwake(tabId: string): Promise<void> {
+		await this.lifecycle.ensureAwake(tabId);
+	}
+
+	/** Push back a tab's freeze without waiting for it to wake. */
+	noteTabActivity(tabId: string): void {
+		this.lifecycle.touch(tabId);
+	}
+
+	isTabSleeping(tabId: string): boolean {
+		return this.lifecycle.isFrozen(tabId);
+	}
+
 	private setupEventForwarding() {
+		// A page put to sleep (or woken) is visible in the tab strip, so the
+		// viewer is told the same way it is told about a lock.
+		this.lifecycle.on('state', ({ tabId, state }: { tabId: string; state: string }) => {
+			this.emit('preview:browser-tab-lifecycle', {
+				tabId,
+				sleeping: state === 'frozen',
+				timestamp: Date.now()
+			});
+		});
+
 		// Forward console events
 		this.consoleManager.on('console-message', (data) => {
 			this.emit('preview:browser-console-message', data);
@@ -325,6 +376,8 @@ export class BrowserPreviewService extends EventEmitter {
 		// Fire-and-forget: failure here is non-fatal, startStreaming() will retry injection
 		this.videoCapture.preInjectScripts(tab.id, tab).catch(() => {});
 
+		this.lifecycle.register(tab.id);
+
 		await this.captureHistoryBase(tab.id);
 		void this.refreshTabMeta(tab.id);
 
@@ -407,6 +460,9 @@ export class BrowserPreviewService extends EventEmitter {
 			timestamp: Date.now()
 		});
 
+		// The page it was frozen with is gone; the replacement is running.
+		this.lifecycle.rebind(tabId);
+
 		debug.log('preview', `✅ Tab ${tabId} rebuilt at ${tab.url}`);
 
 		return true;
@@ -416,6 +472,7 @@ export class BrowserPreviewService extends EventEmitter {
 	 * Navigate tab to a new URL
 	 */
 	async navigateTab(tabId: string, url: string): Promise<string> {
+		await this.ensureTabAwake(tabId);
 		const wasBlank = this.getTab(tabId)?.url === 'about:blank';
 
 		const actualUrl = await this.tabManager.navigateTab(tabId, url);
@@ -450,6 +507,7 @@ export class BrowserPreviewService extends EventEmitter {
 	async getHistoryState(tabId: string): Promise<BrowserHistoryState | null> {
 		const tab = this.getTab(tabId);
 		if (!tab) return null;
+		await this.ensureTabAwake(tabId);
 
 		const history = await this.navigationTracker.getNavigationHistory(tabId, tab.page);
 		if (!history) return null;
@@ -594,6 +652,9 @@ export class BrowserPreviewService extends EventEmitter {
 		// Close the tab (this will cleanup context, page, etc.)
 		const result = await this.tabManager.closeTab(tabId);
 
+		this.lifecycle.dispose(tabId);
+		this.consoleManager.forgetSession(tabId);
+
 		// Emit tab closed event (for MCP control manager and other listeners)
 		this.emit('preview:browser-tab-destroyed', { tabId });
 
@@ -610,7 +671,9 @@ export class BrowserPreviewService extends EventEmitter {
 	 * act of looking reassign this made each of them move the other's target.
 	 */
 	switchTab(tabId: string): boolean {
-		return this.tabManager.setActiveTab(tabId);
+		const switched = this.tabManager.setActiveTab(tabId);
+		if (switched) this.lifecycle.touch(tabId);
+		return switched;
 	}
 
 	/**
@@ -623,6 +686,11 @@ export class BrowserPreviewService extends EventEmitter {
 	noteTabViewed(tabId: string): boolean {
 		if (!this.tabManager.getTab(tabId)) return false;
 		this.tabManager.markTabActivity(tabId);
+
+		// Start the thaw here rather than waiting for the stream to ask for it:
+		// the viewer has already committed to this tab, and a wake in flight by
+		// the time the first frame is requested is a wake nobody waits for.
+		this.lifecycle.touch(tabId);
 		return true;
 	}
 
@@ -651,7 +719,58 @@ export class BrowserPreviewService extends EventEmitter {
 	 * Change viewport settings (device size and rotation) for an existing tab
 	 */
 	async setViewport(tabId: string, deviceSize: DeviceSize, rotation: Rotation): Promise<boolean> {
+		await this.ensureTabAwake(tabId);
 		return await this.tabManager.setViewport(tabId, deviceSize, rotation);
+	}
+
+	/**
+	 * Sites this workspace's browser profile holds data for.
+	 *
+	 * The cookie jar is the backbone of the list — every login leaves one —
+	 * but a site can hold storage without a cookie, so the origins currently
+	 * open are folded in too. Anything the user could recognise as "I am
+	 * signed into this" is therefore listed, with something to clear.
+	 */
+	async listBrowsingData(): Promise<BrowserSiteData[]> {
+		const sites = new Map<string, BrowserSiteData>();
+
+		for (const entry of await browserPool.listBrowsingOrigins(this.projectId)) {
+			sites.set(entry.domain, {
+				domain: entry.domain,
+				origin: `${entry.secure ? 'https' : 'http'}://${entry.domain}`,
+				cookies: entry.cookies,
+				open: false
+			});
+		}
+
+		for (const tab of this.tabManager.getAllTabs()) {
+			let url: URL;
+			try {
+				url = new URL(tab.url);
+			} catch {
+				continue; // about:blank and friends store nothing.
+			}
+			if (url.protocol !== 'http:' && url.protocol !== 'https:') continue;
+
+			const existing = sites.get(url.hostname);
+			// The open tab knows the real origin (scheme and port); a cookie
+			// only ever knew the domain, so its guess is replaced here.
+			sites.set(url.hostname, {
+				domain: url.hostname,
+				origin: url.origin,
+				cookies: existing?.cookies ?? 0,
+				open: true
+			});
+		}
+
+		return Array.from(sites.values()).sort(
+			(a, b) => Number(b.open) - Number(a.open) || b.cookies - a.cookies || a.domain.localeCompare(b.domain)
+		);
+	}
+
+	/** Forget one site, or everything this workspace's browser has stored. */
+	async clearBrowsingData(origin?: string): Promise<boolean> {
+		return browserPool.clearBrowsingData(this.projectId, origin);
 	}
 
 	/**
@@ -665,14 +784,18 @@ export class BrowserPreviewService extends EventEmitter {
 	 * Get tab info
 	 */
 	getTabInfo(tabId: string): BrowserTabInfo | null {
-		return this.tabManager.getTabInfo(tabId);
+		const info = this.tabManager.getTabInfo(tabId);
+		if (!info) return null;
+		return { ...info, isSleeping: this.lifecycle.isFrozen(tabId) };
 	}
 
 	/**
 	 * Get all tabs info
 	 */
 	getAllTabsInfo(): BrowserTabInfo[] {
-		return this.tabManager.getAllTabsInfo();
+		return this.tabManager
+			.getAllTabsInfo()
+			.map((info) => ({ ...info, isSleeping: this.lifecycle.isFrozen(info.id) }));
 	}
 
 	/**
@@ -715,12 +838,22 @@ export class BrowserPreviewService extends EventEmitter {
 		if (!tab) {
 			return false;
 		}
-		return await this.videoCapture.startStreaming(
+
+		// Before the capture, not after: the encoder is injected by evaluating
+		// in the page, which a frozen one would never get round to running.
+		await this.ensureTabAwake(tabId);
+		this.lifecycle.attachViewer(tabId, options.viewerId);
+
+		const started = await this.videoCapture.startStreaming(
 			tabId,
 			tab,
 			() => this.isValidTab(tabId),
 			options
 		);
+
+		if (!started) this.lifecycle.detachViewer(tabId, options.viewerId);
+
+		return started;
 	}
 
 	/**
@@ -748,6 +881,16 @@ export class BrowserPreviewService extends EventEmitter {
 		if (!tab) {
 			return false;
 		}
+
+		// A viewer with the preview off screen is not watching: capture is
+		// already suspended for it, so the page has nothing left to run for.
+		if (paused) {
+			this.lifecycle.setViewerVisible(tabId, viewerId, false);
+		} else {
+			await this.ensureTabAwake(tabId);
+			this.lifecycle.setViewerVisible(tabId, viewerId, true);
+		}
+
 		return await this.videoCapture.setViewerVisibility(tabId, tab, viewerId, !paused);
 	}
 
@@ -757,6 +900,9 @@ export class BrowserPreviewService extends EventEmitter {
 	 */
 	async stopWebCodecsStreaming(tabId: string, viewerId?: string): Promise<void> {
 		const tab = this.getTab(tabId);
+
+		if (viewerId) this.lifecycle.detachViewer(tabId, viewerId);
+		else this.lifecycle.dropViewers(tabId);
 
 		if (viewerId) {
 			await this.videoCapture.detachViewer(tabId, tab ?? undefined, viewerId);
@@ -938,6 +1084,7 @@ export class BrowserPreviewService extends EventEmitter {
 
 	markUserInteraction(tabId: string): void {
 		this.tabManager.markTabActivity(tabId);
+		this.lifecycle.touch(tabId);
 	}
 
 	// Public method to mark tab activity (called from WS handlers)
@@ -974,6 +1121,7 @@ export class BrowserPreviewService extends EventEmitter {
 	async executeConsoleCommand(tabId: string, command: string): Promise<any> {
 		const tab = this.getTab(tabId);
 		if (!tab) throw new Error('Tab not found or invalid');
+		await this.ensureTabAwake(tabId);
 		return this.consoleManager.executeConsoleCommand(tab, command);
 	}
 
@@ -999,6 +1147,10 @@ export class BrowserPreviewService extends EventEmitter {
 	): Promise<AutonomousRunOutcome> {
 		const tab = this.getTab(tabId);
 		if (!tab) throw new Error('Tab not found or invalid');
+
+		// An agent drives tabs nobody is looking at, which is exactly the state
+		// this wakes them out of.
+		await this.ensureTabAwake(tabId);
 
 		return this.interactionHandler.performAutonomousActions(
 			tabId,
@@ -1136,6 +1288,10 @@ export class BrowserPreviewService extends EventEmitter {
 	}
 
 	async forceCleanupAll() {
+		// Before the tabs go: a frozen page with its lifecycle listener still
+		// attached would emit a wake nobody is left to hear.
+		await this.lifecycle.cleanup();
+
 		// First try normal cleanup
 		await this.cleanup();
 
@@ -1262,6 +1418,13 @@ class BrowserPreviewServiceManager {
 
 		service.on('preview:browser-tab-switched', (data) => {
 			ws.emit.project(roomId, 'preview:browser-tab-switched', { ...data, projectId });
+		});
+
+		// A page frozen because nobody was watching, or woken because someone
+		// is. Carries the scope like every other tab event so a client that has
+		// switched workspace drops it.
+		service.on('preview:browser-tab-lifecycle', (data) => {
+			ws.emit.project(roomId, 'preview:browser-tab-lifecycle', { ...data, projectId });
 		});
 
 		service.on('preview:browser-tab-navigated', (data) => {
@@ -1394,6 +1557,12 @@ class BrowserPreviewServiceManager {
 		browserMcpControl.on('control-start', (data) => {
 			debug.log('preview', '🚀 Forwarding mcp-control-start:', data);
 			if (!data.projectId) return;
+
+			// The tab is now pinned awake; if it was asleep, start the thaw
+			// before the agent's first action asks for it.
+			if (this.services.get(data.projectId)?.isTabSleeping(data.browserTabId)) {
+				void this.services.get(data.projectId)?.ensureTabAwake(data.browserTabId);
+			}
 			ws.emit.project(data.projectId, 'preview:browser-mcp-control-start', {
 				browserTabId: data.browserTabId,
 				chatSessionId: data.chatSessionId,
@@ -1405,6 +1574,10 @@ class BrowserPreviewServiceManager {
 		browserMcpControl.on('control-end', (data) => {
 			debug.log('preview', '🚀 Forwarding mcp-control-end:', data);
 			if (!data.projectId) return;
+
+			// No longer pinned: an unwatched tab the agent has let go of is free
+			// to fall asleep on the usual timer.
+			this.services.get(data.projectId)?.noteTabActivity(data.browserTabId);
 			ws.emit.project(data.projectId, 'preview:browser-mcp-control-end', {
 				browserTabId: data.browserTabId,
 				projectId: data.projectId,

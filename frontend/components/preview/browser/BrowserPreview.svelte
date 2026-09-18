@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Toolbar from './components/Toolbar.svelte';
+	import BrowsingDataModal from './components/BrowsingDataModal.svelte';
 	import Container from './components/Container.svelte';
 	import SelectDropdown from './components/SelectDropdown.svelte';
 	import ContextMenu from './components/ContextMenu.svelte';
@@ -29,7 +30,8 @@
 	import {
 		getMcpActivity,
 		getMcpCursor,
-		isBackendTabFullscreen
+		isBackendTabFullscreen,
+		isBackendTabSleeping
 	} from '$frontend/stores/features/preview-tabs-workspace.svelte';
 	import ws from '$frontend/utils/ws';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
@@ -225,6 +227,20 @@
 
 	// Derived states from tab manager
 	const tabs = $derived(tabManager.tabs);
+
+	/**
+	 * Frontend ids of the tabs whose page is asleep.
+	 *
+	 * Mapped here rather than stored that way: the server speaks in backend tab
+	 * ids, and the strip is drawn from the frontend's own slots — the same
+	 * translation the agent lock goes through.
+	 */
+	/** Whether the "what this preview remembers" panel is open. */
+	let isBrowsingDataOpen = $state(false);
+
+	const sleepingTabIds = $derived(
+		new Set(tabs.filter((tab) => isBackendTabSleeping(tab.sessionId)).map((tab) => tab.id))
+	);
 	const activeTabId = $derived(tabManager.activeTabId);
 	const activeTab = $derived(tabManager.activeTab);
 
@@ -925,6 +941,8 @@
 			{activeTabId}
 			mcpControlledTabIds={mcpHandler.getControlledTabIds()}
 			mcpFocusedTabIds={mcpHandler.getFocusedTabIds()}
+			{sleepingTabIds}
+			onOpenBrowsingData={() => (isBrowsingDataOpen = true)}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
 			onStop={stopLoading}
@@ -1073,6 +1091,10 @@
 		/>
 	</div>
 {/if}
+
+<!-- Outside the panel's {#if}: closing the preview while the panel is open
+     should not strand a half-finished clear. -->
+<BrowsingDataModal bind:isOpen={isBrowsingDataOpen} />
 
 <style>
 	/* Dot Pattern Background */

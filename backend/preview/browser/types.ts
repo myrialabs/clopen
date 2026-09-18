@@ -74,7 +74,7 @@ export interface BrowserTab {
 
 	// Browser instances (from pool)
 	browser: Browser; // Shared browser reference
-	context: BrowserContext; // Isolated context (cookies, localStorage, etc.)
+	context: BrowserContext; // Workspace context, shared with this tab's siblings
 	page: Page;
 
 	// Streaming
@@ -210,6 +210,31 @@ export interface BrowserTabInfo {
 	isActive: boolean;
 	canGoBack: boolean;
 	canGoForward: boolean;
+	/**
+	 * Whether the page is frozen because nobody is watching it.
+	 *
+	 * Carried through recovery for the same reason as the favicon: a reload
+	 * must not show a sleeping tab as a running one, or the strip claims work
+	 * is happening in a page that is suspended.
+	 */
+	isSleeping?: boolean;
+}
+
+/**
+ * One site the workspace's browser profile has data for.
+ *
+ * Reported per domain rather than per storage kind: "clear what this site
+ * knows about me" is the decision a user actually makes, and splitting it into
+ * cookies, local storage and cache would ask them to understand a distinction
+ * they did not make when signing in.
+ */
+export interface BrowserSiteData {
+	domain: string;
+	/** Best-known origin to clear storage for. */
+	origin: string;
+	cookies: number;
+	/** Whether a tab is on this site right now. */
+	open: boolean;
 }
 
 /** A point in page (emulated viewport) coordinates. */

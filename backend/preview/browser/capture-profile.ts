@@ -37,6 +37,16 @@ export interface CaptureProfile {
 	maxFramerate: number;
 	/** Lower bound — below this, motion stops reading as motion. */
 	minFramerate: number;
+	/**
+	 * How many preview pages this host may keep running at once.
+	 *
+	 * A frozen tab costs nothing, but an idle *running* one costs a full
+	 * renderer — so the tier that decides how many pixels we may encode also
+	 * decides how many pages may be awake behind them. Only idle tabs are ever
+	 * reclaimed against this number (see `browser-tab-lifecycle.ts`); a watched
+	 * or agent-held tab is never counted out of existence.
+	 */
+	maxAwakeTabs: number;
 	/** VP9 per-frame quantizer while the page is moving (higher = cheaper). */
 	motionQuantizer: number;
 	/** VP9 quantizer for the still-page refresh frame (lower = sharper). */
@@ -63,6 +73,7 @@ const PROFILES: Record<QualityTier, Omit<CaptureProfile, 'tier'>> = {
 		// smoothness — which is the difference the eye actually notices.
 		maxFramerate: 30,
 		minFramerate: 10,
+		maxAwakeTabs: 6,
 		motionQuantizer: 38,
 		topOffQuantizer: 10,
 		screenshotQuality: 80,
@@ -74,6 +85,7 @@ const PROFILES: Record<QualityTier, Omit<CaptureProfile, 'tier'>> = {
 		maxPixels: 1440 * 900,
 		maxFramerate: 20,
 		minFramerate: 8,
+		maxAwakeTabs: 4,
 		motionQuantizer: 42,
 		topOffQuantizer: 14,
 		screenshotQuality: 72,
@@ -85,6 +97,7 @@ const PROFILES: Record<QualityTier, Omit<CaptureProfile, 'tier'>> = {
 		maxPixels: 1280 * 720,
 		maxFramerate: 12,
 		minFramerate: 6,
+		maxAwakeTabs: 2,
 		motionQuantizer: 48,
 		topOffQuantizer: 20,
 		screenshotQuality: 65,
@@ -137,7 +150,8 @@ export function getHostCaptureProfile(): CaptureProfile {
 		'webcodecs',
 		`Capture profile: ${tier} (${os.cpus()?.length || '?'} cores, ` +
 			`${(os.totalmem() / 1024 ** 3).toFixed(1)} GB, ${os.platform()}) — ` +
-			`≤${(cachedProfile.maxPixels / 1e6).toFixed(2)}MP @ ${cachedProfile.maxFramerate}fps`
+			`≤${(cachedProfile.maxPixels / 1e6).toFixed(2)}MP @ ${cachedProfile.maxFramerate}fps, ` +
+			`≤${cachedProfile.maxAwakeTabs} tabs awake`
 	);
 
 	return cachedProfile;
