@@ -23,6 +23,7 @@
 	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
+	import { cancelBrowserLaunch } from './core/tab-operations.svelte';
 	import { setDisplayScale, goHistory, setInteractionTabId } from './core/interactions.svelte';
 	import { previewHostBridge } from '$frontend/services/preview/browser/host-bridge.service';
 	import { browserConsoleService } from '$frontend/services/preview/browser/browser-console.service';
@@ -56,6 +57,8 @@
 	// UI state
 	let isLoading = $state(false);
 	let isLaunchingBrowser = $state(false);
+	/** Whether the active tab's load was stopped before it produced a page. */
+	let loadStopped = $state(false);
 	let isNavigating = $state(false);
 	let isReconnecting = $state(false); // True during fast reconnect after navigation
 	let sessionId = $state<string | null>(null);
@@ -417,6 +420,7 @@
 			isStreamReady = tab.isStreamReady;
 			isLoading = tab.isLoading;
 			isLaunchingBrowser = tab.isLaunchingBrowser;
+			loadStopped = tab.loadStopped;
 			isNavigating = tab.isNavigating;
 			errorMessage = tab.errorMessage;
 			deviceSize = tab.deviceSize;
@@ -510,12 +514,16 @@
 	 *
 	 * `errorMessage` is part of the guard on purpose — a launch that failed is
 	 * reported to the user and must not be retried in a loop by an effect that
-	 * re-runs on every field of the tab.
+	 * re-runs on every field of the tab. `loadStopped` is there for the same
+	 * reason and a sharper one: a stopped tab looks exactly like one that needs
+	 * launching, so without it this effect would restart the load the user just
+	 * stopped, for as long as they kept stopping it.
 	 */
 	$effect(() => {
 		const tab = activeTab;
 		if (!tab || !tab.url) return;
 		if (tab.sessionId || tab.isLaunchingBrowser || tab.errorMessage) return;
+		if (tab.loadStopped) return;
 		if (mcpLaunchInProgress) return;
 		if (tab.url.startsWith('chrome-error://') || tab.url.startsWith('chrome://')) return;
 
@@ -618,23 +626,45 @@
 
 	function refreshPreview() {
 		if (!activeTabId) return;
+
 		const tab = activeTab;
-		if (tab && tab.sessionId && tab.url) {
+		if (!tab?.url) return;
+
+		// A stopped tab has an address and no session, so there is nothing to
+		// navigate — Reload has to start it, which is also the only way back
+		// from a Stop.
+		if (tab.sessionId) {
 			coordinator.navigateBrowserForTab(activeTabId, tab.url);
+		} else {
+			coordinator.launchBrowserForTab(activeTabId, tab.url);
 		}
 	}
 
 	/**
 	 * Stop loading.
 	 *
-	 * Halts the page's own load via `window.stop()`, then clears the local
-	 * loading flags — Puppeteer offers no cancel for an in-flight `goto`, so the
-	 * indicator has to be released here rather than waiting for it to settle.
+	 * Two different things can be in flight, and the button has to answer
+	 * whichever it is. A tab with a session stops its own page. A tab still
+	 * launching has no page to address yet — the backend is mid-navigation and
+	 * will not report the tab until it finishes — so the launch is cancelled by
+	 * name instead.
+	 *
+	 * `isLaunchingBrowser` is deliberately left alone. Clearing it used to make
+	 * the button feel instant while the launch carried on regardless, and it
+	 * also unlinked the slot from the tab the backend was about to deliver: the
+	 * tab then arrived as a *second* tab on the same URL, seconds after the
+	 * user had asked for the load to stop. The flag now clears when the launch
+	 * actually returns, which the cancel makes prompt.
 	 */
 	function stopLoading() {
 		if (!activeTabId) return;
 
 		const tab = activeTab;
+
+		if (tab?.launchId) {
+			void cancelBrowserLaunch(tab.launchId);
+		}
+
 		if (tab?.sessionId) {
 			coordinator.sendInteraction({ type: 'stop' });
 		}
@@ -642,7 +672,10 @@
 		tabManager.updateTab(activeTabId, {
 			isLoading: false,
 			isNavigating: false,
-			isLaunchingBrowser: false
+			// Only for a tab that has no page yet. Stopping a navigation inside
+			// a live session leaves the page it was on, which is a perfectly
+			// good preview and needs no special state.
+			loadStopped: !tab?.sessionId
 		});
 		isLoading = false;
 		isNavigating = false;
@@ -996,6 +1029,7 @@
 				isPageFullscreen={isBackendTabFullscreen(sessionId)}
 				onExitFullscreen={exitPageFullscreen}
 				onInteraction={handleCanvasInteraction}
+				{loadStopped}
 				onRetry={handleGoClick}
 			/>
 

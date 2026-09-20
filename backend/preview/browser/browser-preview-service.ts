@@ -347,7 +347,12 @@ export class BrowserPreviewService extends EventEmitter {
 	 * - Desktop/laptop: landscape
 	 * - Tablet/mobile: portrait
 	 */
-	async createTab(url?: string, deviceSize: DeviceSize = 'laptop', rotation?: Rotation): Promise<BrowserTab> {
+	async createTab(
+		url?: string,
+		deviceSize: DeviceSize = 'laptop',
+		rotation?: Rotation,
+		launchId?: string
+	): Promise<BrowserTab> {
 		// Use device-appropriate default rotation if not specified
 		const actualRotation = rotation || ((deviceSize === 'desktop' || deviceSize === 'laptop') ? 'landscape' : 'portrait');
 
@@ -363,7 +368,8 @@ export class BrowserPreviewService extends EventEmitter {
 		// Create tab
 		const tab = await this.tabManager.createTab(url, deviceSize, actualRotation, {
 			setActive: true,
-			preNavigationSetup
+			preNavigationSetup,
+			launchId
 		});
 
 		// Setup console, navigation tracking, and pre-inject streaming scripts in parallel
@@ -466,6 +472,11 @@ export class BrowserPreviewService extends EventEmitter {
 		debug.log('preview', `✅ Tab ${tabId} rebuilt at ${tab.url}`);
 
 		return true;
+	}
+
+	/** Stop a launch the user abandoned before it produced a tab. */
+	async cancelLaunch(launchId: string): Promise<void> {
+		await this.tabManager.cancelLaunch(launchId);
 	}
 
 	/**

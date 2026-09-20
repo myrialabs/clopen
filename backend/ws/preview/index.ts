@@ -20,6 +20,7 @@
  *
  * Available endpoints:
  * - preview:browser-tab-open - Open new browser tab (with optional URL)
+ * - preview:browser-tab-open-cancel - Stop a launch that has no tab yet
  * - preview:browser-tab-close - Close browser tab
  * - preview:browser-tab-navigate - Navigate tab to new URL
  * - preview:browser-tab-history-go - Walk the tab's history (back/forward)
@@ -78,6 +79,11 @@ export const previewRouter = createRouter()
 		url: t.String(),
 		title: t.String(),
 		isActive: t.Boolean(),
+		/**
+		 * The launch this tab came from, when a client started it. Absent for
+		 * tabs the backend opened on its own (an agent, a popup).
+		 */
+		launchId: t.Optional(t.String()),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-tab-closed', t.Object({

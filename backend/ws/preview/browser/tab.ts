@@ -8,6 +8,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
+import { LaunchCancelledError } from '../../../preview/browser/browser-tab-manager';
 
 // Timeout for browser tab open (60 seconds)
 const OPEN_TIMEOUT = 60000;
@@ -27,13 +28,27 @@ export const tabPreviewHandler = createRouter()
 				t.Literal('portrait'),
 				t.Literal('landscape')
 			])),
+			/**
+			 * Client-minted name for this launch.
+			 *
+			 * The tab does not exist until the navigation finishes, so this is
+			 * the only handle Stop has on a load in progress — and the only way
+			 * the client can recognise the tab that comes back as the one it
+			 * asked for.
+			 */
+			launchId: t.Optional(t.String())
 		}),
 		response: t.Object({
-			tabId: t.String(),
-			quality: t.String(),
-			url: t.String(),
-			title: t.String(),
-			isActive: t.Boolean(),
+			/**
+			 * Whether the launch was stopped before its page loaded. There is no
+			 * tab in that case — the page never committed, so nothing was kept.
+			 */
+			cancelled: t.Boolean(),
+			tabId: t.Optional(t.String()),
+			quality: t.Optional(t.String()),
+			url: t.Optional(t.String()),
+			title: t.Optional(t.String()),
+			isActive: t.Optional(t.Boolean()),
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
@@ -44,7 +59,8 @@ export const tabPreviewHandler = createRouter()
 		const {
 			url,
 			deviceSize = 'laptop',
-			rotation = 'portrait'
+			rotation = 'portrait',
+			launchId
 		} = data;
 
 		debug.log('preview', `📥 Tab open params - URL: ${url || 'about:blank'}, deviceSize: ${deviceSize}, rotation: ${rotation}`);
@@ -53,20 +69,35 @@ export const tabPreviewHandler = createRouter()
 		const tabPromise = previewService.createTab(
 			url, // Can be undefined for blank tab
 			deviceSize as 'desktop' | 'laptop' | 'tablet' | 'mobile',
-			rotation as 'portrait' | 'landscape'
+			rotation as 'portrait' | 'landscape',
+			launchId
 		);
 		const timeoutPromise = new Promise((_, reject) => {
 			setTimeout(() => reject(new Error('Browser tab open timeout - took longer than 60 seconds')), OPEN_TIMEOUT);
 		});
 
 		debug.log('preview', `⏳ Opening browser tab (timeout: ${OPEN_TIMEOUT}ms)...`);
-		const tab = await Promise.race([tabPromise, timeoutPromise]) as Awaited<typeof tabPromise>;
+
+		let tab: Awaited<typeof tabPromise>;
+		try {
+			tab = await Promise.race([tabPromise, timeoutPromise]) as Awaited<typeof tabPromise>;
+		} catch (error) {
+			// The user pressed Stop and nothing had loaded. Reported as an
+			// outcome rather than thrown: it is what they asked for, and the
+			// client has a slot waiting that should simply go back to idle.
+			if (error instanceof LaunchCancelledError) {
+				debug.log('preview', `🛑 Tab open cancelled for project: ${projectId}`);
+				return { cancelled: true, message: 'Launch cancelled' };
+			}
+			throw error;
+		}
 
 		debug.log('preview', `✅ Browser tab opened successfully - tabId: ${tab.id}, URL: ${tab.url}, project: ${projectId}`);
 
 		// Tab activity is marked automatically in tab-manager
 
 		return {
+			cancelled: false,
 			tabId: tab.id,
 			quality: tab.quality,
 			url: tab.url,
@@ -150,6 +181,31 @@ export const tabPreviewHandler = createRouter()
 	})
 
 	// Close browser tab
+	/**
+	 * Stop a launch that has not produced a tab yet.
+	 *
+	 * Separate from the `stop` interaction, which needs a tab to address: for
+	 * the length of the first navigation there is no tab, which is exactly the
+	 * window in which the Stop button used to do nothing at all.
+	 */
+	.http('preview:browser-tab-open-cancel', {
+		data: t.Object({
+			launchId: t.String({ minLength: 1 })
+		}),
+		response: t.Object({
+			/**
+			 * That the cancel was recorded — not that a load was interrupted.
+			 * A Stop can legitimately arrive before its own launch has reached
+			 * the tab manager, and it is honoured when the launch gets there.
+			 */
+			accepted: t.Boolean()
+		})
+	}, async ({ data, conn }) => {
+		const { previewService } = requireBrowserPreviewAccess(conn);
+		await previewService.cancelLaunch(data.launchId);
+		return { accepted: true };
+	})
+
 	.http('preview:browser-tab-close', {
 		data: t.Object({
 			tabId: t.Optional(t.String()) // If not provided, close active tab

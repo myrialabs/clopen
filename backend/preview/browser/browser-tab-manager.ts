@@ -12,6 +12,23 @@ import { scopeSlug } from '$shared/utils/workspace-scope';
 
 // Tab cleanup configuration
 const INACTIVE_TIMEOUT = 5 * 60 * 1000; // 5 minutes
+/** How long a launch may stay in the bookkeeping before it is swept. */
+const LAUNCH_TTL = 2 * 60 * 1000;
+
+/**
+ * A launch in flight.
+ *
+ * `waiters` is what lets a cancel cut a wait short rather than merely stop the
+ * next one: the Cloudflare pass sits on `waitForNavigation` for twenty seconds
+ * at a time, and a Stop that only set a flag would be honoured after the wait
+ * it was meant to end.
+ */
+interface LaunchRecord {
+	page: Page | null;
+	cancelled: boolean;
+	startedAt: number;
+	waiters: Array<() => void>;
+}
 const CLEANUP_INTERVAL = 60 * 1000; // Check every minute
 
 /**
@@ -54,6 +71,27 @@ export type TabAilment = 'browser-gone' | 'session-gone' | 'page-gone';
  * across a restart. Between workspaces nothing is shared: the profile is
  * keyed by the workspace scope, so no project can see another's data.
  */
+/**
+ * Raised when a launch was stopped before its page loaded anything.
+ *
+ * Not an error the user needs to hear about — it is what they asked for — but
+ * it has to unwind the launch rather than return a tab, because a tab whose
+ * navigation never committed sits on `about:blank`, and `about:blank` is not a
+ * secure context: `VideoEncoder` does not exist there, so the preview pipeline
+ * could never produce a single frame for it. Handing one back left the panel
+ * waiting for a picture that was never coming.
+ */
+export class LaunchCancelledError extends Error {
+	constructor() {
+		super('Launch cancelled before the page loaded');
+		this.name = 'LaunchCancelledError';
+	}
+}
+
+function createLaunchRecord(): LaunchRecord {
+	return { page: null, cancelled: false, startedAt: Date.now(), waiters: [] };
+}
+
 export class BrowserTabManager extends EventEmitter {
 	private tabs = new Map<string, BrowserTab>();
 	private activeTabId: string | null = null;
@@ -93,6 +131,18 @@ export class BrowserTabManager extends EventEmitter {
 	 * must not mistake one of them for a `window.open`.
 	 */
 	private adoptingPages = 0;
+
+	/**
+	 * Launches in flight, by the id the client minted for them.
+	 *
+	 * A launch is the one part of a tab's life that has no tab yet: the page is
+	 * created and navigated before the tab exists, so for the length of that
+	 * navigation — up to a minute against a slow site, longer behind a
+	 * Cloudflare challenge — there was nothing for Stop to address. The client
+	 * names the launch instead, and this is where that name resolves to
+	 * something that can be stopped.
+	 */
+	private launches = new Map<string, LaunchRecord>();
 
 	/**
 	 * The listeners a tab holds on the shared browser, which outlives its page.
@@ -142,6 +192,8 @@ export class BrowserTabManager extends EventEmitter {
 		options?: {
 			setActive?: boolean;
 			preNavigationSetup?: (page: Page, tabId: string) => Promise<void>;
+			/** Client-minted name for this launch, so Stop can reach it. */
+			launchId?: string;
 		}
 	): Promise<BrowserTab> {
 		// The counter restarts per workspace, so the scope token is what stops a
@@ -151,6 +203,16 @@ export class BrowserTabManager extends EventEmitter {
 
 		debug.log('preview', `🟡🟡🟡 Creating new tab: ${tabId} for project: ${this.projectId} 🟡🟡🟡`);
 		debug.log('preview', `📁 Tab URL: ${finalUrl}, deviceSize: ${deviceSize}, rotation: ${rotation}`);
+
+		// Registered before the page exists, so a Stop that arrives while Chrome
+		// is still starting is remembered rather than dropped.
+		const launch = options?.launchId
+			? (this.launches.get(options.launchId) ?? createLaunchRecord())
+			: createLaunchRecord();
+		if (options?.launchId) {
+			this.pruneLaunches();
+			this.launches.set(options.launchId, launch);
+		}
 
 		let browser: Browser;
 		let context: BrowserContext;
@@ -170,6 +232,7 @@ export class BrowserTabManager extends EventEmitter {
 			browser = pooledSession.browser;
 			context = pooledSession.context;
 			page = pooledSession.page;
+			launch.page = page;
 
 			debug.log('preview', `🔐 Session ID: ${sessionId} (project-scoped)`);
 		} catch (poolError) {
@@ -193,8 +256,21 @@ export class BrowserTabManager extends EventEmitter {
 
 		// Navigate to URL (or about:blank)
 		debug.log('preview', `🌐 Navigating to: ${finalUrl}`);
-		const actualUrl = await this.navigateWithRetry(page, finalUrl);
+		const actualUrl = await this.navigateWithRetry(page, finalUrl, launch);
 		debug.log('preview', `✅ Navigation complete - final URL: ${actualUrl}`);
+
+		// Stopped with nothing to show for it. The page is discarded rather than
+		// handed over: it is parked on about:blank, which cannot be streamed,
+		// and a tab that can never paint is worse than no tab at all. A launch
+		// stopped *after* the document committed keeps its tab — that page is
+		// real, and leaving it is what Stop means in a browser.
+		if (launch.cancelled && actualUrl === 'about:blank' && finalUrl !== 'about:blank') {
+			debug.log('preview', `🛑 Launch for ${tabId} stopped before it loaded — discarding the page`);
+			this.detachTabListeners(tabId);
+			await browserPool.destroySession(this.getSessionId(tabId)).catch(() => {});
+			if (options?.launchId) this.launches.delete(options.launchId);
+			throw new LaunchCancelledError();
+		}
 
 		// Get title from URL
 		const title = this.getTitleFromUrl(actualUrl);
@@ -266,11 +342,17 @@ export class BrowserTabManager extends EventEmitter {
 			isActive: tab.isActive,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
+			// Echoed so the client can tie this tab to the launch it started,
+			// rather than guessing from "some tab is launching" — which stopped
+			// being true the moment the user pressed Stop.
+			launchId: options?.launchId,
 			timestamp: Date.now()
 		};
 
 		debug.log('preview', `📤 Emitting preview:browser-tab-opened event:`, tabOpenedEvent);
 		this.emit('preview:browser-tab-opened', tabOpenedEvent);
+
+		if (options?.launchId) this.launches.delete(options.launchId);
 
 		debug.log('preview', `✅ Tab created: ${tabId} (active: ${tab.isActive})`);
 
@@ -279,6 +361,60 @@ export class BrowserTabManager extends EventEmitter {
 		debug.log('preview', `📊 Pool stats: ${stats.activeSessions}/${stats.maxConcurrency} tabs active`);
 
 		return tab;
+	}
+
+	/**
+	 * Stop a launch that has not produced a tab yet.
+	 *
+	 * Puppeteer offers no cancel for an in-flight `goto`, so the load is stopped
+	 * where it actually runs: `Page.stopLoading` tells the renderer to give up,
+	 * which settles the pending navigation in a moment instead of the minute a
+	 * slow site (or a Cloudflare challenge) would otherwise take. The flag is
+	 * what stops the retry loop from starting over behind it.
+	 *
+	 * The tab is still created, at whatever the page managed to load — which is
+	 * what Stop does in a browser, and the alternative (discarding it) would
+	 * take away the tab the user is looking at.
+	 *
+	 * A cancel for a launch that has not registered yet is recorded rather than
+	 * dropped: the request and the Stop travel over the same socket moments
+	 * apart, and losing that race would let the load the user just abandoned
+	 * run to completion.
+	 */
+	async cancelLaunch(launchId: string): Promise<void> {
+		this.pruneLaunches();
+
+		const launch = this.launches.get(launchId) ?? createLaunchRecord();
+		this.launches.set(launchId, launch);
+
+		launch.cancelled = true;
+		for (const wake of launch.waiters.splice(0)) wake();
+		debug.log('preview', `🛑 Launch ${launchId} cancelled`);
+
+		const page = launch.page;
+		if (!page || page.isClosed()) return;
+
+		try {
+			const cdp = await page.createCDPSession();
+			await cdp.send('Page.stopLoading').catch(() => {});
+			await cdp.detach().catch(() => {});
+		} catch (error) {
+			debug.warn('preview', `⚠️ Could not stop the load for ${launchId}: ${error}`);
+		}
+	}
+
+	/**
+	 * Drop launch bookkeeping left behind by one that threw.
+	 *
+	 * A launch that fails deletes nothing on its way out, and the entry is only
+	 * ever a page reference plus two fields — so it is swept on the next launch
+	 * rather than paid for with a timer.
+	 */
+	private pruneLaunches(): void {
+		const cutoff = Date.now() - LAUNCH_TTL;
+		for (const [id, launch] of this.launches) {
+			if (launch.startedAt < cutoff) this.launches.delete(id);
+		}
 	}
 
 	/**
@@ -1000,22 +1136,37 @@ export class BrowserTabManager extends EventEmitter {
 	/**
 	 * Navigate with retry, including Cloudflare auto-pass detection and CAPTCHA popup dismissal.
 	 */
-	private async navigateWithRetry(page: Page, url: string): Promise<string> {
+	private async navigateWithRetry(page: Page, url: string, launch?: LaunchRecord): Promise<string> {
 		const cleanUrl = this.sanitizeNavigationUrl(url);
 		let retries = 3;
 		let actualUrl = '';
 
 		while (retries > 0) {
+			// Checked before each attempt as well as after: a Stop pressed while
+			// the previous attempt was failing must not be answered with another.
+			if (launch?.cancelled) return page.url();
+
 			try {
 				await page.goto(cleanUrl, {
 					waitUntil: 'domcontentloaded',
 					timeout: 30000
 				});
-				actualUrl = await this.waitForCloudflareIfPresent(page);
+
+				// Both of the passes below wait on the page, for up to a minute
+				// and a half between them. Neither is worth doing for a load the
+				// user has already abandoned.
+				if (launch?.cancelled) return page.url();
+
+				actualUrl = await this.waitForCloudflareIfPresent(page, launch);
 				// Dismiss any CAPTCHA failure popups from embedded Turnstile widgets
 				await this.dismissCaptchaPopupsIfPresent(page);
 				break;
 			} catch (error) {
+				// `Page.stopLoading` makes the pending goto fail. That is the
+				// cancel landing, not a navigation problem, so it is reported as
+				// the page we stopped on rather than thrown.
+				if (launch?.cancelled) return page.url();
+
 				retries--;
 				debug.warn('preview', `⚠️ Navigation failed, ${retries} retries left:`, error);
 				if (retries === 0 || this.isNonRetryableError(error)) throw error;
@@ -1033,10 +1184,12 @@ export class BrowserTabManager extends EventEmitter {
 	 * Loops up to MAX_CF_RETRIES times to handle infinite verify loops where
 	 * Cloudflare keeps redirecting back to a new challenge after each pass.
 	 */
-	private async waitForCloudflareIfPresent(page: Page): Promise<string> {
+	private async waitForCloudflareIfPresent(page: Page, launch?: LaunchRecord): Promise<string> {
 		const MAX_CF_RETRIES = 5;
 
 		for (let attempt = 0; attempt < MAX_CF_RETRIES; attempt++) {
+			if (launch?.cancelled) return page.url();
+
 			let isChallenge = false;
 
 			try {
@@ -1069,10 +1222,26 @@ export class BrowserTabManager extends EventEmitter {
 			debug.log('preview', `🛡️ Cloudflare challenge detected (attempt ${attempt + 1}/${MAX_CF_RETRIES}), waiting for auto-pass...`);
 
 			try {
-				await page.waitForNavigation({
+				// Raced against the cancel, so Stop is answered now rather than
+				// up to twenty seconds from now.
+				const navigated = page.waitForNavigation({
 					waitUntil: 'domcontentloaded',
 					timeout: 20000
 				});
+
+				if (launch) {
+					const cancelled = new Promise<'cancelled'>((resolve) =>
+						launch.waiters.push(() => resolve('cancelled'))
+					);
+					const outcome = await Promise.race([navigated.then(() => 'navigated' as const), cancelled]);
+					// The losing navigation still settles; unhandled, it would
+					// surface as a rejection with nobody left to catch it.
+					void navigated.catch(() => {});
+					if (outcome === 'cancelled') return page.url();
+				} else {
+					await navigated;
+				}
+
 				debug.log('preview', `✅ Cloudflare navigation → ${page.url()}`);
 			} catch {
 				debug.warn('preview', `⚠️ Cloudflare auto-pass timed out on attempt ${attempt + 1}, proceeding`);

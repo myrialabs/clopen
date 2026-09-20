@@ -26,6 +26,13 @@ export interface LaunchResult {
 	success: boolean;
 	sessionId?: string;
 	sessionInfo?: BrowserSessionInfo;
+	/**
+	 * The user stopped the launch before its page loaded anything.
+	 *
+	 * Neither a success nor a failure: there is no tab, and nothing to report
+	 * — the slot simply goes back to idle, ready to be launched again.
+	 */
+	cancelled?: boolean;
 	error?: string;
 }
 
@@ -72,7 +79,8 @@ export async function launchBrowser(
 	deviceSize: DeviceSize,
 	rotation: Rotation,
 	projectId: string,
-	mcpSessionId?: string
+	mcpSessionId?: string,
+	launchId?: string
 ): Promise<LaunchResult> {
 	debug.log('preview', `🌐 launchBrowser - URL: ${url}, device: ${deviceSize}, rotation: ${rotation}, projectId: ${projectId}${mcpSessionId ? `, mcpSessionId: ${mcpSessionId}` : ''}`);
 
@@ -102,9 +110,14 @@ export async function launchBrowser(
 		// Backend will create tab automatically with projectId
 		const data = await ws.http(
 			'preview:browser-tab-open',
-			{ url, deviceSize, rotation },
+			{ url, deviceSize, rotation, launchId },
 			60000
 		);
+
+		if (data.cancelled) {
+			debug.log('preview', '🛑 Launch stopped before the page loaded');
+			return { success: false, cancelled: true };
+		}
 
 		debug.log('preview', `✅ Browser launched successfully - sessionId: ${data.tabId}`);
 
@@ -112,8 +125,8 @@ export async function launchBrowser(
 			success: true,
 			sessionId: data.tabId,
 			sessionInfo: {
-				quality: data.quality,
-				url: data.url,
+				quality: data.quality ?? 'good',
+				url: data.url ?? url,
 				deviceSize,
 				rotation
 			}
@@ -129,6 +142,22 @@ export async function launchBrowser(
 			success: false,
 			error: error instanceof Error ? error.message : 'Unknown error'
 		};
+	}
+}
+
+/**
+ * Stop a launch the user abandoned before it produced a tab.
+ *
+ * Fire-and-forget by design: the answer that matters is the launch call
+ * returning early, and a failure here only means the load runs to its natural
+ * end — the same thing that happened before Stop could reach it at all.
+ */
+export async function cancelBrowserLaunch(launchId: string): Promise<void> {
+	try {
+		await ws.http('preview:browser-tab-open-cancel', { launchId }, 10000);
+		debug.log('preview', `🛑 Asked the backend to stop launch ${launchId}`);
+	} catch (error) {
+		debug.warn('preview', `⚠️ Could not cancel launch ${launchId}:`, error);
 	}
 }
 

@@ -17,6 +17,7 @@ import {
 	switchToBackendTab
 } from './tab-operations.svelte';
 import { browserCleanup } from './cleanup.svelte';
+import { resolveLandedUrl } from '$frontend/utils/preview-launch';
 import { sendInteraction, updateViewport, setInteractionProjectId } from './interactions.svelte';
 import { previewTabManager } from '$frontend/stores/features/preview-tabs-workspace.svelte';
 import type {
@@ -167,12 +168,29 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			return;
 		}
 
+		// Named before the request goes out: it is what Stop addresses while the
+		// backend is still navigating, and what the tab-opened event is matched
+		// on when it finally arrives.
+		const launchId = crypto.randomUUID();
+
 		try {
-			tabManager.updateTab(tabId, { isLaunchingBrowser: true, errorMessage: null });
+			tabManager.updateTab(tabId, {
+				isLaunchingBrowser: true,
+				launchId,
+				loadStopped: false,
+				errorMessage: null
+			});
 
 			// Get current projectId
 			const projectId = getProjectId();
-			const result = await launchBrowserOp(tabUrl, tab.deviceSize, tab.rotation, projectId, mcpSessionId);
+			const result = await launchBrowserOp(
+				tabUrl,
+				tab.deviceSize,
+				tab.rotation,
+				projectId,
+				mcpSessionId,
+				launchId
+			);
 
 			if (result.success && result.sessionId && result.sessionInfo) {
 				debug.log('preview', `✅ Browser launched successfully - sessionId: ${result.sessionId}`);
@@ -180,8 +198,10 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 				// Register session for cleanup tracking
 				browserCleanup.registerSession(result.sessionId);
 
-				// Use the actual URL from backend (which may be different due to redirects)
-				const actualUrl = result.sessionInfo.url || tabUrl;
+				// Where the page actually landed, which redirects can move — or,
+				// for a launch the user stopped before it committed, the address
+				// they typed.
+				const actualUrl = resolveLandedUrl(result.sessionInfo.url, tabUrl);
 
 				tabManager.updateTab(tabId, {
 					sessionId: result.sessionId,
@@ -209,7 +229,11 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 					}
 				}
 
-				} else {
+				} else if (result.cancelled) {
+				// Asked for, so nothing is reported: the slot keeps its address
+				// and goes back to idle, which is where Reload picks it up.
+				debug.log('preview', `🛑 Launch for ${tabId} was stopped before it loaded`);
+			} else {
 				const errorMsg = result.error || 'Unknown error';
 				debug.error('preview', `❌ Browser launch failed:`, errorMsg);
 				tabManager.updateTab(tabId, { errorMessage: errorMsg });
@@ -227,7 +251,7 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 				onErrorChange(`Exception: ${errorMsg}`);
 			}
 		} finally {
-			tabManager.updateTab(tabId, { isLaunchingBrowser: false });
+			tabManager.updateTab(tabId, { isLaunchingBrowser: false, launchId: null });
 		}
 	}
 
@@ -237,6 +261,9 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	async function navigateBrowserForTab(tabId: string, newUrl: string) {
 		const tab = tabManager.getTab(tabId);
 		if (!tab || !tab.sessionId) return;
+
+		// Asking for a page again retracts an earlier Stop.
+		tabManager.updateTab(tabId, { loadStopped: false });
 
 		try {
 			// Set isNavigating since we have an existing session
