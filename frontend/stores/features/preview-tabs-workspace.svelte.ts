@@ -36,6 +36,7 @@ import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
 import { sameTabTarget } from '$frontend/utils/preview-url';
+import { findLaunchSlot, resolveLandedUrl } from '$frontend/utils/preview-launch';
 
 /** Module-level tab manager — shared across BrowserPreview mounts. */
 export const previewTabManager: TabManager = createTabManager();
@@ -591,11 +592,13 @@ export function initPreviewTabSync(): void {
 			return;
 		}
 
-		// A tab the frontend is launching (user typed a URL) is awaiting its
-		// backend session — link this event to it instead of creating a duplicate.
-		const launchingTab = previewTabManager.tabs.find((t) => t.isLaunchingBrowser && !t.sessionId);
+		// The slot that started this launch, named when the request went out.
+		const launchingTab = findLaunchSlot(previewTabManager.tabs, data.launchId);
 		if (launchingTab) {
 			debug.log('preview', `🔗 [dock] Linking launching tab ${launchingTab.id} → backend ${data.tabId}`);
+
+			const landed = data.url && data.url !== 'about:blank';
+
 			previewTabManager.updateTab(launchingTab.id, {
 				sessionId: data.tabId,
 				sessionInfo: {
@@ -604,8 +607,8 @@ export function initPreviewTabSync(): void {
 					deviceSize: data.deviceSize,
 					rotation: data.rotation
 				},
-				url: data.url,
-				title: data.title,
+				url: resolveLandedUrl(data.url, launchingTab.url),
+				title: landed ? data.title : launchingTab.title || data.title,
 				deviceSize: data.deviceSize || 'laptop',
 				rotation: data.rotation || 'landscape',
 				isConnected: true,

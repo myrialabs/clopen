@@ -20,6 +20,23 @@ export interface PreviewTab {
 	isStreamReady: boolean;
 	isLoading: boolean;
 	isLaunchingBrowser: boolean;
+	/**
+	 * Name of the launch this tab is waiting on, while it is waiting.
+	 *
+	 * The backend has no tab to report until the first navigation finishes, so
+	 * this is what ties the tab that eventually arrives back to the slot that
+	 * asked for it — and what Stop addresses in the meantime.
+	 */
+	launchId: string | null;
+	/**
+	 * Whether the user stopped this tab's load before it produced a page.
+	 *
+	 * The slot keeps its address but has no session, which is otherwise the
+	 * exact shape of a tab that needs launching — and the panel relaunches
+	 * those on sight. This is what tells the difference between "not started
+	 * yet" and "started, and stopped on purpose".
+	 */
+	loadStopped: boolean;
 	isNavigating: boolean; // True when navigating within same session (e.g., clicking a link)
 	/** Whether this tab's history has anywhere to go — drives the toolbar arrows. */
 	canGoBack: boolean;
@@ -76,6 +93,8 @@ export function createTabManager() {
 			isStreamReady: false,
 			isLoading: false,
 			isLaunchingBrowser: false,
+			launchId: null,
+			loadStopped: false,
 			isNavigating: false,
 			canGoBack: false,
 			canGoForward: false,

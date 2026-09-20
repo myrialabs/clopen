@@ -85,6 +85,14 @@
 		isPageFullscreen = false,
 		onExitFullscreen = (() => {}) as () => void,
 
+		/**
+		 * The user stopped this tab's load before it produced a page.
+		 *
+		 * A settled state, not a transient one: there is no session, so no
+		 * frame is coming and the loading overlay would sit there for ever.
+		 */
+		loadStopped = false,
+
 		// Canvas API
 		canvasAPI = $bindable<any>(null),
 
@@ -335,7 +343,9 @@
 	 * to prevent that keyed on `lastFrameData`, whose writer no longer exists,
 	 * so it was never true and never prevented anything.
 	 */
-	const showSolidOverlay = $derived(isLaunchingBrowser || !sessionInfo || !hasPaintedContent);
+	const showSolidOverlay = $derived(
+		!loadStopped && (isLaunchingBrowser || !sessionInfo || !hasPaintedContent)
+	);
 
 	// Navigation overlay state with debounce to prevent flickering during state transitions
 	let showNavigationOverlay = $state(false);
@@ -837,6 +847,33 @@
 			>
 				<Icon name="lucide:refresh-cw" class="w-4 h-4" />
 				<span>Try Again</span>
+			</button>
+		</div>
+	{/if}
+
+	<!--
+		Stopped on purpose. Shares the failure panel's shape because it is the
+		same kind of moment — nothing to show, and one obvious way forward —
+		but it is not an error: the user asked for this, so it is not dressed
+		as something that went wrong.
+	-->
+	{#if loadStopped && !errorMessage}
+		<div
+			class="text-center text-slate-500 absolute z-40"
+			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
+			out:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
+		>
+			<Icon name="lucide:circle-slash" class="w-16 h-16 mx-auto mb-4 opacity-25" />
+			<p class="text-lg font-medium mb-2 text-slate-700 dark:text-slate-300">Loading stopped</p>
+			<p class="text-sm mb-4 text-slate-600 dark:text-slate-400 max-w-md">
+				Nothing had loaded yet, so there is nothing to show.
+			</p>
+			<button
+				onclick={handleRetryClick}
+				class="px-5 py-2.5 bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium rounded-lg transition-colors duration-200 inline-flex items-center gap-2"
+			>
+				<Icon name="lucide:refresh-cw" class="w-4 h-4" />
+				<span>Load again</span>
 			</button>
 		</div>
 	{/if}
