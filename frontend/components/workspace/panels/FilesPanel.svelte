@@ -1009,7 +1009,7 @@
 	function sortFileNodes(nodes: FileNode[]): FileNode[] {
 		return nodes.sort((a, b) => {
 			if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-			return a.name.localeCompare(b.name);
+			return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 		});
 	}
 

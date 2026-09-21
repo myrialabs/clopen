@@ -96,9 +96,9 @@ export async function buildTurnFiles(
 		files.push({ path, status, insertions, deletions, isBinary, contentAvailable });
 	}
 
-	// Alphabetical: a turn's file list is read as a checklist, and a stable order
+	// Natural sort: a turn's file list is read as a checklist, and a stable order
 	// is what lets the eye return to the same row after a refetch.
-	files.sort((a, b) => a.path.localeCompare(b.path));
+	files.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
 	return files;
 }
 

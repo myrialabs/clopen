@@ -477,8 +477,8 @@ export class GitService {
 						}
 					})
 				);
-				// Stable order for the UI (sorted by relPath).
-				nestedResults.sort((a, b) => a.relPath.localeCompare(b.relPath));
+				// Stable order for the UI (sorted by relPath, natural sort).
+				nestedResults.sort((a, b) => a.relPath.localeCompare(b.relPath, undefined, { numeric: true, sensitivity: 'base' }));
 				branchInfo.nested = nestedResults;
 			}
 		} catch (err) {

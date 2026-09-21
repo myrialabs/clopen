@@ -165,12 +165,12 @@ export async function handlePathBrowsing(path: string): Promise<PathBrowseData> 
 			}
 		}
 
-		// Sort: directories first, then files, both alphabetically
+		// Sort: directories first, then files, both in natural order (issue-36 before issue-109)
 		children.sort((a, b) => {
 			if (a.type !== b.type) {
 				return a.type === 'directory' ? -1 : 1;
 			}
-			return a.name.localeCompare(b.name);
+			return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 		});
 
 		return {
