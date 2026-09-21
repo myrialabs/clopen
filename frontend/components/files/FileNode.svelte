@@ -236,11 +236,12 @@
 
 <div
 	bind:this={nodeElement}
+	data-path={file.path}
 	class="group relative flex items-center space-x-2 px-2 py-1.5 rounded-md transition-colors {isActiveFile
 		? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
 		: isInSelection
 			? 'bg-violet-500/5 dark:bg-violet-500/10 text-slate-900 dark:text-slate-100'
-			: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'} {isDropTarget ? 'ring-2 ring-violet-500/60 ring-inset' : ''} {isCut ? 'opacity-50' : ''} {isBusy ? 'opacity-60 cursor-not-allowed pointer-events-none' : 'cursor-pointer'}"
+			: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'} {isDropTarget ? 'ring-2 ring-violet-500/60 ring-inset' : ''} {isCut ? 'opacity-50' : ''} {isBusy ? 'opacity-60 cursor-not-allowed pointer-events-none' : 'cursor-pointer'} focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-violet-500/60"
 	class:selected={isActiveFile}
 	class:directory={file.type === 'directory'}
 	title={isCut ? `${file.name} (cut)` : file.name}
