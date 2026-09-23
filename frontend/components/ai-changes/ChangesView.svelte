@@ -156,7 +156,7 @@
 				else byPath.set(file.path, { path: file.path, entries: [{ turn, file }] });
 			}
 		}
-		return Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+		return Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
 	});
 
 	const totals = $derived.by(() => {

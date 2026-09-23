@@ -57,7 +57,7 @@ export function planMerge(base: TreeMap, source: TreeMap, target: TreeMap): Merg
 
 	const entries: MergeEntry[] = [];
 
-	for (const filePath of [...paths].sort()) {
+	for (const filePath of [...paths].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))) {
 		const baseHash = base[filePath] ?? null;
 		const sourceHash = source[filePath] ?? null;
 		const targetHash = target[filePath] ?? null;

@@ -396,7 +396,7 @@ export async function detectEnvUsage(input: {
 
 		const keys = [...draft.keys.keys()].sort();
 		const orderedFiles = [...draft.files].sort(
-			(a, b) => envFilePrecedence(a) - envFilePrecedence(b) || a.localeCompare(b)
+			(a, b) => envFilePrecedence(a) - envFilePrecedence(b) || a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
 		);
 		const isTemplateOnly = draft.liveFiles.length === 0;
 		const where = orderedFiles[0] ?? [...draft.sources][0] ?? 'this project';

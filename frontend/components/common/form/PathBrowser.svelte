@@ -356,11 +356,11 @@
 				// Filter to show only directories and common project files
 				items = (fileData.children as FileItem[])
 					.sort((a, b) => {
-						// Directories first, then files
+						// Directories first, then files (natural sort: issue-36 before issue-109)
 						if (a.type !== b.type) {
 							return a.type === 'directory' ? -1 : 1;
 						}
-						return a.name.localeCompare(b.name);
+						return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 					});
 			} else {
 				items = [];

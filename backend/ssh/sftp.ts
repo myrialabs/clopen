@@ -475,12 +475,13 @@ export const sftpService = {
 			const items = await callSftp<FileEntryWithStats[]>((done) => sftp.readdir(resolved, done));
 			const entries = await Promise.all(items.map((item) => describeEntry(sftp, resolved, item)));
 			entries.sort((left, right) => {
-				// Directories first, then case-insensitive by name — the ordering
+				// Directories first, then case-insensitive natural sort by name
+				// (numeric: issue-36 sorts before issue-109) — the ordering
 				// every file browser uses, and one the client never has to redo.
 				const leftIsDir = left.type === 'directory' || left.targetType === 'directory';
 				const rightIsDir = right.type === 'directory' || right.targetType === 'directory';
 				if (leftIsDir !== rightIsDir) return leftIsDir ? -1 : 1;
-				return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+				return left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' });
 			});
 			return { path: resolved, entries };
 		});

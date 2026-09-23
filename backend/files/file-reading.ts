@@ -95,12 +95,12 @@ export async function buildFileTree(
 					}
 				}
 
-				// Sort children: directories first, then files
+				// Sort children: directories first, then files (natural sort: issue-36 before issue-109)
 				children.sort((a, b) => {
 					if (a.type !== b.type) {
 						return a.type === 'directory' ? -1 : 1;
 					}
-					return a.name.localeCompare(b.name);
+					return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 				});
 
 				return {
@@ -175,12 +175,12 @@ export async function listDirectoryContents(dirPath: string): Promise<FileTreeNo
 		}
 	}
 
-	// Sort children: directories first, then files
+	// Sort children: directories first, then files (natural sort: issue-36 before issue-109)
 	children.sort((a, b) => {
 		if (a.type !== b.type) {
 			return a.type === 'directory' ? -1 : 1;
 		}
-		return a.name.localeCompare(b.name);
+		return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 	});
 
 	return children;
@@ -283,12 +283,12 @@ export async function searchFiles(rootPath: string, query: string): Promise<File
 
 	await searchRecursive(rootPath);
 
-	// Sort results: directories first, then files, both alphabetically
+	// Sort results: directories first, then files, both in natural order
 	results.sort((a, b) => {
 		if (a.type !== b.type) {
 			return a.type === 'directory' ? -1 : 1;
 		}
-		return a.name.localeCompare(b.name);
+		return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
 	});
 
 	// Limit results to prevent overwhelming the UI
