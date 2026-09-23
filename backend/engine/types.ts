@@ -46,6 +46,16 @@ export interface EngineQueryOptions {
 	accountId?: number;
 	/** Context bound to MCP tool handlers for project isolation */
 	mcpContext?: McpExecutionContext;
+	/**
+	 * `GIT_CONFIG_*` block for the git identity of whoever asked for this turn
+	 * (see `backend/git/identity`). Adapters merge it into the environment of
+	 * the process they spawn, so a `git commit` the agent runs through its shell
+	 * tool is authored by the same identity as one made from the Git panel.
+	 *
+	 * Resolved once per turn by the stream manager rather than by each adapter:
+	 * the adapter knows how to spawn its engine, not who is driving it.
+	 */
+	gitIdentityEnv?: Record<string, string>;
 }
 
 /** Options for one-shot structured generation (no tools, no streaming) */

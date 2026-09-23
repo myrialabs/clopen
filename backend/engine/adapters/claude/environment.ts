@@ -57,8 +57,16 @@ export async function setupEnvironmentOnce(): Promise<void> {
  *
  * When accountId is provided, overrides the OAuth token with that
  * specific account's token instead of the globally active account.
+ *
+ * `extraEnv` is applied last and carries per-turn values the caller resolved —
+ * in practice the requester's git identity, so a `git commit` the agent runs
+ * through its shell tool is authored by the same person the Git panel would
+ * attribute it to.
  */
-export function getEngineEnv(accountId?: number): Record<string, string> {
+export function getEngineEnv(
+  accountId?: number,
+  extraEnv?: Record<string, string>
+): Record<string, string> {
   // Start from clean env (no Bun/npm/Vite pollution)
   const env = getCleanSpawnEnv();
   // Apply our overrides
@@ -76,6 +84,8 @@ export function getEngineEnv(accountId?: number): Record<string, string> {
       // Ignore — fall back to default token from overrides
     }
   }
+
+  if (extraEnv) Object.assign(env, extraEnv);
 
   return env;
 }

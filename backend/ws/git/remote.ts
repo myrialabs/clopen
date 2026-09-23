@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { requireProjectWorkspace } from '../access';
+import { identityEnvFor, identityEnvForRemote } from './identity-context';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -54,7 +55,11 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		const message = await gitService.fetch(cwd, data.remote);
+		const message = await gitService.fetch(
+			cwd,
+			data.remote,
+			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+		);
 		return { message };
 	})
 
@@ -73,7 +78,13 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.pull(cwd, data.remote, data.branch, data.rebase);
+		return await gitService.pull(
+			cwd,
+			data.remote,
+			data.branch,
+			data.rebase,
+			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+		);
 	})
 
 	.http('git:push-advanced', {
@@ -96,7 +107,13 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.pushAdvanced(cwd, data.mode, data.remote, data.branch);
+		return await gitService.pushAdvanced(
+			cwd,
+			data.mode,
+			data.remote,
+			data.branch,
+			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+		);
 	})
 
 	.http('git:fetch-all', {
@@ -110,7 +127,10 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		const message = await gitService.fetchAll(cwd);
+		const message = await gitService.fetchAll(
+			cwd,
+			await identityEnvForRemote(conn, data.projectId, cwd)
+		);
 		return { message };
 	})
 
@@ -134,9 +154,14 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.push(cwd, data.remote, data.branch, data.force, {
-			useUpstream: data.useUpstream ?? true
-		});
+		return await gitService.push(
+			cwd,
+			data.remote,
+			data.branch,
+			data.force,
+			{ useUpstream: data.useUpstream ?? true },
+			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+		);
 	})
 
 	/** Where a push would actually land — drives the Push button's label. */
@@ -278,7 +303,12 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.deleteRemoteBranch(cwd, data.remote, data.branch);
+		await gitService.deleteRemoteBranch(
+			cwd,
+			data.remote,
+			data.branch,
+			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+		);
 		return { ok: true };
 	})
 
@@ -309,7 +339,12 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.stashSave(cwd, data.message, data.staged);
+		await gitService.stashSave(
+			cwd,
+			data.message,
+			data.staged,
+			identityEnvFor(conn, data.projectId)
+		);
 		return { ok: true };
 	})
 
@@ -422,7 +457,13 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.createTag(cwd, data.name, data.message, data.commitHash);
+		await gitService.createTag(
+			cwd,
+			data.name,
+			data.message,
+			data.commitHash,
+			identityEnvFor(conn, data.projectId)
+		);
 		return { ok: true };
 	})
 
@@ -454,5 +495,10 @@ export const remoteHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.pushTag(cwd, data.name, data.remote);
+		return await gitService.pushTag(
+			cwd,
+			data.name,
+			data.remote,
+			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+		);
 	});

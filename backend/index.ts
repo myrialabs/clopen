@@ -16,6 +16,22 @@ if (typeof globalThis.Bun === 'undefined') {
 // MUST be first import — cleans process.env before any other module reads it.
 import { SERVER_ENV } from './utils/env';
 
+// Git's credential/askpass helpers re-invoke Clopen through whatever entry point
+// is running, which is `Bun.main` — and that is this file under `bun --watch
+// backend/index.ts`, and `scripts/start.ts` (which imports this one) under `bun
+// run start`. `bin/clopen.ts` has the same guard for a global install. All three
+// need it: without one, git would spawn an entry that does not know the
+// subcommand, and an HTTPS push would fail asking for a password nobody typed.
+//
+// Placed here, above every side-effecting import, so a helper invocation exits
+// before anything opens a port or starts a watcher.
+import { runGitHelper } from './git/identity/cli';
+
+{
+	const helperExit = await runGitHelper(process.argv.slice(2));
+	if (helperExit !== null) process.exit(helperExit);
+}
+
 import { Elysia } from 'elysia';
 import { corsMiddleware } from './middleware/cors';
 import { errorHandlerMiddleware } from './middleware/error-handler';

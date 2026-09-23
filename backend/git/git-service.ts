@@ -3,7 +3,7 @@
  * High-level git operations built on top of executor and parser
  */
 
-import { execGit, isGitRepo, getGitRoot, type GitExecResult } from './git-executor';
+import { execGit, isGitRepo, getGitRoot, type GitExecResult, type GitIdentityEnv } from './git-executor';
 import { resolveBinary } from '../utils/cli';
 import { getCleanSpawnEnv } from '../utils/env';
 import {
@@ -241,9 +241,18 @@ export class GitService {
 	// Commit
 	// ============================================
 
-	async commit(cwd: string, message: string): Promise<string> {
+	/**
+	 * Create a commit.
+	 *
+	 * `identityEnv` carries who is committing (see `backend/git/identity`). It is
+	 * threaded explicitly through the operations that create a git object or talk
+	 * to a remote, rather than resolved inside `execGit`, because resolving it
+	 * reads the database and the read-only commands run constantly. Anything
+	 * added here that writes an object or authenticates needs the same parameter.
+	 */
+	async commit(cwd: string, message: string, identityEnv: GitIdentityEnv = {}): Promise<string> {
 		assertSafeGitCommitMessage(message);
-		const result = await execGit(['commit', '-m', message], cwd);
+		const result = await execGit(['commit', '-m', message], cwd, { env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git commit failed: ${result.stderr}`);
 		}
@@ -252,7 +261,7 @@ export class GitService {
 		return hashResult.stdout.trim();
 	}
 
-	async amendCommit(cwd: string, message?: string): Promise<string> {
+	async amendCommit(cwd: string, message?: string, identityEnv: GitIdentityEnv = {}): Promise<string> {
 		const args = ['commit', '--amend'];
 		if (message) {
 			assertSafeGitCommitMessage(message);
@@ -260,7 +269,7 @@ export class GitService {
 		} else {
 			args.push('--no-edit');
 		}
-		const result = await execGit(args, cwd);
+		const result = await execGit(args, cwd, { env: identityEnv });
 		if (result.exitCode !== 0) {
 			// Unborn HEAD — git says "You have nothing to amend", which reads like a
 			// failure rather than "commit normally instead".
@@ -535,10 +544,10 @@ export class GitService {
 		}
 	}
 
-	async deleteRemoteBranch(cwd: string, remote: string, branch: string): Promise<void> {
+	async deleteRemoteBranch(cwd: string, remote: string, branch: string, identityEnv: GitIdentityEnv = {}): Promise<void> {
 		assertSafeGitRevish(remote, 'remote name');
 		assertSafeGitRevish(branch, 'branch name');
-		const result = await execGit(['push', remote, '--delete', branch], cwd);
+		const result = await execGit(['push', remote, '--delete', branch], cwd, { env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git push --delete failed: ${result.stderr}`);
 		}
@@ -555,7 +564,8 @@ export class GitService {
 	async mergeBranch(
 		cwd: string,
 		branchName: string,
-		options: { noFastForward?: boolean; squash?: boolean; ffOnly?: boolean } | boolean = false
+		options: { noFastForward?: boolean; squash?: boolean; ffOnly?: boolean } | boolean = false,
+		identityEnv: GitIdentityEnv = {}
 	): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRevish(branchName, 'merge branch');
 		const opts = typeof options === 'boolean' ? { noFastForward: options } : options;
@@ -564,7 +574,7 @@ export class GitService {
 		else if (opts.ffOnly) args.push('--ff-only');
 		else if (opts.noFastForward) args.push('--no-ff');
 		args.push(branchName);
-		const result = await execGit(args, cwd, 120000);
+		const result = await execGit(args, cwd, { timeout: 120000, env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? result.stdout : result.stderr
@@ -627,10 +637,10 @@ export class GitService {
 		return parseRemotes(result.stdout);
 	}
 
-	async fetch(cwd: string, remote = 'origin'): Promise<string> {
+	async fetch(cwd: string, remote = 'origin', identityEnv: GitIdentityEnv = {}): Promise<string> {
 		assertSafeGitRemoteName(remote);
 		// Use explicit refspec to ensure all branches are fetched regardless of clone config
-		const result = await execGit(['fetch', remote, `+refs/heads/*:refs/remotes/${remote}/*`, '--prune'], cwd, 60000);
+		const result = await execGit(['fetch', remote, `+refs/heads/*:refs/remotes/${remote}/*`, '--prune'], cwd, { timeout: 60000, env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git fetch failed: ${result.stderr}`);
 		}
@@ -645,7 +655,7 @@ export class GitService {
 	 * differently-named branch, which is the normal state of a fork PR under
 	 * review. A tracked branch pulls from its own upstream.
 	 */
-	async pull(cwd: string, remote = 'origin', branch?: string, rebase = false): Promise<{ success: boolean; message: string }> {
+	async pull(cwd: string, remote = 'origin', branch?: string, rebase = false, identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		const args = ['pull'];
 		if (rebase) args.push('--rebase');
 
@@ -659,7 +669,9 @@ export class GitService {
 			}
 		}
 
-		const result = await execGit(args, cwd, 60000);
+		// A pull can create a merge commit, so it needs both halves of the
+		// identity: the credential to fetch, the name to author the merge.
+		const result = await execGit(args, cwd, { timeout: 60000, env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? result.stdout : result.stderr
@@ -794,7 +806,8 @@ export class GitService {
 		remote = 'origin',
 		branch?: string,
 		force = false,
-		options: { useUpstream?: boolean } = {}
+		options: { useUpstream?: boolean } = {},
+		identityEnv: GitIdentityEnv = {}
 	): Promise<{ success: boolean; message: string }> {
 		const { useUpstream = true } = options;
 		const target = await this.getPushTarget(cwd, branch);
@@ -802,7 +815,7 @@ export class GitService {
 		if (useUpstream && target.hasUpstream) {
 			const args = ['push'];
 			if (force) args.push('--force-with-lease');
-			return this.describePushResult(cwd, await execGit(args, cwd, 60000));
+			return this.describePushResult(cwd, await execGit(args, cwd, { timeout: 60000, env: identityEnv }));
 		}
 
 		assertSafeGitRemoteName(remote);
@@ -815,7 +828,7 @@ export class GitService {
 		// Only safe here: the branch tracks nothing, so there is no upstream to
 		// overwrite and recording one is the point of a first push.
 		args.push('-u');
-		return this.describePushResult(cwd, await execGit(args, cwd, 60000));
+		return this.describePushResult(cwd, await execGit(args, cwd, { timeout: 60000, env: identityEnv }));
 	}
 
 	/** Point a branch at a different upstream — the way back from a wrong push. */
@@ -857,7 +870,8 @@ export class GitService {
 		cwd: string,
 		mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force',
 		remote = 'origin',
-		branch?: string
+		branch?: string,
+		identityEnv: GitIdentityEnv = {}
 	): Promise<{ success: boolean; message: string }> {
 		// `--tags` is about the tag namespace, not this branch, so it always needs
 		// an explicit remote.
@@ -865,7 +879,7 @@ export class GitService {
 			assertSafeGitRemoteName(remote);
 			return this.describePushResult(
 				cwd,
-				await execGit(['push', remote, '--tags'], cwd, 60000)
+				await execGit(['push', remote, '--tags'], cwd, { timeout: 60000, env: identityEnv })
 			);
 		}
 
@@ -879,7 +893,7 @@ export class GitService {
 		// Same rule as `push`: a tracked branch goes where git says it goes.
 		const target = await this.getPushTarget(cwd, branch);
 		if (target.hasUpstream) {
-			return this.describePushResult(cwd, await execGit(['push', flag], cwd, 60000));
+			return this.describePushResult(cwd, await execGit(['push', flag], cwd, { timeout: 60000, env: identityEnv }));
 		}
 
 		assertSafeGitRemoteName(remote);
@@ -889,12 +903,12 @@ export class GitService {
 			args.push(branch);
 		}
 		args.push(flag, '-u');
-		return this.describePushResult(cwd, await execGit(args, cwd, 60000));
+		return this.describePushResult(cwd, await execGit(args, cwd, { timeout: 60000, env: identityEnv }));
 	}
 
 	/** Fetch every configured remote and prune deleted remote-tracking refs. */
-	async fetchAll(cwd: string): Promise<string> {
-		const result = await execGit(['fetch', '--all', '--prune', '--tags'], cwd, 60000);
+	async fetchAll(cwd: string, identityEnv: GitIdentityEnv = {}): Promise<string> {
+		const result = await execGit(['fetch', '--all', '--prune', '--tags'], cwd, { timeout: 60000, env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git fetch --all failed: ${result.stderr}`);
 		}
@@ -950,7 +964,7 @@ export class GitService {
 		return parseStashList(result.stdout);
 	}
 
-	async stashSave(cwd: string, message?: string, stagedOnly = false): Promise<void> {
+	async stashSave(cwd: string, message?: string, stagedOnly = false, identityEnv: GitIdentityEnv = {}): Promise<void> {
 		const args = ['stash', 'push'];
 		// `--staged` stashes exactly the index (works at hunk level, so partially
 		// staged files are handled precisely). Requires Git >= 2.35.
@@ -959,7 +973,7 @@ export class GitService {
 			assertSafeGitCommitMessage(message);
 			args.push('-m', message);
 		}
-		const result = await execGit(args, cwd);
+		const result = await execGit(args, cwd, { env: identityEnv });
 		if (result.exitCode !== 0) {
 			// Git < 2.35 doesn't know `--staged`; surface an actionable message
 			// instead of the raw "unknown option" / "usage:" noise.
@@ -1073,7 +1087,7 @@ export class GitService {
 		return tags;
 	}
 
-	async createTag(cwd: string, name: string, message?: string, commitHash?: string): Promise<void> {
+	async createTag(cwd: string, name: string, message?: string, commitHash?: string, identityEnv: GitIdentityEnv = {}): Promise<void> {
 		assertSafeGitRevish(name, 'tag name');
 		const args = ['tag'];
 		if (message) {
@@ -1086,7 +1100,7 @@ export class GitService {
 			assertSafeGitRevish(commitHash, 'tag target');
 			args.push(commitHash);
 		}
-		const result = await execGit(args, cwd);
+		const result = await execGit(args, cwd, { env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git tag failed: ${result.stderr}`);
 		}
@@ -1100,10 +1114,10 @@ export class GitService {
 		}
 	}
 
-	async pushTag(cwd: string, name: string, remote = 'origin'): Promise<{ success: boolean; message: string }> {
+	async pushTag(cwd: string, name: string, remote = 'origin', identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRemoteName(remote);
 		assertSafeGitRevish(name, 'tag name');
-		const result = await execGit(['push', remote, name], cwd, 60000);
+		const result = await execGit(['push', remote, name], cwd, { timeout: 60000, env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? (result.stderr || result.stdout) : result.stderr
@@ -1422,7 +1436,7 @@ export class GitService {
 	 * on failure, because the common failures here are instructions rather than
 	 * errors — "nothing to commit, use --skip" is something the user must read.
 	 */
-	async continueOperation(cwd: string): Promise<{ success: boolean; message: string }> {
+	async continueOperation(cwd: string, identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		const operation = await this.detectGitOperation(cwd);
 		const unmerged = await this.getUnmergedPaths(cwd);
 		if (unmerged.length > 0) {
@@ -1449,7 +1463,7 @@ export class GitService {
 				throw new Error('There is no operation to continue.');
 		}
 
-		const result = await execGit(args, cwd, 120000);
+		const result = await execGit(args, cwd, { timeout: 120000, env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: (result.exitCode === 0 ? result.stdout : result.stderr).trim()
@@ -1457,7 +1471,7 @@ export class GitService {
 	}
 
 	/** Drop the commit git is currently stuck on and move to the next one. */
-	async skipOperation(cwd: string): Promise<{ success: boolean; message: string }> {
+	async skipOperation(cwd: string, identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		const operation = await this.detectGitOperation(cwd);
 		let args: string[];
 		switch (operation) {
@@ -1474,7 +1488,7 @@ export class GitService {
 				throw new Error('This operation cannot be skipped.');
 		}
 
-		const result = await execGit(args, cwd, 120000);
+		const result = await execGit(args, cwd, { timeout: 120000, env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: (result.exitCode === 0 ? result.stdout : result.stderr).trim()
@@ -1531,14 +1545,15 @@ export class GitService {
 	async rebaseOnto(
 		cwd: string,
 		upstream: string,
-		autostash = true
+		autostash = true,
+		identityEnv: GitIdentityEnv = {}
 	): Promise<{ success: boolean; hasConflicts: boolean; message: string }> {
 		assertSafeGitRevish(upstream, 'rebase upstream');
 		const args = ['rebase'];
 		if (autostash) args.push('--autostash');
 		args.push(upstream);
 
-		const result = await execGit(args, cwd, 120000);
+		const result = await execGit(args, cwd, { timeout: 120000, env: identityEnv });
 		const combined = `${result.stdout}\n${result.stderr}`;
 		const hasConflicts = /CONFLICT \(/.test(combined) || /could not apply/i.test(combined);
 		if (result.exitCode !== 0 && !hasConflicts) {
@@ -1644,9 +1659,9 @@ export class GitService {
 	}
 
 	/** Create a new commit that reverses a previous one (default: HEAD). */
-	async revertCommit(cwd: string, ref = 'HEAD'): Promise<{ success: boolean; message: string }> {
+	async revertCommit(cwd: string, ref = 'HEAD', identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRevish(ref, 'revert ref');
-		const result = await execGit(['revert', '--no-edit', ref], cwd);
+		const result = await execGit(['revert', '--no-edit', ref], cwd, { env: identityEnv });
 		if (result.exitCode !== 0 && !(await this.hasCommits(cwd))) {
 			// Unborn HEAD — git only reports `bad revision 'HEAD'`.
 			return { success: false, message: 'This repository has no commits yet, so there is nothing to revert.' };
@@ -1658,14 +1673,14 @@ export class GitService {
 	}
 
 	/** Cherry-pick one or more commits onto the current branch (`git cherry-pick <hash>...`). */
-	async cherryPick(cwd: string, refs: string[]): Promise<{ success: boolean; message: string }> {
+	async cherryPick(cwd: string, refs: string[], identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		if (refs.length === 0) {
 			return { success: false, message: 'No commits provided' };
 		}
 		for (const ref of refs) {
 			assertSafeGitRevish(ref, 'cherry-pick ref');
 		}
-		const result = await execGit(['cherry-pick', ...refs], cwd);
+		const result = await execGit(['cherry-pick', ...refs], cwd, { env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? (result.stdout || result.stderr || 'Cherry-pick succeeded') : result.stderr
@@ -1705,17 +1720,21 @@ export class GitService {
 	 */
 	async npmVersion(
 		cwd: string,
-		bump: 'patch' | 'minor' | 'major'
+		bump: 'patch' | 'minor' | 'major',
+		identityEnv: GitIdentityEnv = {}
 	): Promise<{ success: boolean; version: string; message: string }> {
 		const npmPath = resolveBinary('npm');
 		if (!npmPath) {
 			throw new Error('npm binary not found on PATH');
 		}
+		// npm runs git itself for the bump commit and tag, so the identity has to
+		// travel in the environment — there is no `execGit` call here to attach it
+		// to, and this is precisely why the mechanism is environment-based.
 		const proc = Bun.spawn([npmPath, 'version', bump], {
 			cwd,
 			stdout: 'pipe',
 			stderr: 'pipe',
-			env: { ...getCleanSpawnEnv() }
+			env: { ...getCleanSpawnEnv(), ...identityEnv }
 		});
 		const [stdout, stderr] = await Promise.all([
 			new Response(proc.stdout).text(),

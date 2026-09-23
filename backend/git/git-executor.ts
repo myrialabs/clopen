@@ -7,6 +7,15 @@ import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../utils/env';
 import { resolveBinary } from '../utils/cli';
 
+/**
+ * The environment fragment carrying a caller's git identity.
+ *
+ * An alias rather than a bare `Record<string, string>` so the operations that
+ * accept one say so in their signature — which is how a reader tells the
+ * commands that care who is running them from the ones that do not.
+ */
+export type GitIdentityEnv = Record<string, string>;
+
 export interface GitExecResult {
 	stdout: string;
 	stderr: string;
@@ -23,6 +32,21 @@ export interface GitExecOptions {
 	 * not logged as one — `check-ignore` exits 1 to say "nothing matched".
 	 */
 	okExitCodes?: number[];
+	/**
+	 * Extra environment for this invocation — in practice the `GIT_CONFIG_*`
+	 * block that carries the caller's git identity (see
+	 * `backend/git/identity/env.ts`).
+	 *
+	 * Passed per command rather than resolved here because resolving an identity
+	 * costs a database read, and `git status` runs many times a second. Commands
+	 * that create an object or talk to a remote ask for it; the read-only ones
+	 * never pay for it.
+	 *
+	 * Applied last, so an identity can override the fixed variables below. That
+	 * ordering matters for `core.sshCommand`, which nothing else here sets but a
+	 * future variable might.
+	 */
+	env?: Record<string, string>;
 }
 
 /**
@@ -36,7 +60,7 @@ export async function execGit(
 ): Promise<GitExecResult> {
 	const options: GitExecOptions =
 		typeof timeoutOrOptions === 'number' ? { timeout: timeoutOrOptions } : timeoutOrOptions;
-	const { timeout = 30000, stdin, okExitCodes = [] } = options;
+	const { timeout = 30000, stdin, okExitCodes = [], env: extraEnv } = options;
 	debug.log('git', `Executing: git ${args.join(' ')} in ${cwd}`);
 
 	const gitPath = resolveBinary('git');
@@ -70,7 +94,9 @@ export async function execGit(
 			GIT_SEQUENCE_EDITOR: 'true',
 			// Use English output for consistent parsing
 			LANG: 'en_US.UTF-8',
-			LC_ALL: 'en_US.UTF-8'
+			LC_ALL: 'en_US.UTF-8',
+			// The caller's git identity, last so it wins.
+			...extraEnv
 		}
 	});
 

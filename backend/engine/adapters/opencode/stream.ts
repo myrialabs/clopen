@@ -228,7 +228,10 @@ export class OpenCodeEngine implements AIEngine {
 		// stream keeps running until that stream is done. Holding the server by
 		// stream id is what makes that safe: a held server is never reaped.
 		const holderId = options.mcpContext?.streamId;
-		const server = await acquireServer({ mcpProfileFilter, subagentFilter, inlineAgents }, holderId);
+		const server = await acquireServer(
+			{ mcpProfileFilter, subagentFilter, inlineAgents, gitIdentityEnv: options.gitIdentityEnv },
+			holderId
+		);
 		run.server = server;
 		run.holder = holderId ? { key: server.key, holderId } : null;
 		const client = server.client;

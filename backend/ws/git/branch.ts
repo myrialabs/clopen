@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { requireProjectWorkspace } from '../access';
+import { identityEnvFor } from './identity-context';
 import { debug } from '$shared/utils/logger';
 
 const BranchSchema = t.Object({
@@ -171,11 +172,16 @@ export const branchHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.mergeBranch(cwd, data.branchName, {
-			noFastForward: data.noFastForward ?? false,
-			squash: data.squash ?? false,
-			ffOnly: data.ffOnly ?? false
-		});
+		return await gitService.mergeBranch(
+			cwd,
+			data.branchName,
+			{
+				noFastForward: data.noFastForward ?? false,
+				squash: data.squash ?? false,
+				ffOnly: data.ffOnly ?? false
+			},
+			identityEnvFor(conn, data.projectId)
+		);
 	})
 
 	.http('git:rebase', {
@@ -194,7 +200,12 @@ export const branchHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.rebaseOnto(cwd, data.upstream, data.autostash ?? true);
+		return await gitService.rebaseOnto(
+			cwd,
+			data.upstream,
+			data.autostash ?? true,
+			identityEnvFor(conn, data.projectId)
+		);
 	})
 
 	.http('git:return-to-branch', {
