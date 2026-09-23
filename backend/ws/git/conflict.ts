@@ -8,6 +8,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findNestedRepoPaths, findRepoForFile } from '../../git/nested-repos';
 import { requireProjectWorkspace } from '../access';
+import { identityEnvFor } from './identity-context';
 import { debug } from '$shared/utils/logger';
 
 function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string | null {
@@ -167,7 +168,7 @@ export const conflictHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		return await gitService.continueOperation(cwd);
+		return await gitService.continueOperation(cwd, identityEnvFor(conn, data.projectId));
 	})
 
 	.http('git:skip-operation', {
@@ -179,7 +180,7 @@ export const conflictHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		return await gitService.skipOperation(cwd);
+		return await gitService.skipOperation(cwd, identityEnvFor(conn, data.projectId));
 	})
 
 	.http('git:abort-operation', {

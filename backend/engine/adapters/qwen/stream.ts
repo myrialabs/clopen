@@ -150,7 +150,9 @@ export class QwenEngine implements AIEngine {
 		if (!resolution) {
 			throw new Error('Qwen Code is not configured. Add an API key in Settings → Engines → Qwen Code.');
 		}
-		const { env } = resolution;
+		// Layered here rather than inside `getEngineEnv` because the identity is a
+		// property of the turn, while that function answers "which account".
+		const env = { ...resolution.env, ...(options.gitIdentityEnv ?? {}) };
 
 		const controller = abortController || new AbortController();
 		const run: QwenRun = { controller, query: null, converter: null, pendingAskUserQuestion: null };

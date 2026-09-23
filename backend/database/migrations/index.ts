@@ -80,6 +80,7 @@ import * as migration078 from './078_create_worktree_branch_tables';
 import * as migration079 from './079_merge_commands_into_skills';
 import * as migration080 from './080_create_file_shares';
 import * as migration081 from './081_create_push_subscriptions';
+import * as migration082 from './082_create_git_identities';
 
 // Export all migrations in order
 export const migrations = [
@@ -568,6 +569,12 @@ export const migrations = [
 		description: migration081.description,
 		up: migration081.up,
 		down: migration081.down
+	},
+	{
+		id: '082',
+		description: migration082.description,
+		up: migration082.up,
+		down: migration082.down
 	}
 ];
 

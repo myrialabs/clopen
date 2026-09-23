@@ -142,6 +142,19 @@ export interface ServerConfigSpec {
 	subagentFilter?: Set<string>;
 	/** Inline agent definitions (undefined/empty = the engine's default set). */
 	inlineAgents?: Record<string, OpenCodeInlineAgent>;
+	/**
+	 * Git identity of whoever asked for this turn, as a `GIT_CONFIG_*` block.
+	 *
+	 * Folded into the signature for the same reason the connector set and the
+	 * provider credentials are: the server process is spawned with it and cannot
+	 * re-read it. One server serves every turn routed to it, so without this a
+	 * second user's turn would reuse a server carrying the FIRST user's identity
+	 * and commit under their name.
+	 *
+	 * In the ordinary case — one person, one identity — the block is identical
+	 * every turn and the signature does not move, so no extra server is spawned.
+	 */
+	gitIdentityEnv?: Record<string, string>;
 }
 
 /** Everything needed to spawn a server, plus the key derived from it. */
@@ -150,6 +163,7 @@ interface SpawnPlan {
 	scopeKey: string;
 	configContent: string;
 	envVars: Record<string, string>;
+	gitIdentityEnv: Record<string, string>;
 }
 
 /**
@@ -653,13 +667,20 @@ async function resolvePlan(spec: ServerConfigSpec): Promise<SpawnPlan> {
 	// models.dev catalog it reads lives in `settings`, which bumps no revision.
 	const providerConfig = generateOpenCodeProviderConfig();
 	const configContent = assembleConfigContent(config, providerConfig.enabledProviders, spec.inlineAgents);
+	// Sorted so the key order the builder happens to emit is not mistaken for a
+	// different identity.
+	const gitIdentityEnv = spec.gitIdentityEnv ?? {};
+	const gitIdentityKey = Object.keys(gitIdentityEnv)
+		.sort()
+		.map((k) => `${k}=${gitIdentityEnv[k]}`)
+		.join('\u0000');
 	const signature = hashConfig(
-		`${configContent}‖${JSON.stringify(providerConfig.envVars)}‖${fingerprint}‖${internalBridgeExposure()}`
+		`${configContent}‖${JSON.stringify(providerConfig.envVars)}‖${fingerprint}‖${internalBridgeExposure()}‖${gitIdentityKey}`
 	);
 	const key = `${scopeKey}#${signature}`;
 
 	currentKeyByScope.set(scopeKey, key);
-	return { key, scopeKey, configContent, envVars: providerConfig.envVars };
+	return { key, scopeKey, configContent, envVars: providerConfig.envVars, gitIdentityEnv };
 }
 
 // ============================================================================
@@ -955,6 +976,9 @@ async function spawnServerOnce(
 		env: {
 			...process.env,
 			...plan.envVars,
+			// The identity this server was keyed on, so a `git commit` the agent
+			// runs is authored by the person whose turn spawned it.
+			...plan.gitIdentityEnv,
 			XDG_CONFIG_HOME: configDir,
 			XDG_DATA_HOME: dataDir,
 			XDG_STATE_HOME: dataDir,
