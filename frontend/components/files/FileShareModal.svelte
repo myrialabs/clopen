@@ -39,6 +39,22 @@
 	/** File a link was already minted for, so a re-render never mints a second one. */
 	let mintedFor: string | null = null;
 
+	// Live row for the link this modal minted, refreshed real-time via
+	// `files:shares-changed` (opened from HP, revoked elsewhere, expired).
+	// The store always re-fetches fresh — never a cached list — so this
+	// derived flips the moment the phone's download hits the server.
+	const liveShare = $derived(shareId ? fileSharesStore.byId(shareId) : undefined);
+	const sharesLoaded = $derived(fileSharesStore.loaded);
+	const isConsumed = $derived(!!liveShare?.consumedAt);
+	// Loaded + minted but absent from the live list = gone (expired, revoked,
+	// or swept after use). Guarded by !isLoading so the first mint never
+	// flashes as expired while its refresh is still in flight.
+	const isGone = $derived(
+		!!shareId && !isLoading && sharesLoaded && !liveShare && !error
+	);
+	const isLinkDead = $derived(isConsumed || isGone);
+	const liveOpenCount = $derived(liveShare?.openCount ?? 0);
+
 	// (Re)generate the link every time the modal opens for a file, so the QR
 	// always points at exactly the file the menu was opened on.
 	$effect(() => {
@@ -59,6 +75,15 @@
 			showOptions = false;
 			mintedFor = null;
 		}
+	});
+
+	// Keep the status live while the modal is open: a scan + download from
+	// a phone fires `files:shares-changed`, the store re-loads fresh, and
+	// the deriveds above re-render without closing/reopening the modal.
+	$effect(() => {
+		if (!isOpen) return;
+		const stop = fileSharesStore.subscribe();
+		return () => stop();
 	});
 
 	async function openFor(target: FileNode) {
@@ -111,13 +136,29 @@
 	});
 
 	const lifetimeSentence = $derived.by(() => {
+		if (isConsumed) return 'Used — this one-time link no longer opens the file';
+		if (isGone) return 'Expired — this link no longer opens the file';
 		const access = oneTime ? 'Opens once' : 'Reusable';
 		const deadline = expiryLabel ? `until ${expiryLabel}` : 'until you revoke it';
-		return `${access}, ${deadline}${originSource ? ` · via ${originSource}` : ''}`;
+		const opened = !oneTime && liveOpenCount > 0 ? ` · opened ${liveOpenCount}×` : '';
+		const via = originSource ? ` · via ${originSource}` : '';
+		return `${access}, ${deadline}${opened}${via}`;
 	});
 
+	async function createNewLink() {
+		if (!file || isLoading) return;
+		const previous = shareId;
+		// Keep mintedFor intact so the auto-mint $effect cannot fire a
+		// concurrent mint while this one is in flight.
+		await generateShareLink(file);
+		mintedFor = file.path;
+		if (previous && previous !== shareId) {
+			await fileSharesStore.revoke(previous).catch(() => {});
+		}
+	}
+
 	async function copyLink() {
-		if (!shareUrl) return;
+		if (!shareUrl || isLinkDead) return;
 		if (!(await copyText(shareUrl))) {
 			showError('Copy Failed', 'Could not copy the link.');
 			return;
@@ -184,6 +225,27 @@
 				</button>
 			</div>
 		{:else if shareUrl}
+			{#if isLinkDead}
+				<div
+					class="flex items-start gap-2 p-2.5 rounded-lg border text-xs
+						{isConsumed
+						? 'bg-amber-500/10 border-amber-500/20 text-amber-700 dark:text-amber-300'
+						: 'bg-slate-500/10 border-slate-500/20 text-slate-600 dark:text-slate-300'}"
+					role="status"
+				>
+					<Icon
+						name={isConsumed ? 'lucide:check-check' : 'lucide:link-2-off'}
+						class="w-4 h-4 shrink-0 mt-px"
+					/>
+					<span>
+						{#if isConsumed}
+							Link opened — the file was downloaded. This one-time link no longer works.
+						{:else}
+							This link is no longer valid (expired, already used, or revoked).
+						{/if}
+					</span>
+				</div>
+			{/if}
 			<!-- Same link + QR presentation as every other share surface; the
 			     modal keeps its own prominent actions below, like the Remote
 			     Access panel does. -->
@@ -199,23 +261,37 @@
 			</ShareLinkCard>
 
 			<div class="grid grid-cols-[1fr_auto] gap-2">
-				<button
-					type="button"
-					onclick={copyLink}
-					class="flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors cursor-pointer"
-				>
-					<Icon name={copied ? 'lucide:check' : 'lucide:copy'} class="w-4 h-4" />
-					{copied ? 'Copied' : 'Copy Link'}
-				</button>
-				<button
-					type="button"
-					onclick={revokeLink}
-					disabled={isRevoking}
-					class="flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-				>
-					<Icon name="lucide:link-2-off" class="w-4 h-4" />
-					{isRevoking ? 'Revoking…' : 'Revoke'}
-				</button>
+				{#if isLinkDead}
+					<button
+						type="button"
+						onclick={createNewLink}
+						disabled={isLoading}
+						class="flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+					>
+						<Icon name="lucide:refresh-cw" class="w-4 h-4" />
+						Create New Link
+					</button>
+				{:else}
+					<button
+						type="button"
+						onclick={copyLink}
+						class="flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg bg-violet-600 hover:bg-violet-700 text-white transition-colors cursor-pointer"
+					>
+						<Icon name={copied ? 'lucide:check' : 'lucide:copy'} class="w-4 h-4" />
+						{copied ? 'Copied' : 'Copy Link'}
+					</button>
+				{/if}
+				{#if !isLinkDead}
+					<button
+						type="button"
+						onclick={revokeLink}
+						disabled={isRevoking}
+						class="flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+					>
+						<Icon name="lucide:link-2-off" class="w-4 h-4" />
+						{isRevoking ? 'Revoking…' : 'Revoke'}
+					</button>
+				{/if}
 			</div>
 
 			<!-- Options, folded away: the defaults are the answer almost every
