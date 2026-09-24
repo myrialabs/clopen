@@ -79,6 +79,8 @@
 	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { copyText } from '$frontend/utils/clipboard';
+	import { buildClipboardEntry, menuPasteBase, resolveMenuDests } from '$frontend/utils/explorer-clipboard';
+	import { computeNavIndex, ensureRowVisible, estimatePageSize, navSelectionMode, resolveShiftAnchor, sliceRange } from '$frontend/utils/explorer-nav';
 	import { showSuccess, showError, showWarning } from '$frontend/stores/ui/notification.svelte';
 	import { SvelteMap } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -300,6 +302,11 @@
 
 	// Tree state preservation
 	let treeScrollContainer = $state<HTMLElement | null>(null);
+	// Interaction modality: true after an Arrow/PageUp/PageDown move, while
+	// the mouse pointer hasn't moved yet. Drives [data-kbd-nav] (see app.css)
+	// so a stale :hover on the previously clicked row can't pose as a
+	// leftover selection. Cleared on the next mouse move or click.
+	let keyboardNavMode = $state(false);
 	let treeScrollTop = $state(0);
 	let pendingTreeScrollRestore = $state<number | null>(null);
 	let panelStateLoaded = $state(false);
@@ -956,6 +963,7 @@
 			selectedPaths = new Set(Array.from(selectedPaths).map((p) => rebaseSinglePath(p, oldPath, newPath) ?? p));
 		}
 		if (selectionAnchor) selectionAnchor = rebaseSinglePath(selectionAnchor, oldPath, newPath) ?? selectionAnchor;
+		if (cursorPath) cursorPath = rebaseSinglePath(cursorPath, oldPath, newPath) ?? cursorPath;
 		if (clipboard) {
 			clipboard = {
 				...clipboard,
@@ -980,6 +988,7 @@
 			selectedPaths = new Set(Array.from(selectedPaths).filter((p) => !isSameOrDescendant(p, targetPath)));
 		}
 		if (selectionAnchor && isSameOrDescendant(selectionAnchor, targetPath)) selectionAnchor = null;
+		if (cursorPath && isSameOrDescendant(cursorPath, targetPath)) cursorPath = null;
 		if (clipboard) {
 			const remaining = clipboard.files.filter((f) => !isSameOrDescendant(f.path, targetPath));
 			clipboard = remaining.length === 0 ? null : { ...clipboard, files: remaining };
@@ -1209,6 +1218,11 @@
 
 	let selectedPaths = $state<Set<string>>(new Set());
 	let selectionAnchor = $state<string | null>(null);
+	// Keyboard focus cursor, independent from the selection (Windows Explorer
+	// parity). Plain moves collapse the selection onto the cursor; Ctrl+arrows
+	// move only the cursor so a multi-selection can be extended with
+	// Space/Shift without losing what is already selected.
+	let cursorPath = $state<string | null>(null);
 
 	// Flatten the tree into the order rows are rendered (DFS, only expanded
 	// folders' children), so shift-range can compute a contiguous slice.
@@ -1227,18 +1241,14 @@
 	}
 
 	function selectRange(anchor: string, target: string) {
-		const visible = getVisiblePaths();
-		const i1 = visible.indexOf(anchor);
-		const i2 = visible.indexOf(target);
-		if (i1 === -1 || i2 === -1) {
-			selectedPaths = new Set([target]);
-			return;
-		}
-		const [a, b] = i1 < i2 ? [i1, i2] : [i2, i1];
-		selectedPaths = new Set(visible.slice(a, b + 1));
+		selectedPaths = new Set(sliceRange(getVisiblePaths(), anchor, target));
 	}
 
 	function handleNodeClick(file: FileNode, event: MouseEvent | KeyboardEvent) {
+		// A real mouse click resumes mouse modality: hover feedback is fresh
+		// again. (Keyboard activation via Enter/Space keeps keyboard mode —
+		// the pointer hasn't moved, so its :hover is still stale.)
+		if (event instanceof MouseEvent) keyboardNavMode = false;
 		// Keep keyboard focus inside the tree so Ctrl/Cmd+C/X/V (handled by
 		// handleExplorerKeydown) keeps working after a mouse click. Without
 		// this, focus stays on <body> and the shortcut guard rejects the keys.
@@ -1252,8 +1262,27 @@
 		const ctrl = event.ctrlKey || event.metaKey;
 		const shift = event.shiftKey;
 
+		// Keyboard Space on the focused row itself toggles that row in the
+		// multi-selection (Windows Explorer parity) instead of replacing the
+		// selection like a click does — this is what makes Ctrl+arrows (focus
+		// without selecting) composable. Enter keeps plain-click behavior.
+		// Scoped to the row (target === currentTarget) so Space/Enter on a
+		// child control (e.g. the actions menu button) is unaffected.
+		if (event instanceof KeyboardEvent && event.key === ' ' && event.target === event.currentTarget) {
+			const next = new Set(selectedPaths);
+			if (next.has(file.path)) {
+				next.delete(file.path);
+			} else {
+				next.add(file.path);
+			}
+			selectedPaths = next;
+			selectionAnchor = file.path;
+			cursorPath = file.path;
+			return;
+		}
 		if (shift && selectionAnchor) {
 			selectRange(selectionAnchor, file.path);
+			cursorPath = file.path;
 			return;
 		}
 		if (ctrl) {
@@ -1265,12 +1294,14 @@
 			}
 			selectedPaths = next;
 			selectionAnchor = file.path;
+			cursorPath = file.path;
 			return;
 		}
 
 		// Plain click: replace selection, then continue with normal open/toggle.
 		selectedPaths = new Set([file.path]);
 		selectionAnchor = file.path;
+		cursorPath = file.path;
 		if (file.type === 'directory') {
 			handleFolderToggle(file.path);
 		} else {
@@ -1281,6 +1312,7 @@
 	function clearSelection() {
 		selectedPaths = new Set();
 		selectionAnchor = null;
+		cursorPath = null;
 	}
 
 	// Context-menu open (single handler for every row): native file-manager
@@ -1293,6 +1325,7 @@
 		if (!selectedPaths.has(filePath)) {
 			selectedPaths = new Set([filePath]);
 			selectionAnchor = filePath;
+			cursorPath = filePath;
 		}
 		void refreshOsClipboardState();
 	}
@@ -1308,6 +1341,7 @@
 		if (!selectionAnchor || !selectedPaths.has(selectionAnchor)) {
 			selectionAnchor = visible[0];
 		}
+		cursorPath = selectionAnchor;
 	}
 
 	// Collect FileNodes for an action — operate on the multi-selection when
@@ -1421,7 +1455,9 @@
 	function doCopy(targets: FileNode[]): void {
 		if (targets.length === 0) return;
 		const rev = ++clipboardRev;
-		clipboard = { files: targets, operation: 'copy', origin: 'internal' };
+		// Snapshot the whole selection: every item (files, folders, images),
+		// in order. A new copy fully replaces the previous entry.
+		clipboard = buildClipboardEntry(targets, 'copy');
 		// Fire-and-forget: publish to native OS clipboard in the background.
 		// The internal clipboard (used by in-app paste) is already set above.
 		lastInternalCopyAt = Date.now();
@@ -1451,7 +1487,7 @@
 	function doCut(targets: FileNode[]): void {
 		if (targets.length === 0) return;
 		const rev = ++clipboardRev;
-		clipboard = { files: targets, operation: 'cut', origin: 'internal' };
+		clipboard = buildClipboardEntry(targets, 'cut');
 		// Fire-and-forget: publish with DROPEFFECT_MOVE in the background so
 		// pasting in the native file manager performs a real move. Clopen
 		// itself NEVER deletes the sources here — Explorer does the move, and
@@ -1560,7 +1596,7 @@
 	// shadowed by a previous adoption. No OS content is cached here.
 	function adoptOsItems(items: { path: string; isDirectory: boolean }[]): void {
 		clipboardRev += 1;
-		clipboard = { files: osClipboardItemsToStubs(items), operation: 'copy', origin: 'os' };
+		clipboard = buildClipboardEntry(osClipboardItemsToStubs(items), 'copy', 'os');
 	}
 	// Fresh native content vs an in-Clopen COPY that differs: the native side
 	// wins UNLESS our own async OS publish is still in flight (or the COPY
@@ -1694,9 +1730,11 @@
 				adoptOsItems(osItems);
 				if (trigger.kind === 'keyboard') lastInternalPasteAt = Date.now();
 				if (trigger.kind === 'menu') {
-					const dirs = selectedDirectoryPaths();
-					const dests = dirs.length >= 2 ? dirs : [trigger.file.path];
-					await pasteToDestinations(dests.map((base) => ({ base, expand: true })));
+					// Same path as an internal paste: pasteFile() normalizes a
+					// file target to its parent and fans out to every selected
+					// folder, so the result no longer depends on which
+					// clipboard branch won the race.
+					await pasteFile(trigger.file);
 					return;
 				}
 				if (trigger.kind === 'root') {
@@ -1733,7 +1771,9 @@
 		}
 		if (trigger.kind === 'menu') {
 			const dirs = selectedDirectoryPaths();
-			await pasteFromOsClipboard(dirs.length >= 2 ? dirs : [trigger.file.path]);
+			await pasteFromOsClipboard(
+				resolveMenuDests(dirs, menuPasteBase(trigger.file.path, trigger.file.type === 'directory'))
+			);
 			return;
 		}
 		// Keyboard with empty internal clipboard: peek the OS clipboard
@@ -1766,13 +1806,10 @@
 			await pasteToDestinations(selectedDirs.map((base) => ({ base, expand: true })));
 			return;
 		}
-		const basePath = targetFolder.type === 'directory'
-			? targetFolder.path
-			: (() => {
-				const pathParts = targetFolder.path.split(/[\\/]/);
-				pathParts.pop();
-				return pathParts.join(targetFolder.path.includes('\\') ? '\\' : '/');
-			})();
+		// A file target pastes into its parent directory; a folder target
+		// into itself. Shared with every menu-paste branch via menuPasteBase
+		// so all of them resolve the same destination for the same target.
+		const basePath = menuPasteBase(targetFolder.path, targetFolder.type === 'directory');
 
 		await pasteToBase(basePath, targetFolder.type === 'directory' ? targetFolder.path : null);
 	}
@@ -2259,8 +2296,133 @@
 		return true;
 	}
 
+	// ============================
+	// Tree keyboard navigation (Arrow/Home/End/PageUp/PageDown)
+	// ============================
+	// The tree previously had NO navigation keys: ArrowUp/Down, Home/End and
+	// PageUp/PageDown fell through to the browser default, which scrolled
+	// whatever container happened to hold focus (editor, page, terminal) —
+	// and opening a file moves focus out of the tree entirely, so the keys
+	// appeared to jump to another area. This handler keeps them in the tree
+	// and stops the event so no other panel, the page, or the editor can
+	// consume it. Scoped by the same guard as the copy/cut/paste shortcuts,
+	// so editors, terminals, search inputs and open dialogs keep their own
+	// keys (incl. Ctrl+C/V, Delete, Enter, Escape).
+	//
+	// Navigation semantics (Windows Explorer parity), in display order — files
+	// and folders are equal navigation items:
+	// - plain moves MOVE the active item like a plain click does: selection
+	//   collapses onto the landed row and a landed file opens in a tab, so
+	//   the highlight follows instead of staying behind as a "trail".
+	//   Folders select without toggling. EXCEPTION: plain PageUp/PageDown
+	//   over a multi-selection moves only the focus cursor so paging never
+	//   wipes what was selected (plain arrows still collapse, per Explorer
+	//   parity — see navSelectionMode).
+	// - Ctrl+arrows move only the focus cursor (cursorPath): selection,
+	//   anchor and open file are untouched, so nothing highlights or
+	//   un-highlights. Follow with Space (toggle) or Shift+arrows (range).
+	// - Shift+arrows select the contiguous block from the anchor to the new
+	//   cursor; Space toggles the focused row (see handleNodeClick).
+	// The landed row is focused (thin violet ring = keyboard cursor, distinct
+	// from the filled selection) and revealed strictly inside the list's own
+	// container, so ancestors never scroll and the item never jumps.
+
+	function handleTreeListNavigation(event: KeyboardEvent): boolean {
+		const isPage = event.key === 'PageUp' || event.key === 'PageDown';
+		let navKey = event.key;
+		// PageUp/PageDown step a single item in display order — exactly like
+		// the arrows — so every press lands on the next/previous visible
+		// file or folder with no click needed first.
+		if (navKey === 'PageUp') navKey = 'ArrowUp';
+		else if (navKey === 'PageDown') navKey = 'ArrowDown';
+		if (navKey !== 'ArrowUp' && navKey !== 'ArrowDown' && navKey !== 'Home' && navKey !== 'End') {
+			return false;
+		}
+		// Ctrl/Cmd (+Shift) reuses the click modifiers: Ctrl moves the focus
+		// cursor only, Shift extends a range from the anchor. Alt chords are
+		// left alone.
+		const ctrl = event.ctrlKey || event.metaKey;
+		const shift = event.shiftKey;
+		if (event.altKey) return false;
+		if (!shouldHandleExplorerShortcut(event, 'nav')) return false;
+		// Tree hidden (1-column viewer mode): the viewer owns these keys.
+		if (!treeScrollContainer || treeScrollContainer.offsetParent === null) return false;
+		// The list itself must be rendered (not the search view): arrows move
+		// the visible selection only, and the reveal below is scoped to this
+		// element.
+		const listEl = treeScrollContainer.querySelector('[role="tree"]');
+		if (!(listEl instanceof HTMLElement) || listEl.offsetParent === null) return false;
+		const visible = getVisiblePaths();
+		if (visible.length === 0) return false;
+		event.preventDefault();
+		event.stopPropagation();
+		keyboardNavMode = true;
+		// Step from the focus cursor when it sits on a visible row; otherwise
+		// fall back to the selection anchor, a selected row, or the top.
+		let from = visible[0];
+		if (cursorPath && visible.includes(cursorPath)) from = cursorPath;
+		else if (selectionAnchor && visible.includes(selectionAnchor)) from = selectionAnchor;
+		else {
+			const selected = Array.from(selectedPaths).find((p) => visible.includes(p));
+			if (selected) from = selected;
+		}
+		const next = computeNavIndex(
+			visible.indexOf(from),
+			visible.length,
+			navKey,
+			estimatePageSize(treeScrollContainer.clientHeight)
+		);
+		const target = visible[next];
+		// Shift ranges, Ctrl moves focus only, and plain PageUp/PageDown over
+		// a multi-selection moves focus only so paging never wipes what was
+		// selected (see navSelectionMode).
+		const mode = navSelectionMode({ shift, ctrl }, isPage, selectedPaths.size);
+		if (mode === 'range') {
+			// Contiguous block from the anchor to the new cursor — folders
+			// and files count equally in display order. The anchor resolves
+			// with fallbacks (stored anchor → focus cursor → current
+			// selection) so a Shift step right after a click ALWAYS keeps the
+			// clicked item in the block; it can never be left as a bare
+			// cursor without selection.
+			const anchor = resolveShiftAnchor(visible, selectionAnchor, cursorPath, Array.from(selectedPaths), from);
+			selectionAnchor = anchor;
+			cursorPath = target;
+			selectRange(anchor, target);
+		} else if (mode === 'focus-only') {
+			// Focus cursor only. Selection, anchor and open file stay exactly
+			// as they are, so no highlight appears, moves, or vanishes — the
+			// cursor is focused + revealed for the next Space/Shift step.
+			cursorPath = target;
+		} else {
+			cursorPath = target;
+			selectedPaths = new Set([target]);
+			selectionAnchor = target;
+			// Mirror a plain click: the open file follows the selection, so
+			// its highlight follows instead of staying behind on the old
+			// row. handleFileSelect() is a no-op for directories, hence
+			// folders select without toggling while passing through.
+			const targetNode = findFileInTree(projectFiles, target);
+			if (targetNode) handleFileSelect(targetNode);
+		}
+		// Focus + reveal on the next frame so Svelte has applied the selection
+		// first. ensureRowVisible adjusts ONLY the list's own scrollTop —
+		// never scrollIntoView, which would also move ancestor scrollers
+		// (sidebar, page) and make the active item jump or disappear.
+		requestAnimationFrame(() => {
+			const row = listEl.querySelector(`[data-path="${CSS.escape(target)}"]`);
+			if (row instanceof HTMLElement) {
+				row.focus({ preventScroll: true });
+				ensureRowVisible(listEl, row);
+			}
+		});
+		return true;
+	}
+
 	function handleExplorerKeydown(event: KeyboardEvent): void {
 		if (!hasActiveProject || !projectPath) return;
+		// Tree list navigation first: Arrow/Home/End/PageUp/PageDown move the
+		// active item inside the file list and never leak to other containers.
+		if (handleTreeListNavigation(event)) return;
 		const key = event.key.toLowerCase();
 
 		// Delete / Backspace (no modifier): native parity — File Explorer
@@ -3414,6 +3576,7 @@
 		if (!selectedPaths.has(file.path)) {
 			selectedPaths = new Set([file.path]);
 			selectionAnchor = file.path;
+			cursorPath = file.path;
 		}
 		if (event.dataTransfer) {
 			event.dataTransfer.effectAllowed = 'move';
@@ -3515,13 +3678,17 @@
 	async function moveNodesTo(sourcePaths: string[], targetDirPath: string) {
 		const sep = targetDirPath.includes('\\') ? '\\' : '/';
 		let moved = 0;
+		// One bad item must never cancel the rest of a multi-item drag: each
+		// failure is recorded and the batch continues with the next item.
+		const failed: string[] = [];
+		const selfNested: string[] = [];
 		for (const src of sourcePaths) {
 			if (src === targetDirPath) continue;
-			// Reject moving a folder into itself or its descendant
+			// A folder can never move into itself or its descendant — skip
+			// just that item, not the whole batch.
 			if (targetDirPath === src || targetDirPath.startsWith(`${src}${sep}`)) {
-				const name = src.split(/[\\/]/).pop() || src;
-				notifyExplorer('warning', 'Move Cancelled', `Cannot move "${name}" into itself or its descendant.`);
-				return;
+				selfNested.push(src.split(/[\\/]/).pop() || src);
+				continue;
 			}
 			// No-op when already in target
 			const srcParts = src.split(/[\\/]/);
@@ -3541,19 +3708,30 @@
 				moved += 1;
 			} catch (err) {
 				// Roll back through the same SSOT helpers (including tabs for
-				// descendants of a moved folder).
+				// descendants of a moved folder), then keep moving the rest.
 				projectFiles = moveNodeInTree(projectFiles, targetPath, src);
 				rebaseAllPathState(targetPath, src);
 				pendingFsMutations = Math.max(0, pendingFsMutations - 1);
-				notifyExplorer('error', 'Move Failed', errorMessage(err, 'Move failed'));
-				return;
+				debug.error('file', 'Failed to move item, continuing batch:', { source: src, error: err });
+				failed.push(name || src);
+				continue;
 			}
 			pendingFsMutations = Math.max(0, pendingFsMutations - 1);
 		}
 		// The SSOT rebase above already moved the selection to the new paths.
 		// Exactly one notification for the whole move action.
-		if (moved > 0) {
+		const shown = (arr: string[]): string => [...new Set(arr)].slice(0, 3).join(', ');
+		if (moved > 0 && failed.length === 0 && selfNested.length === 0) {
 			notifyExplorer('success', 'Moved', moved === 1 ? 'Moved 1 item.' : `Moved ${moved} items.`);
+		} else if (moved > 0) {
+			const reasons: string[] = [];
+			if (failed.length > 0) reasons.push(`failed: ${shown(failed)}`);
+			if (selfNested.length > 0) reasons.push(`cannot move into itself: ${shown(selfNested)}`);
+			notifyExplorer('warning', 'Partially Moved', `Moved ${moved === 1 ? '1 item' : `${moved} items`} (${reasons.join('; ')}).`);
+		} else if (failed.length > 0) {
+			notifyExplorer('error', 'Move Failed', failed.length === 1 ? `Could not move "${failed[0]}".` : `Could not move ${failed.length} items (${shown(failed)}).`);
+		} else if (selfNested.length > 0) {
+			notifyExplorer('warning', 'Move Cancelled', `Cannot move "${shown(selfNested)}" into itself or its descendant.`);
 		} else {
 			notifyExplorer('warning', 'Nothing Moved', 'Items are already in this folder.');
 		}
@@ -4043,6 +4221,7 @@
 			// Update selection to focus on revealed node
 			selectedPaths = new Set([targetPath]);
 			selectionAnchor = targetPath;
+			cursorPath = targetPath;
 
 			// Check node type to either open or scroll
 			const targetNode = findFileInTree(projectFiles, targetPath);
@@ -4343,7 +4522,15 @@
 						: (viewMode === 'tree' ? 'w-full h-full overflow-hidden' : 'hidden')}
 					style={isTwoColumnMode ? `width: ${leftPanelWidth}px` : undefined}
 				>
-					<div class="h-full overflow-auto" bind:this={treeScrollContainer} onscroll={handleTreeScroll}>
+					<div
+						class="h-full overflow-auto"
+						bind:this={treeScrollContainer}
+						onscroll={handleTreeScroll}
+						data-kbd-nav={keyboardNavMode ? '' : undefined}
+						onmousemove={() => {
+							if (keyboardNavMode) keyboardNavMode = false;
+						}}
+					>
 						<FileTree
 							bind:this={fileTreeRef}
 							files={projectFiles}
