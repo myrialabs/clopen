@@ -136,7 +136,11 @@ export const fileSharesStore = {
 	/** URL for a share id, if the link was generated in this browser session. */
 	shareURL(id: string): string | undefined { return state.urls[id]; },
 
-	/** Live links: every user's for an admin, your own otherwise. */
+	/**
+	 * Live links: every user's for an admin, your own otherwise.
+	 * Always fetches fresh from the server — never serves a cached list —
+	 * so a link opened from a phone is reflected immediately.
+	 */
 	async load(): Promise<void> {
 		state.isLoading = true;
 		try {
@@ -152,13 +156,23 @@ export const fileSharesStore = {
 		}
 	},
 
+	/** One live entry by row id, or undefined when it is gone (used, expired, revoked). */
+	byId(id: string): FileShare | undefined {
+		return state.shares.find((s) => s.id === id);
+	},
+
 	/**
 	 * Keep the list in sync with the server for as long as a view is mounted.
-	 * Returns the unsubscribe callback.
+	 * Every `files:shares-changed` event (minted, revoked, opened from any
+	 * device) triggers a fresh `load()` — no stale-cache guard — so an open
+	 * from a phone updates the laptop view without reopen. Returns the
+	 * unsubscribe callback.
 	 */
-	subscribe(): () => void {
-		const off = ws.on('files:shares-changed', () => {
-			if (state.loaded) void this.load().catch(() => {});
+	subscribe(onChange?: (kind: string) => void): () => void {
+		const off = ws.on('files:shares-changed', (payload) => {
+			void this.load()
+				.then(() => onChange?.((payload as { kind?: string })?.kind ?? 'changed'))
+				.catch(() => {});
 		});
 		return () => off();
 	},
@@ -209,7 +223,9 @@ export const fileSharesStore = {
 		const url = `${origin}/api/files/shared?share=${encodeURIComponent(result.shareToken)}`;
 		state.urls = { ...state.urls, [result.shareId]: url };
 		persistURLs();
-		if (state.loaded) await this.load();
+		// Refresh unconditionally so the new row (and any concurrent open)
+		// is visible immediately, even when the list was never loaded before.
+		await this.load().catch(() => {});
 		return { id: result.shareId, url, oneTime: result.oneTime, expiresAt: result.expiresAt, source };
 	},
 
