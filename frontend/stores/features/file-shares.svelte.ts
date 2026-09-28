@@ -168,11 +168,9 @@ export const fileSharesStore = {
 	 * from a phone updates the laptop view without reopen. Returns the
 	 * unsubscribe callback.
 	 */
-	subscribe(onChange?: (kind: string) => void): () => void {
-		const off = ws.on('files:shares-changed', (payload) => {
-			void this.load()
-				.then(() => onChange?.((payload as { kind?: string })?.kind ?? 'changed'))
-				.catch(() => {});
+	subscribe(): () => void {
+		const off = ws.on('files:shares-changed', () => {
+			void this.load().catch(() => {});
 		});
 		return () => off();
 	},

@@ -40,7 +40,7 @@
 	let mintedFor: string | null = null;
 
 	// Live row for the link this modal minted, refreshed real-time via
-	// `files:shares-changed` (opened from HP, revoked elsewhere, expired).
+	// `files:shares-changed` (opened from a phone, revoked elsewhere, expired).
 	// The store always re-fetches fresh — never a cached list — so this
 	// derived flips the moment the phone's download hits the server.
 	const liveShare = $derived(shareId ? fileSharesStore.byId(shareId) : undefined);
@@ -137,7 +137,7 @@
 
 	const lifetimeSentence = $derived.by(() => {
 		if (isConsumed) return 'Used — this one-time link no longer opens the file';
-		if (isGone) return 'Expired — this link no longer opens the file';
+		if (isGone) return 'No longer valid — this link no longer opens the file';
 		const access = oneTime ? 'Opens once' : 'Reusable';
 		const deadline = expiryLabel ? `until ${expiryLabel}` : 'until you revoke it';
 		const opened = !oneTime && liveOpenCount > 0 ? ` · opened ${liveOpenCount}×` : '';
