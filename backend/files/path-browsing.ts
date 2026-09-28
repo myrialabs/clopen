@@ -2,6 +2,7 @@ import { join, extname } from 'path';
 import { readdir as fsReaddir } from 'node:fs/promises';
 import { existsSync } from 'fs';
 
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 
 // Cross-platform readdir using fs.promises
@@ -170,7 +171,7 @@ export async function handlePathBrowsing(path: string): Promise<PathBrowseData> 
 			if (a.type !== b.type) {
 				return a.type === 'directory' ? -1 : 1;
 			}
-			return a.name.localeCompare(b.name);
+			return naturalCompare(a.name, b.name);
 		});
 
 		return {

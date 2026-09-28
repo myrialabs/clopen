@@ -35,6 +35,7 @@ import type {
 	GitOperationState,
 	GitReflogEntry
 } from '$shared/types/git';
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 import {
 	assertSafeGitCommitMessage,
@@ -487,7 +488,7 @@ export class GitService {
 					})
 				);
 				// Stable order for the UI (sorted by relPath).
-				nestedResults.sort((a, b) => a.relPath.localeCompare(b.relPath));
+				nestedResults.sort((a, b) => naturalCompare(a.relPath, b.relPath));
 				branchInfo.nested = nestedResults;
 			}
 		} catch (err) {

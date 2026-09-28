@@ -4,6 +4,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '../overlay/Modal.svelte';
 	import Dialog from '../overlay/Dialog.svelte';
+	import { naturalCompare } from '$shared/utils/compare';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -360,7 +361,7 @@
 						if (a.type !== b.type) {
 							return a.type === 'directory' ? -1 : 1;
 						}
-						return a.name.localeCompare(b.name);
+						return naturalCompare(a.name, b.name);
 					});
 			} else {
 				items = [];

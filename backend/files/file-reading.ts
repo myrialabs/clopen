@@ -2,6 +2,7 @@ import { join, extname } from 'path';
 import { readdir } from 'node:fs/promises';
 import { readFileWithEncoding, isTextFile } from '$shared/utils/file-type-detection';
 
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 
 // Return types
@@ -100,7 +101,7 @@ export async function buildFileTree(
 					if (a.type !== b.type) {
 						return a.type === 'directory' ? -1 : 1;
 					}
-					return a.name.localeCompare(b.name);
+					return naturalCompare(a.name, b.name);
 				});
 
 				return {
@@ -180,7 +181,7 @@ export async function listDirectoryContents(dirPath: string): Promise<FileTreeNo
 		if (a.type !== b.type) {
 			return a.type === 'directory' ? -1 : 1;
 		}
-		return a.name.localeCompare(b.name);
+		return naturalCompare(a.name, b.name);
 	});
 
 	return children;
@@ -288,7 +289,7 @@ export async function searchFiles(rootPath: string, query: string): Promise<File
 		if (a.type !== b.type) {
 			return a.type === 'directory' ? -1 : 1;
 		}
-		return a.name.localeCompare(b.name);
+		return naturalCompare(a.name, b.name);
 	});
 
 	// Limit results to prevent overwhelming the UI

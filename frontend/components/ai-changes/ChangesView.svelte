@@ -28,6 +28,7 @@
 		type TurnFileChange
 	} from '$frontend/stores/features/ai-changes.svelte';
 	import ws from '$frontend/utils/ws';
+	import { naturalCompare } from '$shared/utils/compare';
 	import { debug } from '$shared/utils/logger';
 	import { toAbsolutePath } from '$frontend/utils/ai-change-index';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
@@ -156,7 +157,7 @@
 				else byPath.set(file.path, { path: file.path, entries: [{ turn, file }] });
 			}
 		}
-		return Array.from(byPath.values()).sort((a, b) => a.path.localeCompare(b.path));
+		return Array.from(byPath.values()).sort((a, b) => naturalCompare(a.path, b.path));
 	});
 
 	const totals = $derived.by(() => {

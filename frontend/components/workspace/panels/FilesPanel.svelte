@@ -67,6 +67,7 @@
 	import Alert from '$frontend/components/common/feedback/Alert.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import type { FileNode } from '$shared/types/filesystem';
+	import { naturalCompare } from '$shared/utils/compare';
 	import { debug } from '$shared/utils/logger';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { onMount, onDestroy } from 'svelte';
@@ -1009,7 +1010,7 @@
 	function sortFileNodes(nodes: FileNode[]): FileNode[] {
 		return nodes.sort((a, b) => {
 			if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
-			return a.name.localeCompare(b.name);
+			return naturalCompare(a.name, b.name);
 		});
 	}
 
