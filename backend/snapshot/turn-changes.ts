@@ -17,6 +17,7 @@
  */
 
 import type { SessionScopedChanges } from '$shared/types/database/schema';
+import { naturalCompare } from '$shared/utils/compare';
 import { countLineChanges, isBinaryBuffer } from '$shared/utils/diff-calculator';
 
 export { isBinaryBuffer };
@@ -98,7 +99,7 @@ export async function buildTurnFiles(
 
 	// Natural sort: a turn's file list is read as a checklist, and a stable order
 	// is what lets the eye return to the same row after a refetch.
-	files.sort((a, b) => a.path.localeCompare(b.path, undefined, { numeric: true, sensitivity: 'base' }));
+	files.sort((a, b) => naturalCompare(a.path, b.path));
 	return files;
 }
 

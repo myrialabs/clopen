@@ -8,6 +8,7 @@
  */
 
 import fs from 'fs/promises';
+import { naturalCompare } from '$shared/utils/compare';
 import { envFilePrecedence, isDotenvFileName, isTemplateEnvFile } from './keys';
 
 export interface DotenvFileEntry {
@@ -32,7 +33,7 @@ export async function listEnvFileEntries(projectRoot: string): Promise<DotenvFil
 			(a, b) =>
 				Number(a.isTemplate) - Number(b.isTemplate) ||
 				envFilePrecedence(a.name) - envFilePrecedence(b.name) ||
-				a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+				naturalCompare(a.name, b.name)
 		);
 }
 

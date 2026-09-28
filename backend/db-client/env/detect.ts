@@ -42,6 +42,7 @@ import type {
 	DbEnvRole,
 	DbEnvShape
 } from '$shared/types/db-client';
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 
 /** A value that is unmistakably a database connection string. */
@@ -396,7 +397,7 @@ export async function detectEnvUsage(input: {
 
 		const keys = [...draft.keys.keys()].sort();
 		const orderedFiles = [...draft.files].sort(
-			(a, b) => envFilePrecedence(a) - envFilePrecedence(b) || a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' })
+			(a, b) => envFilePrecedence(a) - envFilePrecedence(b) || naturalCompare(a, b)
 		);
 		const isTemplateOnly = draft.liveFiles.length === 0;
 		const where = orderedFiles[0] ?? [...draft.sources][0] ?? 'this project';

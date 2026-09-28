@@ -20,6 +20,7 @@ import ws from '$frontend/utils/ws';
 import { authStore } from '$frontend/stores/features/auth.svelte';
 import { registerDock } from '$frontend/stores/ui/project-workspace.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 import type {
 	NoteCollection,
@@ -135,7 +136,7 @@ export async function createCollection(name: string): Promise<NoteCollection | n
 	});
 	const collection = res.collection as NoteCollection;
 	notesState.collections = [...notesState.collections, collection].sort((a, b) =>
-		a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+		naturalCompare(a.name, b.name)
 	);
 	notesState.activeCollectionId = collection.id;
 	return collection;
@@ -147,7 +148,7 @@ export async function renameCollection(id: string, name: string): Promise<void> 
 	if (!collection) return;
 	notesState.collections = notesState.collections
 		.map((c) => (c.id === id ? collection : c))
-		.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }));
+		.sort((a, b) => naturalCompare(a.name, b.name));
 }
 
 export async function deleteCollection(id: string): Promise<void> {

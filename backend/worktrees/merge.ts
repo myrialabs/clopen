@@ -16,6 +16,7 @@ import path from 'path';
 import type { TreeMap } from '../snapshot/blob-store';
 import { execGit } from '../git/git-executor';
 import { resolveBinary } from '../utils/cli';
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 import { readBlobText } from './tree';
 
@@ -57,7 +58,7 @@ export function planMerge(base: TreeMap, source: TreeMap, target: TreeMap): Merg
 
 	const entries: MergeEntry[] = [];
 
-	for (const filePath of [...paths].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))) {
+	for (const filePath of [...paths].sort(naturalCompare)) {
 		const baseHash = base[filePath] ?? null;
 		const sourceHash = source[filePath] ?? null;
 		const targetHash = target[filePath] ?? null;

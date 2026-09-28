@@ -2,6 +2,7 @@ import { join, extname } from 'path';
 import { readdir as fsReaddir } from 'node:fs/promises';
 import { existsSync } from 'fs';
 
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 
 // Cross-platform readdir using fs.promises
@@ -165,12 +166,12 @@ export async function handlePathBrowsing(path: string): Promise<PathBrowseData> 
 			}
 		}
 
-		// Sort: directories first, then files, both in natural order (issue-36 before issue-109)
+		// Sort: directories first, then files, both alphabetically
 		children.sort((a, b) => {
 			if (a.type !== b.type) {
 				return a.type === 'directory' ? -1 : 1;
 			}
-			return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+			return naturalCompare(a.name, b.name);
 		});
 
 		return {
