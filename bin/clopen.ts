@@ -25,6 +25,7 @@ if (typeof globalThis.Bun === 'undefined') {
 import { existsSync, copyFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { loadEnvFile } from '../backend/utils/env';
+import { runGitHelper } from '../backend/git/identity/cli';
 
 // CLI Options interface
 interface CLIOptions {
@@ -429,6 +430,14 @@ async function startServer(options: CLIOptions) {
 
 async function main() {
 	try {
+		// Git helper subcommands are intercepted BEFORE argument parsing and before
+		// anything starts a server: git spawns these mid-command, expects an answer
+		// on stdout, and expects the process to exit. They are not user-facing, so
+		// they are deliberately absent from `--help` and from the option parser,
+		// which would reject them as unknown.
+		const helperExit = await runGitHelper(process.argv.slice(2));
+		if (helperExit !== null) process.exit(helperExit);
+
 		const options = parseArguments();
 
 		if (options.version) {

@@ -226,7 +226,7 @@ export class ClaudeCodeEngine implements AIEngine {
         permissionMode: 'bypassPermissions' as PermissionMode,
         allowDangerouslySkipPermissions: true,
         cwd: resolvedProjectPath,
-        env: getEngineEnv(accountId),
+        env: getEngineEnv(accountId, options.gitIdentityEnv),
         systemPrompt: { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         forkSession: true,

@@ -9,6 +9,7 @@ import type { EngineType } from '$shared/types/unified';
 export type SettingsSection =
 	| 'assistant'
 	| 'commit-message'
+	| 'git-identities'
 	| 'artifacts'
 	| 'engines'
 	| 'stack'
@@ -97,6 +98,13 @@ export const settingsSections: SettingsSectionMeta[] = [
 		icon: 'lucide:git-branch',
 		description: 'Commits and branches',
 		group: 'models'
+	},
+	{
+		id: 'git-identities',
+		label: 'Git Accounts',
+		icon: 'lucide:user-round-cog',
+		description: 'Commit identity and credentials',
+		group: 'infrastructure'
 	},
 	{
 		id: 'artifacts',

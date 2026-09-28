@@ -45,6 +45,7 @@ import { extractMessageText } from '../snapshot/helpers';
 import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
 import { buildMemoryContext, withMemoryContext } from '../memory/context';
 import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
+import { resolveGitEnv } from '$backend/git/identity';
 import { debug } from '$shared/utils/logger';
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
 
@@ -888,6 +889,13 @@ class StreamManager extends EventEmitter {
 				...(requestEngine.account.id !== 0 && { accountId: requestEngine.account.id }),
 				...(projectId && chatSessionId && {
 					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId, ...(activeProfileId != null && { profileId: activeProfileId }) }
+				}),
+				// The agent commits as the person who asked it to. Resolved here
+				// because this is the only layer that knows both the project and
+				// the requester; omitted when either is missing, which leaves git
+				// behaving exactly as it did before identities existed.
+				...(projectId && streamState.requestedByUserId && {
+					gitIdentityEnv: resolveGitEnv(projectId, streamState.requestedByUserId)
 				}),
 			});
 
