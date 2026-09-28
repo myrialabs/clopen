@@ -46,6 +46,8 @@ export {
 	worktreeBranchQueries,
 	parseWorktreeBranchConfig
 } from './worktree-branch-queries';
+export { gitIdentityQueries, gitIdentityBindingQueries, parseHosts } from './git-identity-queries';
+export type { GitIdentityRow, GitIdentityBindingRow, GitIdentityWrite } from './git-identity-queries';
 export { pushSubscriptionQueries } from './push-subscription-queries';
 export type { PushSubscription, PushSubscriptionInput } from './push-subscription-queries';
 export type { WorktreeBranchBindingRow, WorktreeBranchRow } from './worktree-branch-queries';

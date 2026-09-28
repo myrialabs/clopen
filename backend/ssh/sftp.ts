@@ -28,6 +28,7 @@ import type {
 	SftpFileContent,
 	SftpListing
 } from '$shared/types/ssh';
+import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
 
 /** Largest file the inline text editor will open. Bigger files must be downloaded. */
@@ -480,7 +481,7 @@ export const sftpService = {
 				const leftIsDir = left.type === 'directory' || left.targetType === 'directory';
 				const rightIsDir = right.type === 'directory' || right.targetType === 'directory';
 				if (leftIsDir !== rightIsDir) return leftIsDir ? -1 : 1;
-				return left.name.localeCompare(right.name, undefined, { sensitivity: 'base' });
+				return naturalCompare(left.name, right.name);
 			});
 			return { path: resolved, entries };
 		});

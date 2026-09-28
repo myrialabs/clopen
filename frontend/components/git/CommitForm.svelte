@@ -6,6 +6,8 @@
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { gitIdentityStore } from '$frontend/stores/features/git-identity.svelte';
+	import GitIdentityPicker from './GitIdentityPicker.svelte';
 	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 	import { showError } from '$frontend/stores/ui/notification.svelte';
 	import {
@@ -102,6 +104,25 @@
 	// id — a worktree is its own checkout, and keying by project made its spinner
 	// show up on the main tree's form as well.
 	const activeProjectId = $derived(projectState.currentProject?.id ?? '');
+	/**
+	 * Who the next commit is attributed to.
+	 *
+	 * Read from the store rather than fetched into local state so every surface
+	 * showing it (this line, Settings) reflects one answer. The fetch below is
+	 * keyed on the project, so switching projects replaces the line instead of
+	 * leaving the previous project's author on screen.
+	 */
+	const resolvedIdentity = $derived(gitIdentityStore.resolvedFor(activeProjectId));
+
+	$effect(() => {
+		const projectId = activeProjectId;
+		if (!projectId) return;
+		// Only fetch when this project has no answer yet: the store is the cache,
+		// and re-fetching on every render would put a request behind every
+		// keystroke in the message box.
+		if (gitIdentityStore.resolvedFor(projectId)) return;
+		void gitIdentityStore.fetchResolved(projectId);
+	});
 	const opScope = $derived(currentScopeKey() || activeProjectId);
 	const ops = $derived(getGitOps(opScope, repoPath));
 	const isGenerating = $derived(ops.isGenerating);
@@ -326,6 +347,15 @@
 
 <div class="px-2 py-2">
 	<div class="flex flex-col gap-1.5">
+		<!--
+			Who this commit will be attributed to, and the control that changes it.
+			Shown before the commit rather than discovered after the push, which is
+			the whole failure this feature exists to prevent. Only rendered when an
+			identity resolves, so a user who has not set one up sees nothing new.
+		-->
+		{#if resolvedIdentity?.identity && activeProjectId}
+			<GitIdentityPicker projectId={activeProjectId} resolved={resolvedIdentity} />
+		{/if}
 			<textarea
 			bind:this={textareaEl}
 			value={repoPath ? localCommitMessage : gitDraft.commitMessage}

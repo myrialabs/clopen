@@ -64,6 +64,24 @@ async function runSeeders(db: DatabaseConnection): Promise<void> {
 	debug.log('database', '✅ Seeders completed');
 }
 
+/**
+ * Connect to an EXISTING database without migrating or seeding it.
+ *
+ * For short-lived side processes that only read a row — the git credential and
+ * askpass helpers git spawns mid-command. `initializeDatabase()` is wrong for
+ * them twice over: it would run migrations from a process nobody is watching,
+ * racing the schema of the server that is already running, and it would pay for
+ * seeders on every single authentication.
+ *
+ * Sets the same module-level manager `getDatabase()` reads, which is the part
+ * that makes the queries usable — connecting the manager alone does not.
+ */
+export async function connectExistingDatabase(): Promise<DatabaseConnection> {
+	if (dbManager?.isConnected()) return dbManager.getConnection();
+	dbManager = DatabaseManager.getInstance();
+	return await dbManager.connect();
+}
+
 export function getDatabase(): DatabaseConnection {
 	if (!dbManager || !dbManager.isConnected()) {
 		throw new Error('Database not initialized. Call initializeDatabase() first.');

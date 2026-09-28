@@ -64,6 +64,17 @@ interface CodexRun {
 	thread: Thread | null;
 }
 
+/**
+ * A stable key for an identity environment, so "same identity?" is a string
+ * compare rather than a deep object compare. Sorted because the builder's key
+ * order is an implementation detail, not a difference.
+ */
+function gitIdentityKey(env: Record<string, string>): string {
+	const keys = Object.keys(env).sort();
+	if (keys.length === 0) return '';
+	return keys.map((k) => `${k}=${env[k]}`).join('\u0000');
+}
+
 export class CodexEngine implements AIEngine {
 	readonly name = 'codex' as const;
 
@@ -104,6 +115,17 @@ export class CodexEngine implements AIEngine {
 	 * satisfying that type.
 	 */
 	private pendingProjectId: string | null = null;
+	/**
+	 * Git identity baked into the current client, as a comparable key.
+	 *
+	 * The SDK takes `env` at construction and does not re-read it, so the
+	 * identity is part of what the client IS — exactly like the account and the
+	 * MCP set. Stored as a stable string so a turn can ask "is this still the
+	 * right client" without deep-comparing the environment.
+	 */
+	private currentGitIdentityKey: string | null = null;
+	/** Identity for the client `initialize()` is about to build. */
+	private pendingGitIdentityEnv: Record<string, string> = {};
 
 	get isInitialized(): boolean {
 		return this._isInitialized;
@@ -161,7 +183,7 @@ export class CodexEngine implements AIEngine {
 		this.codex = new Codex({
 			apiKey: credential.kind === 'api_key' ? credential.apiKey : undefined,
 			...(codexCli ? { codexPathOverride: codexCli.path } : {}),
-			env: { ...getCleanSpawnEnv(), CODEX_HOME: getCodexHomeDir() },
+			env: { ...getCleanSpawnEnv(), CODEX_HOME: getCodexHomeDir(), ...this.pendingGitIdentityEnv },
 			config: {
 				show_raw_agent_reasoning: true,
 				...(Object.keys(mcpConfig).length > 0 ? { mcp_servers: mcpConfig } : {}),
@@ -170,6 +192,7 @@ export class CodexEngine implements AIEngine {
 		this.currentAccountId = account.id;
 		this.currentMcpFilterKey = mcpKey;
 		this.currentProjectId = projectId;
+		this.currentGitIdentityKey = gitIdentityKey(this.pendingGitIdentityEnv);
 		this._isInitialized = true;
 		debug.log('engine', `Codex engine initialized (account ${account.id}, mode=${credential.kind}, mcpFilter=${mcpKey}, project=${projectId ?? 'none'})`);
 	}
@@ -180,6 +203,7 @@ export class CodexEngine implements AIEngine {
 		this.currentAccountId = null;
 		this.currentMcpFilterKey = null;
 		this.currentProjectId = null;
+		this.currentGitIdentityKey = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Codex engine disposed');
 	}
@@ -219,11 +243,19 @@ export class CodexEngine implements AIEngine {
 		// ended up opening tabs in another.
 		const streamProjectId = options.mcpContext?.projectId ?? null;
 		const projectChanged = this._isInitialized && streamProjectId !== null && streamProjectId !== this.currentProjectId;
-		if (accountChanged || mcpChanged || projectChanged) {
-			debug.log('engine', `Codex re-initialising (accountChanged=${accountChanged}, mcpChanged=${mcpChanged}, projectChanged=${projectChanged})`);
+		// One client serves every turn, so a turn requested by a different user —
+		// or in a project bound to a different identity — must not inherit the
+		// previous requester's git identity. Re-creating the client is the only
+		// way to change an env the SDK already baked.
+		const streamGitIdentityEnv = options.gitIdentityEnv ?? {};
+		const identityChanged =
+			this._isInitialized && gitIdentityKey(streamGitIdentityEnv) !== this.currentGitIdentityKey;
+		if (accountChanged || mcpChanged || projectChanged || identityChanged) {
+			debug.log('engine', `Codex re-initialising (accountChanged=${accountChanged}, mcpChanged=${mcpChanged}, projectChanged=${projectChanged}, identityChanged=${identityChanged})`);
 			await this.dispose();
 		}
 		this.pendingProjectId = streamProjectId;
+		this.pendingGitIdentityEnv = streamGitIdentityEnv;
 		if (!this._isInitialized || !this.codex) {
 			await this.initialize(accountId, mcpProfileFilter);
 		}

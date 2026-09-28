@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { requireProjectWorkspace } from '../access';
+import { identityEnvFor } from './identity-context';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -38,7 +39,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		const hash = await gitService.commit(cwd, data.message);
+		const hash = await gitService.commit(cwd, data.message, identityEnvFor(conn, data.projectId));
 		return { hash };
 	})
 
@@ -54,7 +55,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		const hash = await gitService.amendCommit(cwd, data.message);
+		const hash = await gitService.amendCommit(cwd, data.message, identityEnvFor(conn, data.projectId));
 		return { hash };
 	})
 
@@ -85,7 +86,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.revertCommit(cwd, data.ref);
+		return await gitService.revertCommit(cwd, data.ref, identityEnvFor(conn, data.projectId));
 	})
 
 	.http('git:cherry-pick', {
@@ -101,7 +102,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.cherryPick(cwd, data.hashes);
+		return await gitService.cherryPick(cwd, data.hashes, identityEnvFor(conn, data.projectId));
 	})
 
 	.http('git:clean', {
@@ -144,5 +145,5 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.npmVersion(cwd, data.bump);
+		return await gitService.npmVersion(cwd, data.bump, identityEnvFor(conn, data.projectId));
 	});
