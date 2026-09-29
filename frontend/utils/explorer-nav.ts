@@ -4,31 +4,24 @@
  * The file tree has no virtualized list and no global key router: these
  * functions compute WHERE a navigation key should land, while the panel
  * (`FilesPanel.svelte`) owns focus, selection state and scrolling. Keeping
- * the index math pure makes ArrowUp/ArrowDown/Home/End/PageUp/PageDown
- * unit-testable without a DOM.
+ * the index math pure makes ArrowUp/ArrowDown/Home/End unit-testable without
+ * a DOM.
+ *
+ * PageUp/PageDown are deliberately NOT handled: rows are focusable and live
+ * inside the tree's own scroll container, so the native page-scroll already
+ * does the right thing there. Moving the cursor without disturbing a
+ * multi-selection is covered by Ctrl+arrows (focus only) plus Space/Shift.
  */
 
-export type TreeNavKey = 'ArrowUp' | 'ArrowDown' | 'Home' | 'End' | 'PageUp' | 'PageDown';
-
-/** Row height estimate (px) used to convert a viewport into a page step. */
-export const TREE_NAV_ROW_HEIGHT_PX = 30;
-
-/** Fallback page step when the container height cannot be measured. */
-export const TREE_NAV_FALLBACK_PAGE_SIZE = 10;
+export type TreeNavKey = 'ArrowUp' | 'ArrowDown' | 'Home' | 'End';
 
 /**
  * Next row index for a navigation key, clamped to `[0, total - 1]`.
- * Page keys move by `pageSize` rows (at least 1); unknown keys hold position.
+ * Unknown keys hold position.
  */
-export function computeNavIndex(
-	current: number,
-	total: number,
-	key: string,
-	pageSize: number
-): number {
+export function computeNavIndex(current: number, total: number, key: string): number {
 	if (total <= 0) return -1;
 	const cur = Math.min(Math.max(current, 0), total - 1);
-	const step = Math.max(1, Math.floor(pageSize) || 1);
 	switch (key) {
 		case 'ArrowUp':
 			return Math.max(0, cur - 1);
@@ -38,24 +31,9 @@ export function computeNavIndex(
 			return 0;
 		case 'End':
 			return total - 1;
-		case 'PageUp':
-			return Math.max(0, cur - step);
-		case 'PageDown':
-			return Math.min(total - 1, cur + step);
 		default:
 			return cur;
 	}
-}
-
-/**
- * How many rows fit in the visible tree viewport. Falls back to
- * `TREE_NAV_FALLBACK_PAGE_SIZE` when the height is not measurable, so
- * PageUp/PageDown always move by a sane amount.
- */
-export function estimatePageSize(containerHeight: number, rowHeight: number = TREE_NAV_ROW_HEIGHT_PX): number {
-	if (!Number.isFinite(containerHeight) || containerHeight <= 0) return TREE_NAV_FALLBACK_PAGE_SIZE;
-	const row = rowHeight > 0 ? rowHeight : TREE_NAV_ROW_HEIGHT_PX;
-	return Math.max(1, Math.floor(containerHeight / row));
 }
 
 /**
@@ -68,23 +46,14 @@ export function estimatePageSize(containerHeight: number, rowHeight: number = TR
 export type NavSelectionMode = 'collapse' | 'focus-only' | 'range';
 
 /**
- * Decision table for navigation keys (Windows Explorer parity + paging
- * preservation rule):
+ * Decision table for navigation keys (Windows Explorer parity):
  * - Shift (with or without Ctrl) always ranges from the anchor;
- * - Ctrl moves the focus cursor only;
- * - plain PageUp/PageDown on a multi-selection moves the focus cursor only
- *   so paging never wipes what was selected — on a single selection it
- *   collapses like the arrows;
+ * - Ctrl moves the focus cursor only, leaving the selection intact;
  * - anything else plain collapses onto the landed item.
  */
-export function navSelectionMode(
-	modifiers: { shift: boolean; ctrl: boolean },
-	isPageKey: boolean,
-	selectedCount: number
-): NavSelectionMode {
+export function navSelectionMode(modifiers: { shift: boolean; ctrl: boolean }): NavSelectionMode {
 	if (modifiers.shift) return 'range';
 	if (modifiers.ctrl) return 'focus-only';
-	if (isPageKey && selectedCount > 1) return 'focus-only';
 	return 'collapse';
 }
 
@@ -111,6 +80,9 @@ export function sliceRange(visible: string[], anchor: string, target: string): s
  * the resulting block — it can never end up as a bare cursor without
  * selection, no matter which of the inputs went stale first. The caller
  * persists the returned anchor back to state.
+ *
+ * Membership goes through a Set: a large selection in a large tree would
+ * otherwise cost one full array scan per selected path on every keypress.
  */
 export function resolveShiftAnchor(
 	visible: string[],
@@ -119,10 +91,11 @@ export function resolveShiftAnchor(
 	selectedPaths: string[],
 	fallback: string
 ): string {
-	if (selectionAnchor && visible.includes(selectionAnchor)) return selectionAnchor;
-	if (cursorPath && visible.includes(cursorPath)) return cursorPath;
+	const isVisible = new Set(visible);
+	if (selectionAnchor && isVisible.has(selectionAnchor)) return selectionAnchor;
+	if (cursorPath && isVisible.has(cursorPath)) return cursorPath;
 	for (const p of selectedPaths) {
-		if (visible.includes(p)) return p;
+		if (isVisible.has(p)) return p;
 	}
 	return fallback;
 }

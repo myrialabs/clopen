@@ -121,6 +121,13 @@ describe('menuPasteBase', () => {
 	it('keeps a directory target verbatim on Windows', () => {
 		expect(menuPasteBase('D:\\PKL\\Bimbel\\uploads', true)).toBe('D:\\PKL\\Bimbel\\uploads');
 	});
+
+	it('resolves a root-level file to a real root directory', () => {
+		// The naive join yields '' on POSIX and 'D:' on Windows — neither is a
+		// directory, and pasting there would fail or land in the process CWD.
+		expect(menuPasteBase('/a.txt', false)).toBe('/');
+		expect(menuPasteBase('D:\\a.txt', false)).toBe('D:\\');
+	});
 });
 
 describe('resolveMenuDests', () => {

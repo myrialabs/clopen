@@ -43,13 +43,22 @@ export function buildClipboardEntry(
  * Destination base for a context-menu paste. Directories paste into
  * themselves; a file target resolves to its parent directory. The separator
  * follows the target path so Windows (`\\`) and POSIX (`/`) trees agree.
+ *
+ * A file sitting directly at a filesystem root has no parent segments left,
+ * and the naive join produces something that is not a directory: `/a.txt`
+ * joins to `''`, and `D:\\a.txt` joins to `D:` — which on Windows means
+ * "current directory on drive D", not the drive root. Both are re-attached to
+ * a real root path.
  */
 export function menuPasteBase(targetPath: string, isDirectory: boolean): string {
 	if (isDirectory) return targetPath;
 	const sep = targetPath.includes('\\') ? '\\' : '/';
 	const parts = targetPath.split(/[\\/]/);
 	parts.pop();
-	return parts.join(sep);
+	const parent = parts.join(sep);
+	if (parent === '') return targetPath.startsWith(sep) ? sep : parent;
+	if (sep === '\\' && /^[A-Za-z]:$/.test(parent)) return `${parent}\\`;
+	return parent;
 }
 
 /**

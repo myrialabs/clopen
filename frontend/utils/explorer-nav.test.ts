@@ -1,12 +1,14 @@
 /**
  * Explorer tree keyboard-navigation math.
  *
- * Guards the PageUp/PageDown (plus ArrowUp/ArrowDown/Home/End) contract:
- * - navigation moves within the visible rows and clamps at the ends;
- * - PageUp/PageDown move by a full viewport page, never by a single row and
- *   never past the first/last row;
- * - the page size derives from the measured container height with a sane
- *   fallback, so the keys work on desktop and on small/responsive viewports.
+ * Guards the ArrowUp/ArrowDown/Home/End contract:
+ * - navigation moves one row at a time in display order and clamps at the
+ *   first/last visible row, never wrapping;
+ * - unrelated keys hold position, so nothing else in the tree is hijacked;
+ * - the selection mode follows the click modifiers (plain collapses, Ctrl
+ *   moves the focus cursor only, Shift ranges from the anchor);
+ * - the Shift anchor always resolves to something that keeps the
+ *   clicked/focused row inside the resulting block.
  */
 
 import { describe, it, expect } from 'bun:test';
@@ -14,73 +16,48 @@ import { describe, it, expect } from 'bun:test';
 import {
 	computeNavIndex,
 	ensureRowVisible,
-	estimatePageSize,
 	navSelectionMode,
 	resolveShiftAnchor,
-	sliceRange,
-	TREE_NAV_FALLBACK_PAGE_SIZE
+	sliceRange
 } from './explorer-nav';
 
 describe('computeNavIndex', () => {
 	it('moves one row with ArrowUp/ArrowDown', () => {
-		expect(computeNavIndex(5, 20, 'ArrowDown', 10)).toBe(6);
-		expect(computeNavIndex(5, 20, 'ArrowUp', 10)).toBe(4);
+		expect(computeNavIndex(5, 20, 'ArrowDown')).toBe(6);
+		expect(computeNavIndex(5, 20, 'ArrowUp')).toBe(4);
 	});
 
-	it('clamps at the first and last row', () => {
-		expect(computeNavIndex(0, 20, 'ArrowUp', 10)).toBe(0);
-		expect(computeNavIndex(19, 20, 'ArrowDown', 10)).toBe(19);
+	it('clamps at the first and last row instead of wrapping', () => {
+		expect(computeNavIndex(0, 20, 'ArrowUp')).toBe(0);
+		expect(computeNavIndex(19, 20, 'ArrowDown')).toBe(19);
 	});
 
 	it('jumps to the ends with Home/End', () => {
-		expect(computeNavIndex(7, 20, 'Home', 10)).toBe(0);
-		expect(computeNavIndex(7, 20, 'End', 10)).toBe(19);
-	});
-
-	it('moves a full page with PageDown/PageUp', () => {
-		expect(computeNavIndex(2, 50, 'PageDown', 10)).toBe(12);
-		expect(computeNavIndex(12, 50, 'PageUp', 10)).toBe(2);
-	});
-
-	it('clamps pages at the list ends instead of overshooting', () => {
-		expect(computeNavIndex(45, 50, 'PageDown', 10)).toBe(49);
-		expect(computeNavIndex(3, 50, 'PageUp', 10)).toBe(0);
-	});
-
-	it('treats a page smaller than 1 as a single row', () => {
-		expect(computeNavIndex(5, 20, 'PageDown', 0)).toBe(6);
-		expect(computeNavIndex(5, 20, 'PageUp', -3)).toBe(4);
+		expect(computeNavIndex(7, 20, 'Home')).toBe(0);
+		expect(computeNavIndex(7, 20, 'End')).toBe(19);
 	});
 
 	it('holds position for unrelated keys', () => {
-		expect(computeNavIndex(5, 20, 'Enter', 10)).toBe(5);
-		expect(computeNavIndex(5, 20, 'c', 10)).toBe(5);
+		// PageUp/PageDown are intentionally not navigation keys — the native
+		// page-scroll of the tree's own container handles them.
+		expect(computeNavIndex(5, 20, 'PageDown')).toBe(5);
+		expect(computeNavIndex(5, 20, 'PageUp')).toBe(5);
+		expect(computeNavIndex(5, 20, 'Enter')).toBe(5);
+		expect(computeNavIndex(5, 20, 'c')).toBe(5);
 	});
 
 	it('reports -1 for an empty list', () => {
-		expect(computeNavIndex(0, 0, 'PageDown', 10)).toBe(-1);
+		expect(computeNavIndex(0, 0, 'ArrowDown')).toBe(-1);
 	});
 
 	it('clamps an out-of-range start index before moving', () => {
-		expect(computeNavIndex(99, 20, 'ArrowDown', 10)).toBe(19);
-		expect(computeNavIndex(-4, 20, 'ArrowUp', 10)).toBe(0);
-	});
-});
-
-describe('estimatePageSize', () => {
-	it('derives the page from the container height', () => {
-		expect(estimatePageSize(300, 30)).toBe(10);
-		expect(estimatePageSize(320, 32)).toBe(10);
+		expect(computeNavIndex(99, 20, 'ArrowDown')).toBe(19);
+		expect(computeNavIndex(-4, 20, 'ArrowUp')).toBe(0);
 	});
 
-	it('never drops below a single row', () => {
-		expect(estimatePageSize(10, 30)).toBe(1);
-	});
-
-	it('falls back when the height cannot be measured', () => {
-		expect(estimatePageSize(0)).toBe(TREE_NAV_FALLBACK_PAGE_SIZE);
-		expect(estimatePageSize(-5)).toBe(TREE_NAV_FALLBACK_PAGE_SIZE);
-		expect(estimatePageSize(Number.NaN)).toBe(TREE_NAV_FALLBACK_PAGE_SIZE);
+	it('lands on the only row of a single-item list', () => {
+		expect(computeNavIndex(0, 1, 'ArrowDown')).toBe(0);
+		expect(computeNavIndex(0, 1, 'End')).toBe(0);
 	});
 });
 
@@ -112,36 +89,17 @@ describe('sliceRange', () => {
 });
 
 describe('navSelectionMode', () => {
-	it('collapses on plain arrows (single or empty selection)', () => {
-		expect(navSelectionMode({ shift: false, ctrl: false }, false, 0)).toBe('collapse');
-		expect(navSelectionMode({ shift: false, ctrl: false }, false, 1)).toBe('collapse');
+	it('collapses on plain arrows', () => {
+		expect(navSelectionMode({ shift: false, ctrl: false })).toBe('collapse');
 	});
 
-	it('collapses on plain arrows even with a multi-selection (Explorer parity)', () => {
-		expect(navSelectionMode({ shift: false, ctrl: false }, false, 3)).toBe('collapse');
-	});
-
-	it('moves focus only on plain PageUp/PageDown over a multi-selection', () => {
-		// Paging must never wipe what was selected.
-		expect(navSelectionMode({ shift: false, ctrl: false }, true, 2)).toBe('focus-only');
-		expect(navSelectionMode({ shift: false, ctrl: false }, true, 5)).toBe('focus-only');
-	});
-
-	it('collapses on plain PageUp/PageDown over a single selection', () => {
-		expect(navSelectionMode({ shift: false, ctrl: false }, true, 1)).toBe('collapse');
-		expect(navSelectionMode({ shift: false, ctrl: false }, true, 0)).toBe('collapse');
-	});
-
-	it('moves focus only on Ctrl+navigation regardless of selection size', () => {
-		expect(navSelectionMode({ shift: false, ctrl: true }, false, 1)).toBe('focus-only');
-		expect(navSelectionMode({ shift: false, ctrl: true }, false, 4)).toBe('focus-only');
-		expect(navSelectionMode({ shift: false, ctrl: true }, true, 4)).toBe('focus-only');
+	it('moves focus only on Ctrl/Cmd+navigation, so a multi-selection survives', () => {
+		expect(navSelectionMode({ shift: false, ctrl: true })).toBe('focus-only');
 	});
 
 	it('ranges on Shift+navigation (with or without Ctrl)', () => {
-		expect(navSelectionMode({ shift: true, ctrl: false }, false, 1)).toBe('range');
-		expect(navSelectionMode({ shift: true, ctrl: true }, false, 3)).toBe('range');
-		expect(navSelectionMode({ shift: true, ctrl: false }, true, 3)).toBe('range');
+		expect(navSelectionMode({ shift: true, ctrl: false })).toBe('range');
+		expect(navSelectionMode({ shift: true, ctrl: true })).toBe('range');
 	});
 });
 
@@ -170,6 +128,12 @@ describe('resolveShiftAnchor', () => {
 		expect(
 			resolveShiftAnchor(visible, null, null, ['/p/daftar.php', '/p/gone'], visible[0])
 		).toBe('/p/daftar.php');
+	});
+
+	it('skips selected paths that are no longer visible', () => {
+		expect(
+			resolveShiftAnchor(visible, null, null, ['/p/gone', '/p/also-gone'], visible[0])
+		).toBe('/p/composer.json');
 	});
 
 	it('falls back to the given fallback when nothing usable exists', () => {
