@@ -44,7 +44,7 @@ import type {
 	TokenUsage,
 	StopReason,
 } from '$shared/types/unified';
-import { toCanonicalToolName } from '$shared/types/unified';
+import { toCanonicalToolName, toMcpServerStatus } from '$shared/types/unified';
 
 // ============================================================
 // Helper Mappers
@@ -390,9 +390,13 @@ export function convertSystemInit(msg: SDKSystemMessage): SystemInitEvent {
 		model: msg.model || '',
 		engine: 'claude-code',
 		tools: msg.tools || [],
+		// `mcp_servers[].status` is a bare `string` on this payload, so it is
+		// narrowed, not cast: the cast this used to do named three states the CLI
+		// never emits and erased `pending`/`needs-auth`, the two that decide
+		// whether stream-manager raises a toast.
 		mcpServers: (msg.mcp_servers || []).map(s => ({
 			name: s.name || '',
-			status: (s.status as 'connected' | 'disconnected' | 'error') || 'disconnected',
+			status: toMcpServerStatus(s.status),
 		})),
 	};
 }
