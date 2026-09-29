@@ -9,10 +9,16 @@
  *
  * Presence in that table decides membership here: `gpt-5.3-codex`, `gpt-5.4`
  * and `gpt-5.4-mini` left it in the 0.147 bump and are dropped (the 5.4 pair
- * retires 2026-08-31). `gpt-5.3-codex-spark` is the deliberate exception — the
- * CLI also fetches account-entitled models from the server, so its absence from
- * the shipped table is not evidence of removal, and the docs still list it for
- * ChatGPT Pro.
+ * retires 2026-08-31). `gpt-5.2` and `gpt-5.3-codex-spark` are dropped too —
+ * both are gone from the shipped table and learn.chatgpt.com/docs/models no
+ * longer mentions either (the docs used to carve `-spark` out as a ChatGPT
+ * Pro-only exception, but that's no longer true).
+ *
+ * `gpt-daybreak-blue-latest`/`gpt-daybreak-red-latest` (specialized
+ * defensive/offensive cybersecurity-research variants) and
+ * `codex-auto-review` (an internal approval-review model) are in the shipped
+ * table but marked `visibility: "hide"` there, so they're deliberately left
+ * out of this picker too.
  *
  * Models tagged `requiresAuthMode` are filtered by the chat-input account
  * picker so the user can't pick a ChatGPT-only model while signed in with an
@@ -72,15 +78,13 @@ function codexModel(
 
 /** Ordered by the CLI's own `priority` field, so the picker matches Codex's. */
 export const CODEX_MODELS: EngineModel[] = [
+	codexModel('gpt-6-astra', 'GPT-6-Astra', codexReasoning(EFFORTS_TO_ULTRA, 'low')),
+	codexModel('gpt-6-sol', 'GPT-6-Sol', codexReasoning(EFFORTS_TO_ULTRA, 'medium')),
+	codexModel('gpt-6-luna', 'GPT-6-Luna', codexReasoning(EFFORTS_TO_MAX, 'medium')),
 	codexModel('gpt-5.6-sol', 'GPT-5.6-Sol', codexReasoning(EFFORTS_TO_ULTRA, 'low')),
 	codexModel('gpt-5.6-terra', 'GPT-5.6-Terra', codexReasoning(EFFORTS_TO_ULTRA, 'medium')),
 	codexModel('gpt-5.6-luna', 'GPT-5.6-Luna', codexReasoning(EFFORTS_TO_MAX, 'medium')),
 	codexModel('gpt-5.5', 'GPT-5.5', codexReasoning(EFFORTS_TO_XHIGH, 'medium')),
-	codexModel('gpt-5.2', 'GPT-5.2', codexReasoning(EFFORTS_TO_XHIGH, 'medium')),
-	codexModel('gpt-5.3-codex-spark', 'GPT-5.3 Codex Spark (ChatGPT Pro)', null, {
-		image: false,
-		requiresAuthMode: 'chatgpt',
-	}),
 ];
 
 /**
