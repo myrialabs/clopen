@@ -353,3 +353,17 @@
 	}
 }
 
+/* Explorer keyboard-navigation modality. After an Arrow/Home/End move the
+   mouse pointer hasn't moved, so the browser keeps :hover on the previously
+   clicked row — it would look like a leftover selection trail even though the
+   selection already moved on. While the tree carries [data-kbd-nav], row
+   hover backgrounds are suppressed; the attribute is cleared on the next
+   mouse move or click, so normal mouse hover returns instantly. Scoped to
+   [data-hoverable] — rows that are selected or active carry their own
+   background instead of a hover one, and blanking that would delete the very
+   highlight the keyboard just moved. Unlayered on purpose: unlayered author
+   styles beat Tailwind's layered hover utilities regardless of specificity or
+   order. */
+[data-kbd-nav] [data-hoverable]:hover {
+	background-color: transparent;
+}

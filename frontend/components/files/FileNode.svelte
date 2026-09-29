@@ -39,6 +39,7 @@
 		gitStatusMap = new Map<string, string>(),
 		gitFolderStatusMap = new Map<string, string>(),
 		selectedPaths = new Set<string>(),
+		cursorPath = null,
 		onClick,
 		onNodeDragStart,
 		onNodeDragOver,
@@ -67,6 +68,8 @@
 		gitStatusMap?: Map<string, string>;
 		gitFolderStatusMap?: Map<string, string>;
 		selectedPaths?: Set<string>;
+		/** Keyboard/mouse cursor row — owns the tree's primary highlight. */
+		cursorPath?: string | null;
 		onClick?: (file: FileNodeType, event: MouseEvent | KeyboardEvent) => void;
 		onNodeDragStart?: (file: FileNodeType, event: DragEvent) => void;
 		onNodeDragOver?: (file: FileNodeType, event: DragEvent) => void;
@@ -88,13 +91,23 @@
 
 	const isBusy = $derived(busyPaths.has(file.path));
 
-	// Determine if this node is the active file
-	const isActiveFile = $derived(
-		activeFilePath ? file.path === activeFilePath : isSelected
-	);
-
-	// Multi-selection membership (separate from the single active-file highlight).
+	// Multi-selection membership.
 	const isInSelection = $derived(selectedPaths.has(file.path));
+
+	// The tree shows exactly ONE primary highlight, and the cursor owns it as
+	// soon as it moves. Keying this off activeFilePath alone left the strong
+	// background on the previously opened file whenever the cursor moved
+	// somewhere that opens no tab (a folder) or had not opened one yet, which
+	// reads as a highlight left behind rather than a highlight that moved.
+	// The cursor only fills when it is part of the selection: Ctrl+arrows and
+	// Ctrl+click-to-deselect park it outside on purpose, and there the focus
+	// ring marks it while the selection keeps the fill. With no cursor at all
+	// — fresh load, cleared selection — the open file keeps the highlight.
+	const isActiveFile = $derived(
+		cursorPath !== null
+			? file.path === cursorPath && (selectedPaths.size === 0 || isInSelection)
+			: (activeFilePath ? file.path === activeFilePath : isSelected)
+	);
 	const isDropTarget = $derived(
 		file.type === 'directory' && dropTargetPath !== null && dropTargetPath === file.path
 	);
@@ -234,13 +247,18 @@
 	});
 </script>
 
+<!-- data-hoverable marks rows that actually carry a :hover background, so the
+     keyboard-nav hover suppression in app.css cannot blank out a selected
+     row's own background when the stale pointer happens to rest on it. -->
 <div
 	bind:this={nodeElement}
+	data-path={file.path}
+	data-hoverable={isActiveFile || isInSelection ? undefined : ''}
 	class="group relative flex items-center space-x-2 px-2 py-1.5 rounded-md transition-colors {isActiveFile
 		? 'bg-violet-500/10 dark:bg-violet-500/15 text-slate-900 dark:text-slate-100'
 		: isInSelection
 			? 'bg-violet-500/5 dark:bg-violet-500/10 text-slate-900 dark:text-slate-100'
-			: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'} {isDropTarget ? 'ring-2 ring-violet-500/60 ring-inset' : ''} {isCut ? 'opacity-50' : ''} {isBusy ? 'opacity-60 cursor-not-allowed pointer-events-none' : 'cursor-pointer'}"
+			: 'hover:bg-slate-100/50 dark:hover:bg-slate-800/50'} {isDropTarget ? 'ring-2 ring-violet-500/60 ring-inset' : ''} {isCut ? 'opacity-50' : ''} {isBusy ? 'opacity-60 cursor-not-allowed pointer-events-none' : 'cursor-pointer'} focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-violet-500/60"
 	class:selected={isActiveFile}
 	class:directory={file.type === 'directory'}
 	title={isCut ? `${file.name} (cut)` : file.name}
@@ -548,6 +566,7 @@
 			{gitStatusMap}
 			{gitFolderStatusMap}
 			{selectedPaths}
+			{cursorPath}
 			{onClick}
 			{onNodeDragStart}
 			{onNodeDragOver}

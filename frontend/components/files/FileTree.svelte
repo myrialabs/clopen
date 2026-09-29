@@ -56,6 +56,8 @@
 		gitStatusMap?: Map<string, string>;
 		gitFolderStatusMap?: Map<string, string>;
 		selectedPaths?: Set<string>;
+		/** Keyboard/mouse cursor row — owns the tree's primary highlight. */
+		cursorPath?: string | null;
 		onNodeClick?: (file: FileNodeType, event: MouseEvent | KeyboardEvent) => void;
 		onNodeDragStart?: (file: FileNodeType, event: DragEvent) => void;
 		onNodeDragOver?: (file: FileNodeType, event: DragEvent) => void;
@@ -97,6 +99,7 @@
 		gitStatusMap = new Map(),
 		gitFolderStatusMap = new Map(),
 		selectedPaths = new Set<string>(),
+		cursorPath = null,
 		onNodeClick,
 		onNodeDragStart,
 		onNodeDragOver,
@@ -852,6 +855,7 @@
 							{gitStatusMap}
 							{gitFolderStatusMap}
 							{selectedPaths}
+							{cursorPath}
 							onClick={onNodeClick}
 							{onNodeDragStart}
 							{onNodeDragOver}
