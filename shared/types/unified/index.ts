@@ -95,6 +95,8 @@ export {
 	toCanonicalToolName,
 } from './tool';
 
+export { toMcpServerStatus } from './stream';
+
 export type {
 	SubAgentToolActivity,
 	SubAgentTextActivity,

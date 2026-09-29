@@ -4,13 +4,15 @@
  * Wraps the @anthropic-ai/claude-agent-sdk into the AIEngine interface.
  * SDK messages are converted to EngineOutput by ./message-converter.ts.
  *
- * Currently uses v1 query() API because v2 (unstable_v2_createSession) is
- * @alpha and lacks critical options required by Clopen:
- *   - cwd (multi-project working directory)
- *   - mcpServers, systemPrompt, settingSources
- *   - forkSession, maxTurns, abortController, includePartialMessages
- *   - outputFormat (needed by generateStructured)
- * When v2 SDKSessionOptions gains these, migrate streamQuery() to v2.
+ * query() is the only session entry point. The alternative this comment used to
+ * weigh — the @alpha v2 API (unstable_v2_createSession / unstable_v2_prompt) —
+ * was removed upstream in 0.3.142, before the version Clopen pins, so there is
+ * no migration pending. prewarm() (0.3.284, @alpha) parks a spare process to
+ * take start-up cost off the first message, but everything Clopen varies per
+ * stream is frozen at prewarm time — mcpServers (whose tool handlers are bound
+ * to the project), hooks, canUseTool, env (git identity) — so a spare is only
+ * reusable within one (project × profile × account × identity) and holds
+ * 230-260 MB while parked. Not adopted; see docs/lessons-learned.md §10.25.
  */
 
 import { loadEngineSdk } from '$backend/engine/sdk-loader';

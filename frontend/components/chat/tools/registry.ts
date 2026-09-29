@@ -229,8 +229,10 @@ export const HIDDEN_TOOLS = new Set<KnownToolName>([
 	'TodoWrite',
 	'TaskOutput',
 	'ToolSearch',
-	// Task tools drive the TaskProgress panel (see TaskProgress.svelte) rather
-	// than rendering inline — same treatment as TodoWrite.
+	// TaskCreate/TaskUpdate drive the TaskProgress panel (see TaskProgress.svelte)
+	// rather than rendering inline — same treatment as TodoWrite. TaskGet/TaskList
+	// only read the list the panel already shows, so they are suppressed as noise;
+	// their variant components stay registered for anywhere that opts back in.
 	'TaskCreate',
 	'TaskUpdate',
 	'TaskGet',

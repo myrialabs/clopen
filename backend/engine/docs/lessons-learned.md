@@ -1509,6 +1509,61 @@ diffs. `/tmp`-installing the old and new versions side by side and diffing the
 `type: "…"` literals in each SDK's event declarations found every item above in
 minutes.
 
+**The September 2026 Claude pass (0.3.229 → 0.3.284) added one more trap, and
+it is the reverse of the stale-catalog item above.** Here the catalog was
+*right* and the binary was behind. `models.ts` listed `claude-opus-5-5`,
+`claude-sonnet-5-5` and `claude-fable-5-1`, but the CLI bundled with 0.3.229 is
+2.1.229, whose embedded model table predates all three — so picking any of them
+failed inside the CLI with `Claude Code 2.1.229 does not support this model;
+version 2.1.280 or newer is required`. Nothing in Clopen could have caught it:
+the slugs are correct, the types compile, and the engine is installed and
+healthy. The rule that follows is bidirectional, because the SDK pin and the
+model catalog are one decision wearing two hats:
+
+- Adding a model to `models.ts` is not done until the **pinned** SDK's bundled
+  CLI knows the slug. `strings -a node_modules/@anthropic-ai/claude-agent-sdk-<platform>-<arch>/claude | grep -oE 'claude-(opus|sonnet|haiku|fable)-[0-9-]+' | sort -u`
+  answers it in seconds, the same read `codex/models.ts` does for Codex.
+- Bumping the SDK is therefore a **model-availability change**, not only a type
+  change, and belongs in the PR description as one. The Claude CLI ships as a
+  platform package of the SDK (`engine-cli.ts` → `claudeCandidates`), so the two
+  versions move together and cannot be bumped apart.
+
+Two smaller findings from the same pass, both worth reusing:
+
+- **An unchanged union is itself a result, but only if you diff for it.**
+  `SDKMessage` was byte-identical across the 55 versions, which is what made the
+  upgrade safe — not the clean compile. Diffing every type's *fields* (not just
+  the member names) is what proved it: `Options` gained five optional entries,
+  `Query` three methods, and the only removals anywhere were
+  `Settings.policyHelpers` and two control requests, none referenced by Clopen.
+- **A cast at the SDK boundary erased the two states that decide a toast.** The
+  `system:init` payload types `mcp_servers[].status` as a bare `string`, while
+  the SDK *separately* exports a richer `McpServerStatus` for a different API
+  surface — so the obvious `as 'connected' | 'disconnected' | 'error'` looked
+  authoritative and was fiction. `pending` and `needs-auth` are not failures,
+  and 0.3.282 made `pending` routine by connecting MCP servers in the
+  background. Both the Claude and Qwen converters carried the same invented
+  union; the vocabulary now lives once in `toMcpServerStatus`
+  (`shared/types/unified/stream.ts`), for the same reason `resolveCodexEffort`
+  does.
+
+**`prewarm()` (0.3.284, `@alpha`) was evaluated and declined.** It parks a spare
+Claude Code process so process start, auth, tools, plugins and MCP handshakes
+come off the first message — but `claim()` can only set `cwd`,
+`additionalDirectories`, `model`, `permissionMode`, `maxThinkingTokens`, a
+settings overlay, `appendSystemPrompt`, `title`, `agents` and three named
+environment variables. Everything else is frozen at `prewarm()`, including the
+four things Clopen varies per stream: `mcpServers` (whose tool handlers are
+bound to a project via `mcpContext`), `hooks` (the PreToolUse permission hook is
+per project + profile), `canUseTool` (its closure captures the per-stream run),
+and `env` (git identity is not one of the three claimable variables). A spare is
+therefore only reusable inside one `(project × profile × account × identity)`
+and holds 230–260 MB while parked, which does not fit the low-spec/VPS target.
+If it is revisited: it needs a spare registry keyed on that tuple, a
+default-off setting, and a fallback that special-cases `option_not_applied` —
+that rejection means the session is **already running**, so the naive
+"fall back to `query()`" double-sends the prompt.
+
 ---
 
 ### 10.26 One engine instance, many chats — per-stream state cannot live on it
@@ -1578,3 +1633,66 @@ What made this survive so long is that the contract doc *taught* it: invariant 2
 used to read "Streaming state lives on the instance … automatically isolated
 per-project". It was true about projects and silently wrong about chat sessions.
 When an invariant is scoped, write down what it does **not** cover.
+
+---
+
+### 10.27 A tool id is scoped to the SDK session that minted it
+
+The Task Progress panel showed a plan that could never finish. Turn 1 created
+three tasks and completed them; turn 2 created two more and, as the user put it,
+"updated 1-2 instead of continuing from 4". The count settled at half done and
+stayed there.
+
+`TodoWrite` sent a full snapshot per call, so reading it was "take the last
+one". The Task tools that replaced it (`TaskCreate` / `TaskUpdate`, SDK
+0.3.142+) are deltas — one task per create, patched by `taskId` — so the panel
+replays them. The replay keyed tasks on a **single counter over the whole
+conversation**, on the assumption that the engine numbers tasks the same way.
+It does not. Clopen sends every turn with `forkSession: true`, so each turn runs
+under a fresh SDK session whose task store starts empty and **whose ids restart
+at 1**.
+
+Reading it out of the database made the damage exact. In one real session turn 6
+created ten tasks (ids 1-10), turn 7 created seven more that the engine also
+numbered 1-7, and turn 9 three more numbered 1-3. The replay handed turn 7's
+creates the synthetic ids 11-17 while turn 7's updates still said 1-7 — so every
+later turn's status landed on **turn 6's rows**, and its own tasks never left
+`pending`. The panel read 10/20 = 50% forever, and the header named a turn-6
+task while the agent worked on a turn-9 one. Replaying that same session through
+the fix yields 3/3.
+
+The engine had been saying so all along: across the whole database, every
+`TaskList` call answers `No tasks found`, each one issued in a turn *after*
+tasks were created. An empty store per fork is not an edge case, it is the
+normal shape.
+
+So the id namespace is the SDK session, and the rules that follow are worth
+keeping for any future delta-keyed tool:
+
+- **Key per session, not per conversation.** A create arriving under a new
+  `message.sessionId` starts that session's list from scratch. The same
+  reasoning as §10.23: an SDK session id is only meaningful to the engine that
+  minted it, and so is anything numbered inside it.
+- **Only creates open a namespace; updates never do.** A turn that patches
+  without creating is a continuation, and clearing on it would discard the list
+  those patches refer to — the case if the engine ever persists its store
+  across a fork.
+- **Prefer the id the engine reports over one you derive.** `TaskCreate`'s
+  result reads `Task #4 created successfully: …`; parse it, and fall back to
+  counting *within the namespace* only while the result is still in flight.
+  The old counter was not wrong because counting is wrong, it was wrong because
+  it counted across a boundary the ids do not cross.
+- **Do not invent a row for an id you never saw created.** The old `upsert`
+  defaulted a missing subject to the id, so a stray patch entered the list as a
+  task literally labelled `7` — reachable whenever the loaded message window
+  opens partway through a turn. Skip it unless the patch names the task.
+
+Two pieces of dead code hid the bug's surface. The replay read
+`item.result?.content` for `TaskList` snapshots, but that widget consumes the
+**raw** message list while `ToolUseBlock.result` is populated by the grouper
+that feeds the rendered list — across 2140 stored Task blocks, not one carries a
+`result`. And what it tried to parse (`{ tasks: [...] }`) is not a shape
+`TaskList` returns; its result is prose. A branch that cannot fire will not tell
+you its premise is wrong, so the replay lives in
+`frontend/utils/chat/task-progress.ts` now, behind unit tests that state each
+scenario, rather than inside a `$derived` where no test could reach it.

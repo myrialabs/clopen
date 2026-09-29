@@ -1,7 +1,8 @@
 <!--
   Task Progress Component
   Static panel docked at the top of the AI Assistant chat.
-  Shows the latest TodoWrite content with a collapsible task list.
+  Shows the current task list — replayed from the Task tools when the engine
+  sends those, or the latest TodoWrite snapshot when it sends those instead.
 -->
 
 <script lang="ts">
@@ -10,102 +11,18 @@
 	import { todoPanelState, saveTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { slide } from 'svelte/transition';
-	import type {
-		TodoItem,
-		TodoWriteInput,
-		TaskCreateInput,
-		TaskUpdateInput,
-		TaskStatus,
-	} from '$shared/types/unified';
-
-	/** Best-effort JSON parse of a tool result's content. */
-	function parseResult(content: unknown): Record<string, unknown> | null {
-		if (content && typeof content === 'object') return content as Record<string, unknown>;
-		if (typeof content !== 'string') return null;
-		try {
-			const parsed = JSON.parse(content);
-			return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null;
-		} catch {
-			return null;
-		}
-	}
+	import { replayTaskTools } from '$frontend/utils/chat/task-progress';
+	import type { TodoItem, TodoWriteInput } from '$shared/types/unified';
 
 	/**
-	 * Reconstruct the task list from the incremental Task tools
-	 * (TaskCreate / TaskUpdate / TaskList — Claude SDK 0.3.142+). Unlike
-	 * TodoWrite (which sends a full snapshot each call), these are deltas:
-	 * the task id is returned in TaskCreate's result and referenced by
-	 * TaskUpdate. We replay them in order to rebuild the current list, and
-	 * fold in any TaskList snapshot. Returns null when no Task tool was used,
-	 * so the TodoWrite path below stays the source of truth for other engines.
+	 * Task list rebuilt from TaskCreate / TaskUpdate. Null when the conversation
+	 * used neither, so the TodoWrite path below stays the source of truth for the
+	 * engines that still send snapshots. See utils/chat/task-progress.ts for why
+	 * the replay is scoped to one SDK session.
 	 */
 	const taskToolTodos = $derived.by((): TodoItem[] | null => {
-		if (!sessionState.currentSession || sessionState.messages.length === 0) return null;
-
-		const tasks = new Map<string, TodoItem>();
-		const order: string[] = [];
-		let sawTaskTool = false;
-		// The harness assigns sequential integer ids ("1", "2", …) in creation
-		// order; TaskCreate's result shape isn't reliably parseable, so we key
-		// each created task by its creation index to match TaskUpdate.taskId.
-		let createCount = 0;
-
-		const upsert = (id: string, patch: Partial<TodoItem>) => {
-			const existing = tasks.get(id);
-			if (existing) {
-				tasks.set(id, { ...existing, ...patch });
-			} else {
-				order.push(id);
-				tasks.set(id, {
-					content: patch.content ?? id,
-					status: patch.status ?? 'pending',
-					activeForm: patch.activeForm ?? patch.content ?? '',
-				});
-			}
-		};
-
-		for (const message of sessionState.messages) {
-			if (message.type !== 'assistant' || !('content' in message)) continue;
-			for (const item of message.content) {
-				if (item.type !== 'tool_use') continue;
-
-				if (item.name === 'TaskCreate') {
-					sawTaskTool = true;
-					const input = item.input as TaskCreateInput;
-					const id = String(++createCount);
-					upsert(id, {
-						content: input.subject,
-						activeForm: input.activeForm || input.subject,
-						status: 'pending',
-					});
-				} else if (item.name === 'TaskUpdate') {
-					sawTaskTool = true;
-					const input = item.input as TaskUpdateInput;
-					if (input.status === 'deleted') {
-						if (tasks.delete(input.taskId)) {
-							order.splice(order.indexOf(input.taskId), 1);
-						}
-						continue;
-					}
-					upsert(input.taskId, {
-						...(input.subject ? { content: input.subject } : {}),
-						...(input.activeForm ? { activeForm: input.activeForm } : {}),
-						...(input.status ? { status: input.status as TaskStatus } : {}),
-					});
-				} else if (item.name === 'TaskList') {
-					const result = parseResult(item.result?.content);
-					const list = result?.tasks as Array<{ id: string; subject: string; status: TaskStatus }> | undefined;
-					if (!Array.isArray(list)) continue;
-					sawTaskTool = true;
-					for (const t of list) {
-						upsert(t.id, { content: t.subject, status: t.status });
-					}
-				}
-			}
-		}
-
-		if (!sawTaskTool) return null;
-		return order.map((id) => tasks.get(id)!);
+		if (!sessionState.currentSession) return null;
+		return replayTaskTools(sessionState.messages);
 	});
 
 	const todoWriteTodos = $derived.by((): TodoItem[] | null => {

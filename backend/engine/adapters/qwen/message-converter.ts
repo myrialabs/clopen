@@ -50,7 +50,7 @@ import type {
 	StopReason,
 	AskUserQuestion,
 } from '$shared/types/unified';
-import { toCanonicalToolName } from '$shared/types/unified';
+import { toCanonicalToolName, toMcpServerStatus } from '$shared/types/unified';
 import { resolveOpenCodeToolName } from '../../../mcp';
 
 // ============================================================
@@ -838,7 +838,7 @@ export function convertSystemInit(msg: SDKSystemMessage, state: QwenConverterSta
 		tools: msg.tools || [],
 		mcpServers: (msg.mcp_servers || []).map(s => ({
 			name: s.name || '',
-			status: (s.status as 'connected' | 'disconnected' | 'error') || 'disconnected',
+			status: toMcpServerStatus(s.status),
 		})),
 	};
 }

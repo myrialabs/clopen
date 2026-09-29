@@ -23,6 +23,7 @@ import type {
 	SuccessResultEvent,
 	ErrorResultEvent,
 	SystemInitEvent,
+	McpServerStatus,
 	RateLimitEvent,
 	RateLimitType,
 	NotificationEvent,
@@ -928,14 +929,14 @@ class StreamManager extends EventEmitter {
 						// Suppress the toast for "soft" statuses: `pending` (still
 						// connecting) and `needs-auth` (server expects OAuth/credentials
 						// configured in Settings → MCP). These are not errors — a scary
-						// toast for them is confusing. (Status is the raw SDK string,
-						// wider than the EngineOutput union, hence the cast.)
-						const SOFT_STATUSES = new Set(['pending', 'needs-auth']);
+						// toast for them is confusing. `pending` is the common case since
+						// claude-agent-sdk 0.3.282 connects MCP servers in the background.
+						const SOFT_STATUSES = new Set<McpServerStatus['status']>(['pending', 'needs-auth']);
 						const failedServers = initEvent.mcpServers.filter(
-							s => s.status !== 'connected' && !SOFT_STATUSES.has(s.status as string)
+							s => s.status !== 'connected' && !SOFT_STATUSES.has(s.status)
 						);
 						initEvent.mcpServers
-							.filter(s => SOFT_STATUSES.has(s.status as string))
+							.filter(s => SOFT_STATUSES.has(s.status))
 							.forEach(s => debug.log('mcp', `MCP server "${s.name}" not ready (${s.status}) — suppressing toast`));
 						failedServers.forEach(server => {
 							debug.warn('mcp', `MCP server connection failed: ${server.name} (${server.status})`);
