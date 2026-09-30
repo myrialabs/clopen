@@ -20,6 +20,8 @@ export interface GitExecResult {
 	stdout: string;
 	stderr: string;
 	exitCode: number;
+	/** Undecoded stdout, only when the call asked for `raw` output. */
+	stdoutBytes?: Buffer;
 }
 
 export interface GitExecOptions {
@@ -47,6 +49,12 @@ export interface GitExecOptions {
 	 * future variable might.
 	 */
 	env?: Record<string, string>;
+	/**
+	 * Keep stdout as bytes as well. Needed whenever stdout is file content
+	 * (`cat-file`, `show`): decoding a binary blob as UTF-8 is lossy, and a
+	 * hash of the decoded text would never match the file on disk.
+	 */
+	raw?: boolean;
 }
 
 /**
@@ -60,7 +68,7 @@ export async function execGit(
 ): Promise<GitExecResult> {
 	const options: GitExecOptions =
 		typeof timeoutOrOptions === 'number' ? { timeout: timeoutOrOptions } : timeoutOrOptions;
-	const { timeout = 30000, stdin, okExitCodes = [], env: extraEnv } = options;
+	const { timeout = 30000, stdin, okExitCodes = [], env: extraEnv, raw = false } = options;
 	debug.log('git', `Executing: git ${args.join(' ')} in ${cwd}`);
 
 	const gitPath = resolveBinary('git');
@@ -106,10 +114,12 @@ export async function execGit(
 	}, timeout);
 
 	try {
-		const [stdout, stderr] = await Promise.all([
-			new Response(proc.stdout).text(),
+		const [stdoutBuffer, stderr] = await Promise.all([
+			new Response(proc.stdout).arrayBuffer(),
 			new Response(proc.stderr).text()
 		]);
+		const stdoutBytes = Buffer.from(stdoutBuffer);
+		const stdout = stdoutBytes.toString('utf8');
 
 		const exitCode = await proc.exited;
 		clearTimeout(timeoutId);
@@ -118,7 +128,7 @@ export async function execGit(
 			debug.warn('git', `Command failed (exit ${exitCode}): git ${args.join(' ')}\n${stderr}`);
 		}
 
-		return { stdout, stderr, exitCode };
+		return raw ? { stdout, stderr, exitCode, stdoutBytes } : { stdout, stderr, exitCode };
 	} catch (err) {
 		clearTimeout(timeoutId);
 		throw err;

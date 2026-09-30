@@ -16,7 +16,9 @@ import {
 	statusOf,
 	isBinaryBuffer,
 	summariseTurnFiles,
-	excerptPrompt
+	excerptPrompt,
+	netChangeRuns,
+	summariseNetChanges
 } from './turn-changes';
 
 /** Blob reader over an in-memory store, so the tests own their failure modes. */
@@ -159,5 +161,60 @@ describe('excerptPrompt', () => {
 
 	it('answers empty for an empty prompt', () => {
 		expect(excerptPrompt('   ', 10)).toBe('');
+	});
+});
+
+describe('netChangeRuns', () => {
+	it('folds a file edited in several turns into one change', () => {
+		const runs = netChangeRuns([
+			{ 'a.ts': { oldHash: 'v1', newHash: 'v2' } },
+			{ 'a.ts': { oldHash: 'v2', newHash: 'v3' } }
+		]);
+		expect(runs.get('a.ts')).toEqual([{ oldHash: 'v1', newHash: 'v3' }]);
+	});
+
+	it('drops a file a later turn put back the way it was', () => {
+		const runs = netChangeRuns([
+			{ 'tmp.ts': { oldHash: '', newHash: 'x' }, 'b.ts': { oldHash: 'b1', newHash: 'b2' } },
+			{ 'tmp.ts': { oldHash: 'x', newHash: '' }, 'b.ts': { oldHash: 'b2', newHash: 'b1' } }
+		]);
+		expect(runs.size).toBe(0);
+	});
+
+	it('breaks the run where something else changed the file between turns', () => {
+		const runs = netChangeRuns([
+			{ 'a.ts': { oldHash: 'v1', newHash: 'v2' } },
+			{ 'a.ts': { oldHash: 'user-edit', newHash: 'v3' } }
+		]);
+		expect(runs.get('a.ts')).toEqual([
+			{ oldHash: 'v1', newHash: 'v2' },
+			{ oldHash: 'user-edit', newHash: 'v3' }
+		]);
+	});
+});
+
+describe('summariseNetChanges', () => {
+	it('counts lines once for a file touched by many turns', async () => {
+		const read = readerFor({ v1: 'a\n', v2: 'a\nb\n', v3: 'a\nb\nc\n' });
+		const net = await summariseNetChanges(
+			[
+				{ 'a.ts': { oldHash: 'v1', newHash: 'v2' } },
+				{ 'a.ts': { oldHash: 'v2', newHash: 'v3' } }
+			],
+			read
+		);
+		expect(net).toEqual({ filesChanged: 1, insertions: 2, deletions: 0 });
+	});
+
+	it('adds up each run of a broken history, without the gap between them', async () => {
+		const read = readerFor({ v1: 'a\n', v2: 'a\nb\n', u: 'x\n', v3: 'x\ny\n' });
+		const net = await summariseNetChanges(
+			[
+				{ 'a.ts': { oldHash: 'v1', newHash: 'v2' } },
+				{ 'a.ts': { oldHash: 'u', newHash: 'v3' } }
+			],
+			read
+		);
+		expect(net).toEqual({ filesChanged: 1, insertions: 2, deletions: 0 });
 	});
 });

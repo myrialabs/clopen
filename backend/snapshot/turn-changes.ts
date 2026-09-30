@@ -130,3 +130,69 @@ export function summariseTurnFiles(files: TurnFileChange[]): {
 	}
 	return { filesChanged: files.length, insertions, deletions };
 }
+
+/** One uninterrupted stretch of a file's history across consecutive turns. */
+export interface ChangeRun {
+	oldHash: string;
+	newHash: string;
+}
+
+/**
+ * Fold a chat's turns, oldest first, into each file's net change.
+ *
+ * Adding turns up is what the chat-level counter used to do, and it answered
+ * a different question: a file edited in three turns had its lines counted
+ * three times, and a file created then deleted again still counted as
+ * changed. What a user means by "this chat changed N files" is the net, as
+ * `git diff` from before the first turn would show it.
+ *
+ * A turn continues a run only when it starts where the previous one ended. A
+ * gap means something else touched the file between turns (the user, git, a
+ * different chat) and that edit is not this chat's to report — so the run
+ * breaks there instead of silently spanning it.
+ */
+export function netChangeRuns(turns: SessionScopedChanges[]): Map<string, ChangeRun[]> {
+	const runs = new Map<string, ChangeRun[]>();
+	for (const changes of turns) {
+		for (const [path, change] of Object.entries(changes)) {
+			const list = runs.get(path) ?? [];
+			const last = list[list.length - 1];
+			if (last && last.newHash === change.oldHash) {
+				last.newHash = change.newHash;
+			} else {
+				list.push({ oldHash: change.oldHash, newHash: change.newHash });
+			}
+			runs.set(path, list);
+		}
+	}
+
+	for (const [path, list] of runs) {
+		const effective = list.filter((run) => run.oldHash !== run.newHash);
+		if (effective.length === 0) runs.delete(path);
+		else runs.set(path, effective);
+	}
+	return runs;
+}
+
+/** The chat-level numbers: net files changed, and net lines in and out. */
+export async function summariseNetChanges(
+	turns: SessionScopedChanges[],
+	readBlob: (hash: string) => Promise<Buffer>
+): Promise<{ filesChanged: number; insertions: number; deletions: number }> {
+	let insertions = 0;
+	let deletions = 0;
+	const runs = netChangeRuns(turns);
+
+	for (const [path, list] of runs) {
+		const changes: SessionScopedChanges = {};
+		// Each run is counted on its own; keyed apart so buildTurnFiles keeps them.
+		list.forEach((run, index) => {
+			changes[`${index}\0${path}`] = run;
+		});
+		const summary = summariseTurnFiles(await buildTurnFiles(changes, readBlob));
+		insertions += summary.insertions;
+		deletions += summary.deletions;
+	}
+
+	return { filesChanged: runs.size, insertions, deletions };
+}

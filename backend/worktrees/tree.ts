@@ -32,7 +32,7 @@ export async function hashTree(root: string, storeBlobs = false): Promise<TreeMa
 			if (stat.size > MAX_TRACKED_FILE_SIZE) continue;
 
 			const relativePath = path.relative(root, absolute).replace(/\\/g, '/');
-			const result = await blobStore.hashFile(relativePath, absolute);
+			const result = await blobStore.hashFile(absolute);
 			tree[relativePath] = result.hash;
 
 			if (storeBlobs && !(await blobStore.hasBlob(result.hash))) {

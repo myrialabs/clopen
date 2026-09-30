@@ -207,15 +207,25 @@ class FileWatcherManager {
 
 	/**
 	 * Per-project dirty file tracking for snapshot system.
-	 * Accumulates changed file relative paths between snapshot captures.
+	 * Accumulates changed file relative paths between snapshot captures, with
+	 * the time of each path's latest event.
 	 */
-	private dirtyFiles = new Map<string, Set<string>>();
+	private dirtyFiles = new Map<string, Map<string, number>>();
 
 	/**
 	 * Get dirty files accumulated since last clear for a project.
 	 */
 	getDirtyFiles(projectId: string): Set<string> {
-		return this.dirtyFiles.get(projectId) || new Set();
+		return new Set(this.dirtyFiles.get(projectId)?.keys() ?? []);
+	}
+
+	/**
+	 * When the watcher last saw a path change (epoch ms), or undefined when it
+	 * saw nothing — the only record of WHEN a file was deleted, since a deleted
+	 * file has no mtime left to read.
+	 */
+	getLastChangeAt(projectId: string, relativePath: string): number | undefined {
+		return this.dirtyFiles.get(projectId)?.get(relativePath);
 	}
 
 	/**
@@ -230,9 +240,9 @@ class FileWatcherManager {
 	 */
 	private trackDirtyFile(projectId: string, relativePath: string): void {
 		if (!this.dirtyFiles.has(projectId)) {
-			this.dirtyFiles.set(projectId, new Set());
+			this.dirtyFiles.set(projectId, new Map());
 		}
-		this.dirtyFiles.get(projectId)!.add(relativePath);
+		this.dirtyFiles.get(projectId)!.set(relativePath, Date.now());
 	}
 
 	/**

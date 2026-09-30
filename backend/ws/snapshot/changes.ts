@@ -32,7 +32,13 @@ import { blobStore } from '../../snapshot/blob-store';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { resolveSessionRoot } from '../../worktrees';
 import { makeScopeKey } from '$shared/utils/workspace-scope';
-import { buildTurnFiles, excerptPrompt, isBinaryBuffer, statusOf } from '../../snapshot/turn-changes';
+import {
+	buildTurnFiles,
+	excerptPrompt,
+	isBinaryBuffer,
+	statusOf,
+	summariseNetChanges
+} from '../../snapshot/turn-changes';
 import type { TurnFileStatus } from '../../snapshot/turn-changes';
 import {
 	buildCheckpointTree,
@@ -40,7 +46,7 @@ import {
 	findCheckpointForHead,
 	extractMessageText
 } from '../../snapshot/helpers';
-import type { SessionScopedChanges } from '$shared/types/database/schema';
+import type { DatabaseMessage, SessionScopedChanges } from '$shared/types/database/schema';
 import { debug } from '$shared/utils/logger';
 import { requireSessionAccess, requireMessageAccess } from '../access';
 
@@ -80,6 +86,37 @@ async function readTextBlob(hash: string): Promise<string | null> {
 	}
 }
 
+/**
+ * The checkpoints on a chat's active path, oldest first — the turns whose
+ * changes are still on disk. Empty when the chat was restored to before its
+ * first message.
+ */
+function activeCheckpoints(sessionId: string): DatabaseMessage[] {
+	const allMessages = messageQueries.getAllBySessionId(sessionId);
+	if (allMessages.length === 0) return [];
+
+	const { checkpoints, parentMap } = buildCheckpointTree(allMessages);
+	if (checkpoints.length === 0) return [];
+
+	const head = sessionQueries.getHead(sessionId);
+	if (!head) return [];
+
+	const checkpointIds = new Set(checkpoints.map((cp) => cp.id));
+	const activeCheckpointId = findCheckpointForHead(head, allMessages, checkpointIds);
+	if (!activeCheckpointId) return [];
+
+	const byId = new Map(checkpoints.map((cp) => [cp.id, cp]));
+	return getCheckpointPathToRoot(activeCheckpointId, parentMap)
+		.map((id) => byId.get(id))
+		.filter((cp): cp is DatabaseMessage => cp !== undefined);
+}
+
+const NET_SCHEMA = t.Object({
+	filesChanged: t.Number(),
+	insertions: t.Number(),
+	deletions: t.Number()
+});
+
 export const changesHandler = createRouter()
 	/**
 	 * Every turn of a chat, newest first, with the files it changed.
@@ -98,37 +135,24 @@ export const changesHandler = createRouter()
 					promptText: t.String(),
 					files: t.Array(TURN_FILE_SCHEMA)
 				})
-			)
+			),
+			/** Net over the whole active path — what the chat changed, not the sum of its turns. */
+			net: NET_SCHEMA
 		})
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.sessionId);
 
-		const allMessages = messageQueries.getAllBySessionId(data.sessionId);
-		if (allMessages.length === 0) return { turns: [] };
-
-		const { checkpoints, parentMap } = buildCheckpointTree(allMessages);
-		if (checkpoints.length === 0) return { turns: [] };
-
-		// No HEAD means the session was restored to before its first message, so
-		// no turn's changes are on disk any more.
-		const head = sessionQueries.getHead(data.sessionId);
-		if (!head) return { turns: [] };
-
-		const checkpointIds = new Set(checkpoints.map((cp) => cp.id));
-		const activeCheckpointId = findCheckpointForHead(head, allMessages, checkpointIds);
-		if (!activeCheckpointId) return { turns: [] };
-
-		const activePath = getCheckpointPathToRoot(activeCheckpointId, parentMap);
-		const byId = new Map(checkpoints.map((cp) => [cp.id, cp]));
+		const activePath = activeCheckpoints(data.sessionId);
+		const readBlob = (hash: string) => blobStore.readBlob(hash);
 
 		const turns = [];
+		const settled: SessionScopedChanges[] = [];
 		for (let i = 0; i < activePath.length; i++) {
-			const checkpoint = byId.get(activePath[i]);
-			if (!checkpoint) continue;
-
+			const checkpoint = activePath[i];
 			const snapshot = snapshotQueries.getByMessageId(checkpoint.id);
 			const changes = parseSessionChanges(snapshot?.session_changes);
-			const files = await buildTurnFiles(changes, (hash) => blobStore.readBlob(hash));
+			settled.push(changes);
+			const files = await buildTurnFiles(changes, readBlob);
 
 			turns.push({
 				checkpointMessageId: checkpoint.id,
@@ -142,10 +166,12 @@ export const changesHandler = createRouter()
 			});
 		}
 
+		const net = await summariseNetChanges(settled, readBlob);
+
 		// Newest first: the turn a user wants to review is almost always the last
 		// one, and scrolling to reach it is a tax on the common case.
 		turns.reverse();
-		return { turns };
+		return { turns, net };
 	})
 
 	/**
@@ -252,17 +278,19 @@ export const changesHandler = createRouter()
 			sessionId: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
-			files: t.Array(TURN_FILE_SCHEMA)
+			files: t.Array(TURN_FILE_SCHEMA),
+			/** Net over the active path including the running turn; null when it adds nothing. */
+			net: t.Union([NET_SCHEMA, t.Null()])
 		})
 	}, async ({ data, conn }) => {
 		requireSessionAccess(conn, data.sessionId);
 
 		const session = sessionQueries.getById(data.sessionId);
-		if (!session) return { files: [] };
+		if (!session) return { files: [], net: null };
 
 		const root = resolveSessionRoot(data.sessionId)?.path
 			|| projectQueries.getById(session.project_id)?.path;
-		if (!root) return { files: [] };
+		if (!root) return { files: [], net: null };
 
 		try {
 			const changes = await snapshotService.getPendingChanges(
@@ -270,10 +298,17 @@ export const changesHandler = createRouter()
 				makeScopeKey(session.project_id, session.worktree_id ?? null),
 				data.sessionId
 			);
-			const files = await buildTurnFiles(changes, (hash) => blobStore.readBlob(hash));
-			return { files };
+			if (Object.keys(changes).length === 0) return { files: [], net: null };
+
+			const readBlob = (hash: string) => blobStore.readBlob(hash);
+			const files = await buildTurnFiles(changes, readBlob);
+			const settled = activeCheckpoints(data.sessionId).map((checkpoint) =>
+				parseSessionChanges(snapshotQueries.getByMessageId(checkpoint.id)?.session_changes)
+			);
+			const net = await summariseNetChanges([...settled, changes], readBlob);
+			return { files, net };
 		} catch (error) {
 			debug.warn('snapshot', 'Failed to read pending changes:', error);
-			return { files: [] };
+			return { files: [], net: null };
 		}
 	});
