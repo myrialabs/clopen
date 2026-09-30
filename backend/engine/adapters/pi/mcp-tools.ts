@@ -30,6 +30,9 @@ import {
 	getEnabledExternalServers,
 	listExternalServerTools,
 	callExternalServerTool,
+	getTrustedProjectServers,
+	listProjectServerTools,
+	callProjectServerTool,
 	projectContextService,
 	serverMetadata,
 } from '../../../mcp';
@@ -102,12 +105,31 @@ export async function buildPiMcpTools(
 	}
 
 	// ── External servers (proxied upstream) ──
-	for (const server of getEnabledExternalServers(profileFilter)) {
+	// Installed servers (profile-filtered) plus the project's approved
+	// `.agents/mcp.json` servers, which never shadow an installed namespace.
+	const upstreams: { label: string; namespace: string; list: () => ReturnType<typeof listExternalServerTools>; call: (tool: string, args: unknown) => Promise<unknown> }[] =
+		getEnabledExternalServers(profileFilter).map(s => ({
+			label: s.slug,
+			namespace: s.namespace,
+			list: () => listExternalServerTools(s.slug),
+			call: (tool: string, args: unknown) => callExternalServerTool(s.slug, tool, args)
+		}));
+	const taken = new Set(upstreams.map(u => u.namespace));
+	for (const s of getTrustedProjectServers(context?.projectId)) {
+		if (taken.has(s.namespace)) continue;
+		upstreams.push({
+			label: s.namespace,
+			namespace: s.namespace,
+			list: () => listProjectServerTools(s.projectId, s.name),
+			call: (tool: string, args: unknown) => callProjectServerTool(s.projectId, s.name, tool, args)
+		});
+	}
+	for (const server of upstreams) {
 		let externalTools;
 		try {
-			externalTools = await listExternalServerTools(server.slug);
+			externalTools = await server.list();
 		} catch (error) {
-			debug.warn('mcp', `Pi MCP bridge: could not list tools for "${server.slug}" (skipping):`, error);
+			debug.warn('mcp', `Pi MCP bridge: could not list tools for "${server.label}" (skipping):`, error);
 			continue;
 		}
 		for (const tool of externalTools) {
@@ -119,7 +141,7 @@ export async function buildPiMcpTools(
 				description: `${tool.description ?? tool.name}${schemaText}`,
 				parameters: OPEN_PARAMS,
 				execute: async (_toolCallId: string, params: unknown) => {
-					const result = (await callExternalServerTool(server.slug, tool.name, params ?? {})) as { content?: unknown } | undefined;
+					const result = (await server.call(tool.name, params ?? {})) as { content?: unknown } | undefined;
 					return { content: toPiContent(result?.content), details: {} };
 				},
 			} as ToolDefinition);

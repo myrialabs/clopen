@@ -26,6 +26,8 @@ export { subagentQueries } from './subagent-queries';
 export type { SubagentRow, SubagentInput, SubagentSource } from './subagent-queries';
 export { instructionQueries } from './instruction-queries';
 export type { InstructionRow, InstructionScope } from './instruction-queries';
+export { projectMcpTrustQueries } from './project-mcp-trust-queries';
+export type { ProjectMcpTrustRow } from './project-mcp-trust-queries';
 export { permissionSetQueries } from './permission-set-queries';
 export type { PermissionSet, PermissionScope } from './permission-set-queries';
 export { graphQueries, deriveDigest, entityKeyFor, DIGEST_VERSION } from './graph-queries';

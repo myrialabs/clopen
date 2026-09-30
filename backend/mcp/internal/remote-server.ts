@@ -19,7 +19,7 @@
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createRemoteMcpServer, type RemoteMcpCaller } from './servers/helper';
-import { createExternalProxyServer } from '../external/proxy';
+import { createExternalProxyServer, createProjectProxyServer } from '../external/proxy';
 import { debug } from '$shared/utils/logger';
 import { authQueries } from '$backend/database/queries';
 import { hashToken } from '$backend/auth/tokens';
@@ -271,6 +271,16 @@ export async function handleMcpRequest(request: Request): Promise<Response> {
 export async function handleExternalMcpRequest(request: Request, slug: string): Promise<Response> {
 	const engine = (new URL(request.url).searchParams.get('engine') as EngineType | null) ?? undefined;
 	return handleStreamable(request, `External MCP (${slug}${engine ? `, ${engine}` : ''})`, () => createExternalProxyServer(slug, engine));
+}
+
+/**
+ * Handle a request to the per-project proxy `/mcp/proj/<projectId>/<name>` — a
+ * server from the project's approved `.agents/mcp.json` (see
+ * `backend/mcp/external/project.ts`).
+ */
+export async function handleProjectMcpRequest(request: Request, projectId: string, name: string): Promise<Response> {
+	const engine = (new URL(request.url).searchParams.get('engine') as EngineType | null) ?? undefined;
+	return handleStreamable(request, `Project MCP (${projectId}/${name}${engine ? `, ${engine}` : ''})`, () => createProjectProxyServer(projectId, name, engine));
 }
 
 /**

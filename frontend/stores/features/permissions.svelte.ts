@@ -94,6 +94,16 @@ export const permissionsStore = {
 		await this.refreshSets();
 	},
 
+	/** The project-scoped sets for one project (layered on top of the global ones). */
+	async listForProject(projectId: string): Promise<PermissionSet[]> {
+		const result = await ws.http('permissions:list', { projectId });
+		return (result.sets as PermissionSet[]).filter(s => s.scope === 'project' && s.projectId === projectId);
+	},
+
+	async saveProject(projectId: string, engine: EngineType, allow: string[], deny: string[]): Promise<void> {
+		await ws.http('permissions:save', { scope: 'project', projectId, engine, allow, deny });
+	},
+
 	reset() {
 		sets = [];
 		setsLoaded = false;

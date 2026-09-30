@@ -4,13 +4,15 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
-	import { permissionsStore } from '$frontend/stores/features/permissions.svelte';
+	import { permissionsStore, type PermissionSet } from '$frontend/stores/features/permissions.svelte';
 
 	interface Props {
 		showHeader?: boolean;
+		/** Edit this project's layer instead of the global rules. */
+		projectId?: string;
 	}
 
-	const { showHeader = true }: Props = $props();
+	const { showHeader = true, projectId }: Props = $props();
 
 	type ListKey = 'allow' | 'deny';
 	type Suggestion = { value: string; category: 'Built-in' | 'MCP' | 'Subagent' };
@@ -19,6 +21,14 @@
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 	let activeEngine = $state<EngineType>(ENGINES[0].type);
+	// Project layer (when `projectId` is set); the global sets live in the store.
+	let projectSets = $state<PermissionSet[]>([]);
+
+	/** The stored set this editor edits for an engine — global, or this project's layer. */
+	function storedSet(engine: EngineType): { allow: string[]; deny: string[] } {
+		if (!projectId) return permissionsStore.globalSet(engine);
+		return projectSets.find(s => s.engine === engine) ?? { allow: [], deny: [] };
+	}
 
 	// Per-engine editable drafts, seeded from the store on load. Each engine keeps
 	// its own allow/deny arrays so switching tabs preserves unsaved edits.
@@ -64,7 +74,11 @@
 	}
 
 	onMount(async () => {
-		await Promise.all([permissionsStore.fetchSets(), permissionsStore.fetchInventory()]);
+		await Promise.all([
+			permissionsStore.fetchSets(),
+			permissionsStore.fetchInventory(),
+			projectId ? permissionsStore.listForProject(projectId).then(sets => { projectSets = sets; }) : Promise.resolve()
+		]);
 		seedDrafts();
 		loaded = true;
 	});
@@ -72,7 +86,7 @@
 	function seedDrafts() {
 		const next: Record<string, { allow: string[]; deny: string[] }> = {};
 		for (const engine of ENGINES) {
-			const set = permissionsStore.globalSet(engine.type);
+			const set = storedSet(engine.type);
 			next[engine.type] = { allow: [...set.allow], deny: [...set.deny] };
 		}
 		drafts = next;
@@ -96,7 +110,7 @@
 	}
 
 	const dirty = $derived.by(() => {
-		const set = permissionsStore.globalSet(activeEngine);
+		const set = storedSet(activeEngine);
 		const draft = activeDraft;
 		const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 		return !same([...set.allow], draft.allow) || !same([...set.deny], draft.deny);
@@ -106,7 +120,12 @@
 		saving = true;
 		error = null;
 		try {
-			await permissionsStore.saveGlobal(activeEngine, activeDraft.allow, activeDraft.deny);
+			if (projectId) {
+				await permissionsStore.saveProject(projectId, activeEngine, activeDraft.allow, activeDraft.deny);
+				projectSets = await permissionsStore.listForProject(projectId);
+			} else {
+				await permissionsStore.saveGlobal(activeEngine, activeDraft.allow, activeDraft.deny);
+			}
 			seedDrafts();
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Save failed';
@@ -124,26 +143,26 @@
 		</div>
 	{/if}
 
-	<!-- Consolidated help card (semantics + MCP + wildcard) -->
+	<!-- One help card in both scopes, so Global and Project read the same way. -->
 	<div class="flex items-start gap-2.5 p-3 rounded-xl bg-slate-500/5 dark:bg-slate-400/5 border border-slate-200 dark:border-slate-700/60">
 		<Icon name="lucide:info" class="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
 		<div class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed space-y-1">
-			<p>
-				<strong class="text-slate-600 dark:text-slate-300">Deny wins;</strong> set an allowlist to restrict an engine to only the listed tools.
-				Rules apply globally on the next chat stream. Patterns support a trailing <code class="text-[11px]">*</code> wildcard (e.g. <code class="text-[11px]">mcp__github__*</code>).
-			</p>
-			<p>MCP tools are mainly managed in <strong class="text-slate-600 dark:text-slate-300">Integrations</strong> — adding one here is an extra engine-level block.</p>
+			{#if projectId}
+				<p><strong class="text-slate-600 dark:text-slate-300">This project only.</strong> Denies add to the global list; an allowlist here replaces the global one.</p>
+			{:else}
+				<p><strong class="text-slate-600 dark:text-slate-300">Deny wins.</strong> A non-empty allowlist blocks everything else. Use <code class="text-[11px]">*</code> as a trailing wildcard.</p>
+			{/if}
 		</div>
 	</div>
 
 	<!-- Engine tabs -->
-	<div class="flex flex-wrap gap-1.5">
+	<div class="flex flex-wrap gap-1">
 		{#each ENGINES as engine (engine.type)}
 			{@const isActive = activeEngine === engine.type}
 			<button
 				type="button"
 				onclick={() => { activeEngine = engine.type; openList = null; }}
-				class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors
+				class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-colors
 					{isActive
 						? 'bg-violet-500/10 border-violet-500/30 text-violet-600 dark:text-violet-400'
 						: 'bg-transparent border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
@@ -171,10 +190,10 @@
 		</div>
 	{:else}
 		<!-- Deny list -->
-		{@render patternEditor('deny', 'Deny', 'Blocked tools. Denied tools never run, even if also allowed.', denyInput, (v: string) => (denyInput = v))}
+		{@render patternEditor('deny', 'Deny', 'Never run, even if allowed.', denyInput, (v: string) => (denyInput = v))}
 
 		<!-- Allow list -->
-		{@render patternEditor('allow', 'Allow', 'Optional allowlist. When non-empty, only these tools may run (everything else is blocked).', allowInput, (v: string) => (allowInput = v))}
+		{@render patternEditor('allow', 'Allow', 'Optional. When set, only these run.', allowInput, (v: string) => (allowInput = v))}
 
 		{#if error}
 			<p class="text-xs text-red-500">{error}</p>

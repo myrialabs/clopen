@@ -259,6 +259,21 @@ export const ADMIN_ONLY_ROUTES = new Set([
 	'instructions:save-global',
 	'instructions:get-project',
 	'instructions:save-project',
+	// Project artifacts — reads and in-place edits of a repository's `.agents/`,
+	// `AGENTS.md` block and `.agents/mcp.json` (whose approval lets Clopen start
+	// the processes it declares). Same shared-store rationale; admin-only.
+	'project-artifacts:scan',
+	'project-artifacts:read',
+	'project-artifacts:save-skill',
+	'project-artifacts:delete-skill',
+	'project-artifacts:save-subagent',
+	'project-artifacts:delete-subagent',
+	'project-artifacts:copy-to-agents',
+	'project-artifacts:get-agents-md',
+	'project-artifacts:save-agents-md',
+	'project-artifacts:get-mcp',
+	'project-artifacts:save-mcp',
+	'project-artifacts:approve-mcp',
 	// Permissions — per-engine tool allow/deny applied to every engine/project;
 	// same shared-store rationale as Skills/MCP, admin-only surface.
 	'permissions:list',

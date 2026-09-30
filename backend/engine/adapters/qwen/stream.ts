@@ -51,6 +51,7 @@ import { EngineRuns } from '../run-registry';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge, buildProjectPromptContext } from '$backend/artifacts/project';
 import { resolvePermissionsFromDb, isToolAllowed, excludedBuiltinTools } from '$backend/permissions';
 import { forkQwenSessionState, sessionStateExists } from './session-fork';
 
@@ -165,6 +166,12 @@ export class QwenEngine implements AIEngine {
 		await syncSkills('qwen', profileId);
 		await syncEngineArtifacts('qwen', profileId);
 		const mcpConfig = getQwenMcpConfig(mcpProfileFilter, options.mcpContext);
+		// Repository artifacts Qwen doesn't read natively (it reads `.qwen/*`,
+		// QWEN.md and AGENTS.md itself) — appended to its preset system prompt,
+		// which is per query. Qwen has no delegation surface Clopen can register
+		// with, so project subagents are never advertised to it.
+		const projectBridge = await resolveProjectBridge('qwen', resolvedProjectPath, options.mcpContext?.projectId);
+		const projectContext = buildProjectPromptContext(projectBridge, { skills: true, instructions: true });
 
 		// Resolve the permission policy once per stream; canUseTool enforces it
 		// (Qwen otherwise auto-allows everything). Tool names arrive snake_cased.
@@ -313,6 +320,7 @@ export class QwenEngine implements AIEngine {
 					// Auto-allow everything else.
 					return { behavior: 'allow' as const, updatedInput: input };
 				},
+				...(projectContext ? { systemPrompt: { type: 'preset' as const, preset: 'qwen_code' as const, append: projectContext } } : {}),
 				...(maxTurns !== undefined ? { maxSessionTurns: maxTurns } : {}),
 				...(resumeId ? { resume: resumeId } : {}),
 				...(Object.keys(mcpConfig).length > 0 ? { mcpServers: mcpConfig } : {}),

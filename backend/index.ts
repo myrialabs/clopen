@@ -78,7 +78,7 @@ import { integrationHooksRoute } from './http/integration-hooks';
 import { browserPreviewServiceManager } from './preview';
 
 // MCP remote server for Open Code custom tools
-import { handleMcpRequest, handleExternalMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
+import { handleMcpRequest, handleExternalMcpRequest, handleProjectMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
 
 // Auth middleware
 import { checkRouteAccess, PUBLIC_ROUTES } from './auth/permissions';
@@ -186,6 +186,16 @@ const app = new Elysia()
 	.all('/mcp/ext/:slug', async ({ request, params, server }) => {
 		server?.timeout(request, 0);
 		return handleExternalMcpRequest(request, params.slug);
+	})
+
+	// Per-project proxy for servers a repository declares in `.agents/mcp.json`.
+	// Only served while an admin has approved the file's current content — see
+	// backend/mcp/external/project.ts.
+	.all('/mcp/proj/:projectId/:name', async ({ request, params, server }) => {
+		server?.timeout(request, 0);
+		let name = params.name;
+		try { name = decodeURIComponent(name); } catch { /* already decoded */ }
+		return handleProjectMcpRequest(request, params.projectId, name);
 	})
 
 	// Stable OAuth redirect target for centralized MCP sign-in. The browser is

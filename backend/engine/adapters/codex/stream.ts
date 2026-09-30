@@ -28,11 +28,12 @@ import { engineQueries } from '$backend/database/queries/engine-queries';
 import { resolveOsPath } from '$backend/utils/paths';
 import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
-import { getCodexMcpConfig } from '../../../mcp';
+import { getCodexMcpConfig, getTrustedProjectServers } from '../../../mcp';
 import { EngineRuns } from '../run-registry';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge } from '$backend/artifacts/project';
 import { CODEX_MODELS, resolveCodexEffort } from './models';
 import { debug } from '$shared/utils/logger';
 import { handleStreamError, buildTurnError } from './error-handler';
@@ -135,8 +136,20 @@ export class CodexEngine implements AIEngine {
 		return this.runs.isActive;
 	}
 
+	/**
+	 * Identity of the MCP set baked into the client: the Profile's connector
+	 * filter plus the project's approved `.agents/mcp.json` servers. Approving,
+	 * revoking or editing that file changes the key, so the next turn rebuilds
+	 * the client instead of serving a stale server list.
+	 */
+	private mcpKeyFor(mcpProfileFilter: Set<string> | undefined, projectId: string | null): string {
+		const filterKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
+		const projectKey = getTrustedProjectServers(projectId).map(s => s.namespace).sort().join(',');
+		return `${filterKey}|${projectKey}`;
+	}
+
 	async initialize(accountId?: number, mcpProfileFilter?: Set<string>): Promise<void> {
-		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
+		const mcpKey = this.mcpKeyFor(mcpProfileFilter, this.pendingProjectId);
 		if (this._isInitialized && (accountId == null || accountId === this.currentAccountId) && mcpKey === this.currentMcpFilterKey) {
 			return;
 		}
@@ -234,7 +247,7 @@ export class CodexEngine implements AIEngine {
 		// Qwen/Copilot do per stream); `undefined` = unfiltered → no change for the
 		// common no-profile path.
 		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
-		const mcpKey = mcpProfileFilter ? [...mcpProfileFilter].sort().join(',') : '*';
+		const mcpKey = this.mcpKeyFor(mcpProfileFilter, options.mcpContext?.projectId ?? null);
 		const accountChanged = this._isInitialized && accountId != null && accountId !== this.currentAccountId;
 		const mcpChanged = this._isInitialized && mcpKey !== this.currentMcpFilterKey;
 		// A client built without a project (the bare `initialize()` the engine
@@ -319,7 +332,11 @@ export class CodexEngine implements AIEngine {
 			// Prompt-scoped engine: advertise the profile-scoped Skills/Commands/
 			// Subagents PER-SESSION via the prompt (not the shared global AGENTS.md /
 			// persistent client) so the active Profile scopes them correctly.
-			const artifactsContext = buildArtifactsPromptContext('codex', profileId);
+			// Codex reads AGENTS.md and `.agents/skills` itself; anything else the
+			// repo carries (e.g. `.claude/skills`, the Clopen-only project block)
+			// rides the same per-turn prompt context.
+			const projectBridge = await resolveProjectBridge('codex', resolvedProjectPath, options.mcpContext?.projectId);
+			const artifactsContext = buildArtifactsPromptContext('codex', profileId, projectBridge);
 			const input = await buildCodexInput(prompt, artifactsContext || undefined);
 			const { events } = await thread.runStreamed(input, {
 				signal: controller.signal,

@@ -31,6 +31,7 @@ import { debug } from '$shared/utils/logger';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge, type ProjectBridge } from '$backend/artifacts/project';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
@@ -133,7 +134,7 @@ export class ClineEngine implements AIEngine {
 		return fetchClineModels();
 	}
 
-	private async buildSystemPrompt(cwd: string, providerId: string, profileId?: number): Promise<string> {
+	private async buildSystemPrompt(cwd: string, providerId: string, profileId?: number, project?: ProjectBridge): Promise<string> {
 		const { getClineDefaultSystemPrompt } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		let base: string;
 		try {
@@ -141,7 +142,7 @@ export class ClineEngine implements AIEngine {
 		} catch {
 			base = 'You are Cline, a highly skilled software engineer. Use the available tools to complete the user\'s coding task.';
 		}
-		const artifacts = buildArtifactsPromptContext('cline', profileId);
+		const artifacts = buildArtifactsPromptContext('cline', profileId, project);
 		return artifacts ? `${base}\n\n${artifacts}` : base;
 	}
 
@@ -168,6 +169,9 @@ export class ClineEngine implements AIEngine {
 		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
 		await syncSkills('cline', profileId);
 		await syncEngineArtifacts('cline', profileId);
+		// Cline (stateless Agent) reads nothing from the repo, so every project
+		// artifact — skills, subagents, AGENTS.md — reaches it through Clopen.
+		const projectBridge = await resolveProjectBridge('cline', resolvedProjectPath, options.mcpContext?.projectId);
 
 		// ── Permissions → toolPolicies (denied builtins are hidden from the model) ──
 		const permissions = resolvePermissionsFromDb('cline', options.mcpContext?.projectId, profileId);
@@ -201,13 +205,23 @@ export class ClineEngine implements AIEngine {
 		// "Available Subagents" preamble alone can't be invoked. Expose an `Agent`
 		// tool that actually spawns a bounded sub-`Agent` with the chosen subagent's
 		// system prompt and returns its final text. ──
-		const subagents: SubagentInfo[] = subagentQueries.getEnabled().map(s => ({ slug: s.slug, name: s.name, description: s.description }));
+		// Project subagents join the same tool; an installed subagent wins a slug clash.
+		const installedSubagents = subagentQueries.getEnabled();
+		const installedSlugs = new Set(installedSubagents.map(s => s.slug));
+		const projectSubagents = new Map(projectBridge.subagents.filter(s => !installedSlugs.has(s.slug)).map(s => [s.slug, s]));
+		const subagents: SubagentInfo[] = [
+			...installedSubagents.map(s => ({ slug: s.slug, name: s.name, description: s.description })),
+			...[...projectSubagents.values()].map(s => ({ slug: s.slug, name: s.name, description: s.description })),
+		];
 		if (subagents.length > 0) {
 			const agentTool = await createAgentDispatchTool({
 				subagents,
 				run: async (subagent, subPrompt, toolCallId, signal) => {
-					const md = (await readSubagentMd(subagent.slug)) ?? '';
-					const instructions = stripFrontmatter(md) || `You are the ${subagent.name} subagent. ${subagent.description}`;
+					const projectSubagent = projectSubagents.get(subagent.slug);
+					const md = projectSubagent ? '' : ((await readSubagentMd(subagent.slug)) ?? '');
+					const instructions = projectSubagent?.prompt
+						|| stripFrontmatter(md)
+						|| `You are the ${subagent.name} subagent. ${subagent.description}`;
 					// APPEND the subagent instructions to Cline's base coding prompt (a
 					// bare instruction strips the tool-use scaffolding). The sub-Agent gets
 					// the permission-filtered builtins ONLY — no AskUserQuestion, no MCP,
@@ -281,7 +295,7 @@ export class ClineEngine implements AIEngine {
 		const priorMessages = resume ? this.sessions.get(resume) : undefined;
 		const sessionId = crypto.randomUUID();
 
-		const systemPrompt = await this.buildSystemPrompt(resolvedProjectPath, provider, profileId);
+		const systemPrompt = await this.buildSystemPrompt(resolvedProjectPath, provider, profileId, projectBridge);
 		const agent = new Agent({
 			providerId: provider,
 			modelId,

@@ -41,6 +41,11 @@
 		prefetchProjectsOverview
 	} from './system/AboutDeviceSettings.svelte';
 	import TunnelSettings from './tunnel/TunnelSettings.svelte';
+	import ScopedSection from './project/ScopedSection.svelte';
+	import ProjectItemsPanel from './project/ProjectItemsPanel.svelte';
+	import ProjectInstructionsPanel from './project/ProjectInstructionsPanel.svelte';
+	import ProjectMcpPanel from './project/ProjectMcpPanel.svelte';
+	import ProjectPermissionsPanel from './project/ProjectPermissionsPanel.svelte';
 
 	// Responsive state
 	let isMobileMenuOpen = $state(false);
@@ -328,23 +333,53 @@
 						</div>
 					{:else if activeSection === 'integrations' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<IntegrationsSettings />
+							<ScopedSection
+								title="Integrations"
+								description="Connected services and MCP servers."
+							>
+								{#snippet global()}<IntegrationsSettings showHeader={false} />{/snippet}
+								{#snippet project(projectId)}<ProjectMcpPanel {projectId} />{/snippet}
+							</ScopedSection>
 						</div>
 					{:else if activeSection === 'skills' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<SkillsSettings />
+							<ScopedSection
+								title="Skills"
+								description="Reusable instructions and /commands."
+							>
+								{#snippet global()}<SkillsSettings showHeader={false} />{/snippet}
+								{#snippet project(projectId)}<ProjectItemsPanel {projectId} kind="skill" />{/snippet}
+							</ScopedSection>
 						</div>
 					{:else if activeSection === 'subagents' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<SubagentsSettings />
+							<ScopedSection
+								title="Subagents"
+								description="Specialized agents to delegate tasks to."
+							>
+								{#snippet global()}<SubagentsSettings showHeader={false} />{/snippet}
+								{#snippet project(projectId)}<ProjectItemsPanel {projectId} kind="subagent" />{/snippet}
+							</ScopedSection>
 						</div>
 					{:else if activeSection === 'instructions' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<InstructionsSettings />
+							<ScopedSection
+								title="Instructions"
+								description="Standing instructions for every engine."
+							>
+								{#snippet global()}<InstructionsSettings showHeader={false} />{/snippet}
+								{#snippet project(projectId)}<ProjectInstructionsPanel {projectId} />{/snippet}
+							</ScopedSection>
 						</div>
 					{:else if activeSection === 'permissions' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<PermissionsSettings />
+							<ScopedSection
+								title="Permissions"
+								description="Allow or deny tools per engine."
+							>
+								{#snippet global()}<PermissionsSettings showHeader={false} />{/snippet}
+								{#snippet project(projectId)}<ProjectPermissionsPanel {projectId} />{/snippet}
+							</ScopedSection>
 						</div>
 					{:else if activeSection === 'file-shares'}
 						<div in:fly={{ x: 20, duration: 200 }}>
