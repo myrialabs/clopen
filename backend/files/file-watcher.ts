@@ -23,6 +23,9 @@
  * a file change, made clients reload every few seconds with nothing actually
  * changing. So on Linux we walk the tree ourselves and never watch an ignored
  * directory, which removes the overwhelming majority of the watch descriptors.
+ *
+ * What counts as ignored — by name, by manifest, by signature — lives in
+ * `watch-ignore.ts`.
  */
 
 /** Whether the platform's recursive `fs.watch` is a single cheap OS handle. */
@@ -30,7 +33,7 @@ const USE_NATIVE_RECURSIVE_WATCH = process.platform !== 'linux';
 
 import { watch, type FSWatcher, existsSync } from 'node:fs';
 import { stat, readdir } from 'node:fs/promises';
-import { join, relative, normalize, sep } from 'node:path';
+import { basename, dirname, join, relative, normalize, sep } from 'node:path';
 import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import { isScopeOfProject, scopeProjectId } from '$shared/utils/workspace-scope';
@@ -42,6 +45,13 @@ import {
 	notifyPathChanged
 } from '$backend/git/nested-repos';
 import type { FileChange } from '$shared/types/filesystem';
+import {
+	GeneratedDirClassifier,
+	isIgnoredPath,
+	isMarkableDirName,
+	isOutputMarker,
+	isSignatureEntry
+} from './watch-ignore';
 
 /**
  * Debounce configuration
@@ -62,39 +72,6 @@ const RESTART_DELAYS_MS = [1000, 2000, 4000, 8000];
 
 /** How long a rebuilt watcher must survive before its fault count is forgiven. */
 const FAULT_FORGIVENESS_MS = 60_000;
-
-/**
- * Directories to ignore when watching
- */
-const IGNORED_DIRS = new Set([
-	'node_modules',
-	'.git',
-	'.svelte-kit',
-	'dist',
-	'build',
-	'.next',
-	'.nuxt',
-	'.output',
-	'__pycache__',
-	'.pytest_cache',
-	'coverage',
-	'.nyc_output',
-	'.turbo',
-	'.cache',
-	'.temp',
-	'.tmp',
-	'vendor'
-]);
-
-/**
- * Files to ignore
- */
-const IGNORED_FILES = new Set([
-	'.DS_Store',
-	'Thumbs.db',
-	'.gitkeep',
-	'.gitignore~'
-]);
 
 /**
  * Entries inside a git directory that never change what the Git panel renders.
@@ -185,6 +162,8 @@ interface ProjectWatcher {
 	faults: number;
 	/** Flipped by stopWatching so in-flight async tree walks bail out. */
 	closed: boolean;
+	/** Cached "is this directory generated output" decisions (see watch-ignore). */
+	generated: GeneratedDirClassifier;
 	/**
 	 * Every known git directory -> the working tree it belongs to. Covers the
 	 * project's own repo and each sub-repo, and is the attribution table for
@@ -347,6 +326,7 @@ class FileWatcherManager {
 				truncated: false,
 				faults,
 				closed: false,
+				generated: new GeneratedDirClassifier(normalizedPath),
 				gitDirOwners: new Map(),
 				gitWatchers: new Map(),
 				rejectedGitDirs: new Set(),
@@ -502,6 +482,7 @@ class FileWatcherManager {
 		} catch {
 			return; // Directory vanished or is unreadable — nothing to watch.
 		}
+		const names = entries.map((entry) => entry.name);
 
 		for (const entry of entries) {
 			if (pw.closed) return;
@@ -509,12 +490,16 @@ class FileWatcherManager {
 
 			const childPath = join(dir, entry.name);
 			const relativePath = relative(pw.projectPath, childPath).replace(/\\/g, '/');
-			if (this.shouldIgnore(relativePath)) {
+			if (isIgnoredPath(relativePath)) {
 				if (announceGitDirs && entry.name === '.git') {
 					this.routeGitEvent(pw, relativePath, childPath);
 				}
 				continue;
 			}
+			// Output that is only recognisable by its manifest or its own contents
+			// (`target/` beside `Cargo.toml`, a virtualenv under any name).
+			if (await pw.generated.isGenerated(childPath, names)) continue;
+			if (pw.closed) return;
 
 			if (!this.watchDir(pw, childPath)) {
 				// Ceiling reached — stop descending entirely rather than watching an
@@ -641,19 +626,29 @@ class FileWatcherManager {
 		if (relativePath.startsWith('..')) return;
 
 		// Git metadata is not a working-tree change — it drives the Git panel
-		// instead. This runs BEFORE `shouldIgnore`, which discards every `.git`
+		// instead. This runs BEFORE `isIgnoredPath`, which discards every `.git`
 		// path: where the root watch is recursive it is the only thing that sees
 		// a sub-repo's git dir, so dropping it here is what left a commit made
 		// inside a nested repo completely unreported.
 		// Tell sub-repo discovery before anything below filters the path away.
 		// It decides for itself what a path means: `routeGitEvent` swallows every
-		// `.git` path and `shouldIgnore` every dotfile, so `.gitignore` — which
-		// moves the reported repo set — would otherwise never reach it.
+		// `.git` path, so `.git/info/exclude` — which moves the reported repo set
+		// just like `.gitignore` — would otherwise never reach it.
 		notifyPathChanged(projectWatcher.projectPath, fullPath);
 
 		if (this.routeGitEvent(projectWatcher, relativePath, fullPath)) return;
 
-		if (this.shouldIgnore(relativePath)) return;
+		if (isIgnoredPath(relativePath)) return;
+
+		// A signature or manifest appearing or vanishing changes what counts as
+		// generated, so re-decide before judging this very event by it.
+		const entryName = basename(fullPath);
+		if (isSignatureEntry(entryName) || isOutputMarker(entryName)) {
+			this.reclassify(projectWatcher, entryName, dirname(fullPath));
+		}
+
+		if (await projectWatcher.generated.isInsideGenerated(relativePath)) return;
+		if (projectWatcher.closed) return;
 
 		// Determine change type
 		let changeType: 'created' | 'modified' | 'deleted';
@@ -676,7 +671,7 @@ class FileWatcherManager {
 		// descendants' watchers so they can't leak.
 		if (!USE_NATIVE_RECURSIVE_WATCH) {
 			if (isDirectory && changeType === 'created') {
-				if (this.watchDir(projectWatcher, fullPath)) {
+				if (!(await projectWatcher.generated.isGenerated(fullPath)) && this.watchDir(projectWatcher, fullPath)) {
 					// Announce pruned git dirs: this subtree existed before we could
 					// watch it, so anything already inside it emitted no event.
 					void this.watchSubtree(projectWatcher, fullPath, true);
@@ -685,6 +680,7 @@ class FileWatcherManager {
 				this.unwatchDir(projectWatcher, fullPath);
 			}
 		}
+		if (changeType === 'deleted') projectWatcher.generated.forgetTree(fullPath);
 
 		// Track dirty file for snapshot system
 		this.trackDirtyFile(projectId, relativePath);
@@ -710,25 +706,51 @@ class FileWatcherManager {
 	}
 
 	/**
-	 * Check if a file/directory should be ignored
+	 * Re-decide the directories a signature or manifest describes: its parent
+	 * for a signature (`CACHEDIR.TAG`, `pyvenv.cfg`), the output-named siblings
+	 * for a manifest (`Cargo.toml` → `target/`). The cached decisions are dropped
+	 * synchronously so the triggering event is already judged by the new state.
+	 *
+	 * Where recursion is emulated the watch set follows: a directory that just
+	 * became generated releases its handles, and one that stopped being generated
+	 * (its manifest was deleted) is walked and watched like a new directory.
 	 */
-	private shouldIgnore(filename: string): boolean {
-		const parts = filename.split('/');
+	private reclassify(pw: ProjectWatcher, entryName: string, parentDir: string): void {
+		const signature = isSignatureEntry(entryName);
+		if (signature) pw.generated.forget(parentDir);
+		const manifest = isOutputMarker(entryName);
+		if (manifest) pw.generated.forgetMarkableChildren(parentDir);
+		if (USE_NATIVE_RECURSIVE_WATCH) return;
 
-		// Check each path segment
-		for (const part of parts) {
-			if (IGNORED_DIRS.has(part) || IGNORED_FILES.has(part)) {
-				return true;
+		void (async () => {
+			const dirs: string[] = signature ? [parentDir] : [];
+			if (manifest) {
+				try {
+					const entries = await readdir(parentDir, { withFileTypes: true });
+					for (const entry of entries) {
+						if (entry.isDirectory() && isMarkableDirName(entry.name)) dirs.push(join(parentDir, entry.name));
+					}
+				} catch {
+					// The directory went away; its own deletion event cleans up.
+				}
 			}
-			// Ignore hidden files and directories (except .env files)
-			if (part.startsWith('.') && !part.startsWith('.env')) {
-				return true;
-			}
-		}
-
-		return false;
+			for (const dir of dirs) await this.syncWatchState(pw, dir);
+		})();
 	}
 
+	/** Linux only: make `dir`'s watch match its current generated decision. */
+	private async syncWatchState(pw: ProjectWatcher, dir: string): Promise<void> {
+		if (dir === pw.projectPath) return;
+		const generated = await pw.generated.isGenerated(dir);
+		if (pw.closed) return;
+		if (generated) {
+			if (pw.dirWatchers.has(dir)) this.unwatchDir(pw, dir);
+			return;
+		}
+		const relativePath = relative(pw.projectPath, dir).replace(/\\/g, '/');
+		if (pw.dirWatchers.has(dir) || !pw.dirWatchers.has(dirname(dir)) || isIgnoredPath(relativePath)) return;
+		if (this.watchDir(pw, dir)) void this.watchSubtree(pw, dir, true);
+	}
 
 	/**
 	 * Flush pending changes to clients

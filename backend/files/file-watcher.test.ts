@@ -149,6 +149,83 @@ describe('FileWatcherManager', () => {
 		expect(paths.some((p) => p.includes('.git'))).toBe(false);
 	});
 
+	test('reports changes inside dot-directories people and agents edit', async () => {
+		// `.agents/` is written by Settings → Artifacts; ignoring every dot path
+		// left the explorer stale until a reload while root `AGENTS.md` updated live.
+		const root = await makeProject();
+		await mkdir(join(root, '.agents', 'skills', 'demo'), { recursive: true });
+		expect(await fileWatcher.startWatching('p10', root)).toBe(true);
+		// Let the mkdir's own event drain first, or the platform watcher folds the
+		// write into it and reports only `.agents`.
+		await new Promise((r) => setTimeout(r, 400));
+
+		await writeFile(join(root, '.agents', 'skills', 'demo', 'SKILL.md'), '---\nname: demo\n---\n');
+
+		await waitFor(() => changesFor('p10').some((p) => p.endsWith('SKILL.md')));
+	});
+
+	test('never reports changes inside heavy dot-directories', async () => {
+		const root = await makeProject();
+		await mkdir(join(root, '.venv', 'lib'), { recursive: true });
+		expect(await fileWatcher.startWatching('p11', root)).toBe(true);
+
+		await writeFile(join(root, '.venv', 'lib', 'site.py'), '# noise');
+		await writeFile(join(root, '.notes.md.swp'), 'swap');
+		// Spaced out for the same reason as the ignored-directories test above.
+		await new Promise((r) => setTimeout(r, 400));
+
+		await writeFile(join(root, 'app.ts'), 'export {}');
+		await waitFor(() => changesFor('p11').some((p) => p.endsWith('app.ts')));
+
+		const paths = changesFor('p11');
+		expect(paths.some((p) => p.includes('.venv'))).toBe(false);
+		expect(paths.some((p) => p.endsWith('.swp'))).toBe(false);
+	});
+
+	test('ignores output recognised by its manifest or its contents, not by name', async () => {
+		const root = await makeProject();
+		await writeFile(join(root, 'Cargo.toml'), '[package]');
+		await mkdir(join(root, 'target', 'debug'), { recursive: true });
+		await mkdir(join(root, 'myenv', 'lib'), { recursive: true });
+		await writeFile(join(root, 'myenv', 'pyvenv.cfg'), 'home = /usr/bin');
+		// No `.csproj` here, so `bin/` is source (as Clopen's own is).
+		await mkdir(join(root, 'bin'), { recursive: true });
+		expect(await fileWatcher.startWatching('p12', root)).toBe(true);
+		await new Promise((r) => setTimeout(r, 400));
+
+		await writeFile(join(root, 'target', 'debug', 'app'), 'binary');
+		await new Promise((r) => setTimeout(r, 400));
+		await writeFile(join(root, 'myenv', 'lib', 'site.py'), '# noise');
+		await new Promise((r) => setTimeout(r, 400));
+
+		await writeFile(join(root, 'bin', 'cli.ts'), 'export {}');
+		await waitFor(() => changesFor('p12').some((p) => p.endsWith('cli.ts')));
+
+		const paths = changesFor('p12');
+		expect(paths.some((p) => p.includes(join('target', 'debug')))).toBe(false);
+		expect(paths.some((p) => p.includes(join('myenv', 'lib')))).toBe(false);
+	});
+
+	test('stops reporting a directory once it declares itself a cache', async () => {
+		const root = await makeProject();
+		await mkdir(join(root, 'scratch'), { recursive: true });
+		expect(await fileWatcher.startWatching('p13', root)).toBe(true);
+		await new Promise((r) => setTimeout(r, 400));
+
+		await writeFile(join(root, 'scratch', 'before.txt'), 'seen');
+		await waitFor(() => changesFor('p13').some((p) => p.endsWith('before.txt')));
+
+		await writeFile(join(root, 'scratch', 'CACHEDIR.TAG'), 'Signature: 8a477f597d28d172789f06886806bc55');
+		await new Promise((r) => setTimeout(r, 400));
+		await writeFile(join(root, 'scratch', 'after.txt'), 'noise');
+		await new Promise((r) => setTimeout(r, 400));
+
+		await writeFile(join(root, 'app.ts'), 'export {}');
+		await waitFor(() => changesFor('p13').some((p) => p.endsWith('app.ts')));
+
+		expect(changesFor('p13').some((p) => p.endsWith('after.txt'))).toBe(false);
+	});
+
 	test('does not emit an empty change list', async () => {
 		const root = await makeProject();
 		expect(await fileWatcher.startWatching('p4', root)).toBe(true);
