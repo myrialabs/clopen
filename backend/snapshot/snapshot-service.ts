@@ -2,8 +2,9 @@
  * Snapshot Service for Time Travel Feature (v2 - Session-Scoped)
  *
  * Architecture:
- * - Session baseline: hash-only scan at session start, background blob storage
- * - Per-checkpoint delta: only stores files that changed during the stream
+ * - Turn baseline: full scan at the start of EVERY turn (blob-stored)
+ * - Per-checkpoint delta: files that changed during the turn, minus what git
+ *   (see git-attribution.ts) and other chats in the same workspace account for
  * - Session-scoped restore: bidirectional (forward + backward) using session_changes
  * - Cross-session conflict detection: warns when restoring would affect other sessions' changes
  *
@@ -17,7 +18,9 @@ import path from 'path';
 import { snapshotQueries, sessionQueries, messageQueries } from '../database/queries';
 import { getDatabase } from '../database/index';
 import { blobStore, type TreeMap } from './blob-store';
-import { getSnapshotFiles } from './gitignore';
+import { scanSnapshotFiles } from './gitignore';
+import { attributeGitChanges, readRepoHeads, type RepoHeads } from './git-attribution';
+import { TurnActivity, type ObservedOutput } from './turn-activity';
 import { fileWatcher } from '../files/file-watcher';
 import type { MessageSnapshot, SessionScopedChanges } from '$shared/types/database/schema';
 import { calculateFileChangeStats } from '$shared/utils/diff-calculator';
@@ -71,14 +74,74 @@ export interface ConflictResolution {
 	[filepath: string]: 'restore' | 'keep';
 }
 
+/** Files hashed at once during a scan: hides stat/read latency without exhausting handles. */
+const SCAN_CONCURRENCY = 32;
+
+/**
+ * What a running turn recorded when it began. Everything the capture needs to
+ * tell the turn's own changes from everybody else's.
+ */
+interface TurnState {
+	root: string;
+	projectId: string;
+	worktreeId: string | null;
+	scopeKey: string;
+	/** Epoch ms, taken before the baseline scan so nothing slips between them. */
+	startedAt: number;
+	/** HEAD of every repository in the project, for {@link attributeGitChanges}. */
+	heads: RepoHeads;
+	/** When this turn's tools were running. See turn-activity.ts. */
+	activity: TurnActivity;
+}
+
+function isMissingFile(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException)?.code;
+	return code === 'ENOENT' || code === 'ENOTDIR';
+}
+
+async function forEachConcurrently<T>(items: T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
+	let next = 0;
+	const worker = async () => {
+		while (next < items.length) {
+			const item = items[next++];
+			await work(item);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+}
+
+/** Everything that differs between two trees, as oldHash/newHash pairs. */
+function diffTrees(before: TreeMap, after: TreeMap): SessionScopedChanges {
+	const changes: SessionScopedChanges = {};
+	for (const [filepath, newHash] of Object.entries(after)) {
+		const oldHash = before[filepath] || '';
+		if (oldHash !== newHash) changes[filepath] = { oldHash, newHash };
+	}
+	for (const [filepath, oldHash] of Object.entries(before)) {
+		if (!(filepath in after)) changes[filepath] = { oldHash, newHash: '' };
+	}
+	return changes;
+}
+
 export class SnapshotService {
 	private static instance: SnapshotService;
 
 	/**
-	 * Per-session running tree: sessionId → TreeMap
-	 * Updated after each capture and restore.
+	 * Per-session tree: sessionId → TreeMap. Re-taken at the start of every
+	 * turn, and after each capture and restore.
 	 */
 	private sessionBaselines = new Map<string, TreeMap>();
+
+	/** Turns currently running, by session. */
+	private activeTurns = new Map<string, TurnState>();
+
+	/**
+	 * Per-session work queue. A turn's baseline, its capture and a restore
+	 * all read and replace the same tree, and they must not interleave: a
+	 * capture still scanning when the next turn begins would fold that turn's
+	 * first writes into the one before it.
+	 */
+	private sessionQueues = new Map<string, Promise<void>>();
 
 	private constructor() {}
 
@@ -89,43 +152,87 @@ export class SnapshotService {
 		return SnapshotService.instance;
 	}
 
+	private enqueue<T>(sessionId: string, work: () => Promise<T>): Promise<T> {
+		const previous = this.sessionQueues.get(sessionId) ?? Promise.resolve();
+		const result = previous.then(work);
+		const tail = result.then(() => undefined, () => undefined);
+		this.sessionQueues.set(sessionId, tail);
+		void tail.then(() => {
+			if (this.sessionQueues.get(sessionId) === tail) this.sessionQueues.delete(sessionId);
+		});
+		return result;
+	}
+
+	// ========================================================================
+	// Scanning
+	// ========================================================================
+
+	/**
+	 * Hash every snapshot-eligible file under `root`.
+	 *
+	 * `previous` is the tree this scan replaces, and it decides what a file
+	 * that cannot be read right now becomes: whatever it was. Only a file that
+	 * is really gone is left out — anything else (a directory git or the OS
+	 * could not list, a permission error, a file that grew past the size cap)
+	 * used to fall out of the tree and be recorded as a deletion, which a later
+	 * restore would then carry out.
+	 */
+	private async scanTree(
+		root: string,
+		previous: TreeMap
+	): Promise<{ tree: TreeMap; contents: Map<string, Buffer> }> {
+		const scan = await scanSnapshotFiles(root, { pruneGenerated: true });
+		if (scan.incomplete.includes('')) {
+			throw new Error(`Could not list the files of ${root}`);
+		}
+
+		const tree: TreeMap = {};
+		const contents = new Map<string, Buffer>();
+
+		if (scan.incomplete.length > 0) {
+			for (const [filepath, hash] of Object.entries(previous)) {
+				if (scan.incomplete.some((dir) => filepath.startsWith(dir))) tree[filepath] = hash;
+			}
+		}
+
+		await forEachConcurrently(scan.files, SCAN_CONCURRENCY, async (filepath) => {
+			const relativePath = path.relative(root, filepath).replace(/\\/g, '/');
+			try {
+				const stat = await fs.stat(filepath);
+				if (!stat.isFile()) return;
+				if (stat.size > MAX_FILE_SIZE) {
+					if (previous[relativePath]) tree[relativePath] = previous[relativePath];
+					return;
+				}
+
+				const result = await blobStore.hashFile(filepath);
+				tree[relativePath] = result.hash;
+				if (result.content !== null && result.hash !== previous[relativePath]) {
+					contents.set(relativePath, result.content);
+				}
+			} catch (error) {
+				if (isMissingFile(error)) return;
+				if (previous[relativePath]) tree[relativePath] = previous[relativePath];
+			}
+		});
+
+		return { tree, contents };
+	}
+
 	// ========================================================================
 	// Session Baseline
 	// ========================================================================
 
-	/**
-	 * Initialize session baseline: hash-only scan + blob storage.
-	 * Called when a session is first activated for a project.
-	 */
-	async initializeSessionBaseline(
-		projectPath: string,
-		sessionId: string
-	): Promise<void> {
-		if (this.sessionBaselines.has(sessionId)) return;
-
+	/** Re-take a session's tree from disk. Not queued: callers already are. */
+	private async rescanBaseline(projectPath: string, sessionId: string): Promise<TreeMap | null> {
 		try {
-			const files = await getSnapshotFiles(projectPath);
-			const baseline: TreeMap = {};
-
-			for (const filepath of files) {
-				try {
-					const stat = await fs.stat(filepath);
-					if (stat.size > MAX_FILE_SIZE) continue;
-
-					const relativePath = path.relative(projectPath, filepath);
-					const normalizedPath = relativePath.replace(/\\/g, '/');
-
-					const result = await blobStore.hashFile(normalizedPath, filepath);
-					baseline[normalizedPath] = result.hash;
-				} catch {
-					// Skip unreadable files
-				}
-			}
-
-			this.sessionBaselines.set(sessionId, baseline);
-			debug.log('snapshot', `Session baseline initialized: ${Object.keys(baseline).length} files for session ${sessionId}`);
+			const { tree } = await this.scanTree(projectPath, this.sessionBaselines.get(sessionId) ?? {});
+			this.sessionBaselines.set(sessionId, tree);
+			debug.log('snapshot', `Session baseline taken: ${Object.keys(tree).length} files for session ${sessionId}`);
+			return tree;
 		} catch (error) {
-			debug.error('snapshot', 'Error initializing session baseline:', error);
+			debug.error('snapshot', 'Error taking session baseline:', error);
+			return this.sessionBaselines.get(sessionId) ?? null;
 		}
 	}
 
@@ -133,32 +240,185 @@ export class SnapshotService {
 		projectPath: string,
 		sessionId: string
 	): Promise<TreeMap> {
-		if (!this.sessionBaselines.has(sessionId)) {
-			await this.initializeSessionBaseline(projectPath, sessionId);
+		const baseline = this.sessionBaselines.get(sessionId);
+		if (baseline) return baseline;
+		return (await this.rescanBaseline(projectPath, sessionId)) ?? {};
+	}
+
+	// ========================================================================
+	// Turn lifecycle
+	// ========================================================================
+
+	/**
+	 * Start a turn: take the "before" picture this turn will be measured
+	 * against.
+	 *
+	 * Re-taken at EVERY turn, not only the first. The tree used to be carried
+	 * over from the previous capture, so everything that happened while the
+	 * chat sat idle — a pull, a branch switch, the user's own edits, another
+	 * chat's work — was charged to whichever turn came next, and undoing that
+	 * turn reverted it.
+	 *
+	 * Must complete before the engine can write (the caller awaits it). Never
+	 * throws: a turn without a fresh baseline still runs, it just measures
+	 * against the last good one.
+	 */
+	async beginTurn(projectPath: string, projectId: string, sessionId: string): Promise<void> {
+		await this.enqueue(sessionId, async () => {
+			const worktreeId = sessionQueries.getById(sessionId)?.worktree_id ?? null;
+			const startedAt = Date.now();
+			const [heads] = await Promise.all([
+				readRepoHeads(projectPath).catch((error) => {
+					debug.warn('snapshot', 'Could not read repository HEADs:', error);
+					return new Map() as RepoHeads;
+				}),
+				this.rescanBaseline(projectPath, sessionId)
+			]);
+			this.activeTurns.set(sessionId, {
+				root: projectPath,
+				projectId,
+				worktreeId,
+				scopeKey: makeScopeKey(projectId, worktreeId),
+				startedAt,
+				heads,
+				activity: new TurnActivity(startedAt)
+			});
+		});
+	}
+
+	/** Feed a running turn's engine output, to learn when its tools ran. */
+	observeEngineOutput(sessionId: string, output: ObservedOutput): void {
+		this.activeTurns.get(sessionId)?.activity.observe(output);
+	}
+
+	/** Close a turn that will not be captured (it failed before it began). */
+	async endTurn(sessionId: string): Promise<void> {
+		await this.enqueue(sessionId, async () => {
+			this.finishTurn(sessionId);
+		});
+	}
+
+	private finishTurn(sessionId: string): void {
+		const turn = this.activeTurns.get(sessionId);
+		if (!turn) return;
+		this.activeTurns.delete(sessionId);
+
+		// The dirty set feeds every running turn's live indicators in this
+		// workspace, so it is only cleared once none is left running.
+		const othersRunning = Array.from(this.activeTurns.values()).some((t) => t.scopeKey === turn.scopeKey);
+		if (!othersRunning) fileWatcher.clearDirtyFiles(turn.scopeKey);
+	}
+
+	/**
+	 * Changes another chat in the same workspace can account for.
+	 *
+	 * Two chats running in one folder both see every write. A change is handed
+	 * to the other chat when the other one already recorded the exact same
+	 * result since this turn began, or when it was written while one of the
+	 * other chat's tools was running and none of this turn's was. When both or
+	 * neither were running, the first capture keeps it — there is nothing
+	 * better to go on, and it is still counted only once.
+	 *
+	 * Only consulted when another chat shares the workspace; alone, a turn
+	 * owns everything it sees and this costs nothing.
+	 */
+	private async foreignChanges(
+		sessionId: string,
+		turn: TurnState,
+		changes: SessionScopedChanges
+	): Promise<Set<string>> {
+		const foreign = new Set<string>();
+		const paths = Object.keys(changes);
+		if (paths.length === 0) return foreign;
+
+		const others = Array.from(this.activeTurns.entries())
+			.filter(([id, other]) => id !== sessionId && other.scopeKey === turn.scopeKey)
+			.map(([, other]) => other);
+
+		const claimed = new Map<string, Set<string>>();
+		for (const row of this.getScopeSnapshotsSince(turn, sessionId)) {
+			if (!row.session_changes) continue;
+			try {
+				const settled = JSON.parse(row.session_changes) as SessionScopedChanges;
+				for (const [filepath, change] of Object.entries(settled)) {
+					const hashes = claimed.get(filepath) ?? new Set<string>();
+					hashes.add(change.newHash);
+					claimed.set(filepath, hashes);
+				}
+			} catch { /* skip malformed */ }
 		}
-		return this.sessionBaselines.get(sessionId) || {};
+
+		for (const filepath of paths) {
+			if (claimed.get(filepath)?.has(changes[filepath].newHash)) {
+				foreign.add(filepath);
+				continue;
+			}
+			if (others.length === 0) continue;
+
+			const writtenAt = await this.changeTime(turn, filepath, changes[filepath]);
+			if (writtenAt === undefined) continue;
+			const mine = turn.activity.wasRunningAt(writtenAt);
+			const theirs = others.some((other) => other.activity.wasRunningAt(writtenAt));
+			if (theirs && !mine) foreign.add(filepath);
+		}
+		return foreign;
+	}
+
+	/**
+	 * When a change happened (epoch ms), or undefined when nothing says.
+	 *
+	 * A file still on disk carries its modification time. A deleted one does
+	 * not, so the watcher's record of the event is used, and failing that the
+	 * nearest surviving directory's mtime — removing an entry updates it.
+	 */
+	private async changeTime(
+		turn: TurnState,
+		filepath: string,
+		change: SessionScopedChanges[string]
+	): Promise<number | undefined> {
+		if (change.newHash) {
+			try {
+				return (await fs.stat(path.join(turn.root, filepath))).mtimeMs;
+			} catch {
+				return undefined;
+			}
+		}
+
+		const seen = fileWatcher.getLastChangeAt(turn.scopeKey, filepath);
+		if (seen !== undefined) return seen;
+
+		let dir = path.dirname(filepath);
+		while (true) {
+			try {
+				return (await fs.stat(path.join(turn.root, dir === '.' ? '' : dir))).mtimeMs;
+			} catch {
+				if (dir === '.' || dir === '') return undefined;
+				dir = path.dirname(dir);
+			}
+		}
+	}
+
+	/** Other chats' snapshots in the same workspace, captured since `turn` began. */
+	private getScopeSnapshotsSince(turn: TurnState, sessionId: string): Array<{ session_changes: string | null }> {
+		const db = getDatabase();
+		return db.prepare(`
+			SELECT s.session_changes FROM message_snapshots s
+			JOIN chat_sessions c ON c.id = s.session_id
+			WHERE s.project_id = ? AND s.session_id != ? AND s.created_at >= ?
+				AND (s.is_deleted IS NULL OR s.is_deleted = 0)
+				AND COALESCE(c.worktree_id, '') = ?
+		`).all(
+			turn.projectId,
+			sessionId,
+			new Date(turn.startedAt).toISOString(),
+			turn.worktreeId ?? ''
+		) as Array<{ session_changes: string | null }>;
 	}
 
 	// ========================================================================
 	// In-flight turn
 	// ========================================================================
 
-	/**
-	 * Changes made since the last capture, for a turn that is still running.
-	 *
-	 * The settled source of truth is `captureSnapshot`, but it only lands when
-	 * the stream ends — and the AI-change indicators have to light up while the
-	 * model is still working. This answers the same question early, from the
-	 * same baseline, without writing anything: no snapshot row, no baseline
-	 * move, no dirty-set clear. Whatever it reports is replaced wholesale by the
-	 * real capture a moment later.
-	 *
-	 * Candidates come from the file watcher's dirty set, so the cost is
-	 * proportional to what actually changed rather than to repository size. The
-	 * watcher only runs while a client is watching the project — which is
-	 * exactly when a panel that renders these indicators is mounted — and any
-	 * event it missed is recovered by the full scan at turn end.
-	 */
 	/**
 	 * The hash a file had when the running turn started.
 	 *
@@ -172,16 +432,34 @@ export class SnapshotService {
 		return { known: true, hash: baseline[relativePath] || '' };
 	}
 
+	/**
+	 * Changes made since the turn began, for a turn that is still running.
+	 *
+	 * The settled source of truth is `captureSnapshot`, but it only lands when
+	 * the stream ends — and the AI-change indicators have to light up while the
+	 * model is still working. This answers the same question early, from the
+	 * same baseline, without writing anything: no snapshot row, no baseline
+	 * move, no dirty-set clear. Whatever it reports is replaced wholesale by the
+	 * real capture a moment later, which also applies the git attribution this
+	 * cheaper read skips.
+	 *
+	 * Candidates come from the file watcher's dirty set, so the cost is
+	 * proportional to what actually changed rather than to repository size. The
+	 * watcher only runs while a client is watching the project — which is
+	 * exactly when a panel that renders these indicators is mounted — and any
+	 * event it missed is recovered by the full scan at turn end.
+	 */
 	async getPendingChanges(
 		projectPath: string,
 		scopeKey: string,
 		sessionId: string
 	): Promise<SessionScopedChanges> {
-		// No baseline means this session has not captured or initialised yet.
-		// Building one here would hash the mid-turn disk state and declare it
-		// unchanged, blinding the indicators for the whole turn — so decline.
+		// No running turn, or no baseline for it: nothing this chat is doing now.
+		// Building a baseline here would hash the mid-turn disk state and declare
+		// it unchanged, blinding the indicators for the whole turn — so decline.
+		const turn = this.activeTurns.get(sessionId);
 		const baseline = this.sessionBaselines.get(sessionId);
-		if (!baseline) return {};
+		if (!turn || !baseline) return {};
 
 		const dirty = fileWatcher.getDirtyFiles(scopeKey);
 		if (dirty.size === 0) return {};
@@ -193,7 +471,7 @@ export class SnapshotService {
 		const hasNewPaths = Array.from(dirty).some((relativePath) => !(relativePath in baseline));
 		if (hasNewPaths) {
 			try {
-				const files = await getSnapshotFiles(projectPath);
+				const { files } = await scanSnapshotFiles(projectPath, { pruneGenerated: true });
 				eligible = new Set(
 					files.map((filepath) => path.relative(projectPath, filepath).replace(/\\/g, '/'))
 				);
@@ -215,15 +493,20 @@ export class SnapshotService {
 				const stat = await fs.stat(fullPath);
 				if (stat.size > MAX_FILE_SIZE) continue;
 
-				const result = await blobStore.hashFile(relativePath, fullPath);
+				const result = await blobStore.hashFile(fullPath);
 				if (result.hash !== oldHash) {
 					changes[relativePath] = { oldHash, newHash: result.hash };
 				}
-			} catch {
+			} catch (error) {
 				// Gone from disk: a deletion when we knew the file, nothing otherwise
-				// (a temp file the turn created and removed again).
-				if (oldHash) changes[relativePath] = { oldHash, newHash: '' };
+				// (a temp file the turn created and removed again). Unreadable is
+				// not gone.
+				if (oldHash && isMissingFile(error)) changes[relativePath] = { oldHash, newHash: '' };
 			}
+		}
+
+		for (const filepath of await this.foreignChanges(sessionId, turn, changes)) {
+			delete changes[filepath];
 		}
 
 		return changes;
@@ -234,11 +517,25 @@ export class SnapshotService {
 	// ========================================================================
 
 	/**
-	 * Capture snapshot of current project state.
-	 * Only processes files detected as dirty by the file watcher.
-	 * Stores session-scoped changes (oldHash/newHash per file).
+	 * Capture the end of a turn: what changed on disk since it began, minus
+	 * what git and other chats account for. Closes the turn.
 	 */
-	async captureSnapshot(
+	captureSnapshot(
+		projectPath: string,
+		projectId: string,
+		sessionId: string,
+		messageId: string
+	): Promise<MessageSnapshot> {
+		return this.enqueue(sessionId, async () => {
+			try {
+				return await this.captureTurn(projectPath, projectId, sessionId, messageId);
+			} finally {
+				this.finishTurn(sessionId);
+			}
+		});
+	}
+
+	private async captureTurn(
 		projectPath: string,
 		projectId: string,
 		sessionId: string,
@@ -250,70 +547,40 @@ export class SnapshotService {
 				? previousSnapshots[previousSnapshots.length - 1]
 				: null;
 
-			// Previous tree (in-memory baseline = disk state at session start or the
-			// last capture/restore).
+			// The disk at the start of this turn.
 			const previousTree = await this.getSessionBaseline(projectPath, sessionId);
 
 			// The source of truth is the DISK, not the file watcher's dirty set. The
 			// watcher only runs while the Files/Git panel is mounted, so relying on it
 			// silently dropped snapshots whenever the user chatted with those panels
-			// closed (worsened once dock state became per-project). A gitignore-aware
-			// scan + hash diff against the baseline is always correct, and
-			// blobStore.hashFile's mtime+size cache keeps it cheap — only files that
-			// actually changed are re-read.
-			const files = await getSnapshotFiles(projectPath);
-			const currentTree: TreeMap = {};
-			const sessionChanges: SessionScopedChanges = {};
-			const readContents = new Map<string, Buffer>();
-			const seen = new Set<string>();
+			// closed. A gitignore-aware scan + hash diff against the baseline is
+			// always correct, and blobStore.hashFile's mtime+size cache keeps it
+			// cheap — only files that actually changed are re-read.
+			const { tree: currentTree, contents: readContents } = await this.scanTree(projectPath, previousTree);
+			const sessionChanges = diffTrees(previousTree, currentTree);
 
-			for (const filepath of files) {
-				try {
-					const stat = await fs.stat(filepath);
-					const relativePath = path.relative(projectPath, filepath).replace(/\\/g, '/');
+			// A disk diff sees every writer. Take out what is not this turn's.
+			const turn = this.activeTurns.get(sessionId);
+			if (turn && Object.keys(sessionChanges).length > 0) {
+				const git = await attributeGitChanges(projectPath, turn.heads, turn.startedAt, sessionChanges);
+				for (const filepath of git.explained) delete sessionChanges[filepath];
+				for (const [filepath, oldHash] of git.rebased) {
+					if (oldHash === sessionChanges[filepath].newHash) delete sessionChanges[filepath];
+					else sessionChanges[filepath].oldHash = oldHash;
+				}
 
-					// Files over the size cap are never tracked (mirrors the baseline
-					// scan). If one was tracked before, the deletion pass below records
-					// its removal from the tree.
-					if (stat.size > MAX_FILE_SIZE) continue;
+				for (const filepath of await this.foreignChanges(sessionId, turn, sessionChanges)) {
+					delete sessionChanges[filepath];
+				}
 
-					seen.add(relativePath);
-
-					const result = await blobStore.hashFile(relativePath, filepath);
-					const newHash = result.hash;
-					const oldHash = previousTree[relativePath] || '';
-
-					currentTree[relativePath] = newHash;
-
-					if (oldHash !== newHash) {
-						sessionChanges[relativePath] = { oldHash, newHash };
-
-						if (result.content !== null) {
-							readContents.set(relativePath, result.content);
-						}
-
-						if (oldHash && !(await blobStore.hasBlob(oldHash))) {
-							debug.warn('snapshot', `Old blob missing for ${relativePath} (${oldHash.slice(0, 8)}), restore may be limited`);
-						}
-					}
-				} catch {
-					// Unreadable file — skip it
+				if (git.explained.size > 0 || git.rebased.size > 0) {
+					debug.log('snapshot', `Git accounts for ${git.explained.size} file(s), ${git.rebased.size} re-based`);
 				}
 			}
 
-			// Deletions: anything in the baseline that is no longer on disk.
-			for (const relativePath of Object.keys(previousTree)) {
-				if (!seen.has(relativePath)) {
-					sessionChanges[relativePath] = { oldHash: previousTree[relativePath], newHash: '' };
-				}
-			}
-
-			// The dirty set is no longer the snapshot source, but clear it so it does
-			// not grow unbounded for the Files panel UI. Keyed per workspace, so a
-			// worktree session must not clear the main tree's set.
-			fileWatcher.clearDirtyFiles(
-				makeScopeKey(projectId, sessionQueries.getById(sessionId)?.worktree_id ?? null)
-			);
+			// The next turn re-takes its own baseline; this keeps getBaselineHash
+			// honest in between, and is the tree a restore compares against.
+			this.sessionBaselines.set(sessionId, currentTree);
 
 			// No changes vs the baseline → reuse the existing head snapshot.
 			if (Object.keys(sessionChanges).length === 0 && previousSnapshot) {
@@ -322,9 +589,7 @@ export class SnapshotService {
 			}
 
 			// Calculate line-level file change stats
-			const fileStats = await this.calculateChangeStats(
-				previousTree, currentTree, sessionChanges, readContents
-			);
+			const fileStats = await this.calculateChangeStats(sessionChanges, readContents);
 
 			const metadata: SnapshotMetadata = {
 				totalFiles: Object.keys(currentTree).length,
@@ -336,9 +601,6 @@ export class SnapshotService {
 			};
 
 			const snapshotId = `snapshot_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-
-			// Update in-memory baseline
-			this.sessionBaselines.set(sessionId, { ...currentTree });
 
 			const dbSnapshot = snapshotQueries.createSnapshot({
 				id: snapshotId,
@@ -463,7 +725,10 @@ export class SnapshotService {
 		const projectId = targetSnapshot
 			? targetSnapshot.project_id
 			: (sessionSnapshots[0]?.project_id || '');
-		const allProjectSnapshots = this.getAllProjectSnapshots(projectId);
+		// Only chats working on the same copy of the project can conflict: a
+		// worktree session edits its own files, however alike the paths look.
+		const worktreeId = sessionQueries.getById(sessionId)?.worktree_id ?? null;
+		const allProjectSnapshots = this.getAllProjectSnapshots(projectId, worktreeId);
 
 		for (const otherSnap of allProjectSnapshots) {
 			if (otherSnap.session_id === sessionId) continue;
@@ -557,13 +822,15 @@ export class SnapshotService {
 		};
 	}
 
-	private getAllProjectSnapshots(projectId: string): MessageSnapshot[] {
+	private getAllProjectSnapshots(projectId: string, worktreeId: string | null): MessageSnapshot[] {
 		const db = getDatabase();
 		return db.prepare(`
-			SELECT * FROM message_snapshots
-			WHERE project_id = ? AND (is_deleted IS NULL OR is_deleted = 0)
-			ORDER BY created_at ASC
-		`).all(projectId) as MessageSnapshot[];
+			SELECT s.* FROM message_snapshots s
+			JOIN chat_sessions c ON c.id = s.session_id
+			WHERE s.project_id = ? AND (s.is_deleted IS NULL OR s.is_deleted = 0)
+				AND COALESCE(c.worktree_id, '') = ?
+			ORDER BY s.created_at ASC
+		`).all(projectId, worktreeId ?? '') as MessageSnapshot[];
 	}
 
 	// ========================================================================
@@ -582,7 +849,21 @@ export class SnapshotService {
 	 *
 	 * Falls back to linear algorithm when targetPath is not provided.
 	 */
-	async restoreSessionScoped(
+	restoreSessionScoped(
+		projectPath: string,
+		sessionId: string,
+		targetCheckpointMessageId: string | null,
+		conflictResolutions?: ConflictResolution,
+		targetPath?: string[]
+	): Promise<{ restoredFiles: number; skippedFiles: number }> {
+		// Queued with the session's captures: a restore rewrites the tree a
+		// capture still scanning would otherwise record as the turn's work.
+		return this.enqueue(sessionId, () => this.restoreNow(
+			projectPath, sessionId, targetCheckpointMessageId, conflictResolutions, targetPath
+		));
+	}
+
+	private async restoreNow(
 		projectPath: string,
 		sessionId: string,
 		targetCheckpointMessageId: string | null,
@@ -651,15 +932,11 @@ export class SnapshotService {
 				}
 			}
 
-			// Force re-initialize baseline from actual disk state.
-			// This is critical because:
-			// 1. Files already at expected state were skipped (baseline not updated for them)
-			// 2. After server restart, baseline starts empty — only restored files get entries
-			// 3. Files not mentioned in any snapshot are missing from the partial baseline
-			// Without this, subsequent captures would compute oldHash='' for files missing
-			// from the baseline, causing future restores to incorrectly delete those files.
-			this.sessionBaselines.delete(sessionId);
-			await this.initializeSessionBaseline(projectPath, sessionId);
+			// Re-take the baseline from actual disk state: files already at their
+			// expected state were skipped, and after a server restart there is no
+			// baseline at all. A partial one would compute oldHash='' for every
+			// file it misses, and a later restore would delete those files.
+			await this.rescanBaseline(projectPath, sessionId);
 
 			debug.log('snapshot', `Restore complete: ${restoredFiles} restored, ${skippedFiles} skipped`);
 			return { restoredFiles, skippedFiles };
@@ -795,8 +1072,6 @@ export class SnapshotService {
 	 * Calculate line-level change stats for changed files.
 	 */
 	private async calculateChangeStats(
-		previousTree: TreeMap,
-		currentTree: TreeMap,
 		sessionChanges: SessionScopedChanges,
 		readContents: Map<string, Buffer>
 	): Promise<{ filesChanged: number; insertions: number; deletions: number }> {
@@ -846,6 +1121,7 @@ export class SnapshotService {
 	 */
 	clearSessionBaseline(sessionId: string): void {
 		this.sessionBaselines.delete(sessionId);
+		this.activeTurns.delete(sessionId);
 	}
 }
 

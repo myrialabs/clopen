@@ -15,20 +15,13 @@
 	import { aiChangesState } from '$frontend/stores/features/ai-changes.svelte';
 	import { openAiChanges } from '$frontend/stores/ui/ai-changes-modal.svelte';
 
-	const summary = $derived.by(() => {
-		const paths = new Set<string>();
-		let insertions = 0;
-		let deletions = 0;
-		let running = false;
-		for (const turn of aiChangesState.turns) {
-			if (turn.checkpointMessageId === null) running = true;
-			for (const file of turn.files) {
-				paths.add(file.path);
-				insertions += file.insertions;
-				deletions += file.deletions;
-			}
-		}
-		return { files: paths.size, insertions, deletions, running };
+	// Net across turns, from the backend: the sum of the turns counted a file
+	// edited three times three times, and kept a change a later turn undid.
+	const summary = $derived({
+		files: aiChangesState.net.filesChanged,
+		insertions: aiChangesState.net.insertions,
+		deletions: aiChangesState.net.deletions,
+		running: aiChangesState.turns.some((turn) => turn.checkpointMessageId === null)
 	});
 </script>
 

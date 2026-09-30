@@ -557,12 +557,15 @@ class StreamManager extends EventEmitter {
 		// engine initialization. It MUST finish before the engine can write any files
 		// (awaited just before streamQuery below) — otherwise early writes would be
 		// folded into the baseline and silently dropped from this turn's checkpoint.
+		// Re-taken every turn (see SnapshotService.beginTurn): a baseline carried
+		// over from the previous turn charged every idle-time change to this one.
 		let baselineInitPromise: Promise<void> | null = null;
-		if (requestData.projectPath && requestData.chatSessionId) {
-			baselineInitPromise = snapshotService.initializeSessionBaseline(
+		if (requestData.projectPath && requestData.projectId && requestData.chatSessionId) {
+			baselineInitPromise = snapshotService.beginTurn(
 				requestData.projectPath,
+				requestData.projectId,
 				requestData.chatSessionId
-			).catch(err => debug.error('snapshot', 'Failed to initialize session baseline:', err));
+			).catch(err => debug.error('snapshot', 'Failed to begin snapshot turn:', err));
 		}
 
 		try {
@@ -906,6 +909,12 @@ class StreamManager extends EventEmitter {
 				if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
 					break;
 				}
+
+				// Every output, not only tool calls: the gap before a call is when an
+				// engine that reports commands after the fact actually ran them. This
+				// is how a snapshot tells this chat's writes from another chat's in
+				// the same folder, for any tool (see snapshot/turn-activity.ts).
+				if (chatSessionId) snapshotService.observeEngineOutput(chatSessionId, output);
 
 				// ── Route by type discriminant ──────────────────────────────
 
@@ -1398,6 +1407,10 @@ class StreamManager extends EventEmitter {
 							deletedPaths: delta?.deleted ?? []
 						});
 					});
+			} else if (chatSessionId) {
+				// No user message was saved, so there is nothing to capture against —
+				// but the turn was opened and must not stay "running".
+				void snapshotService.endTurn(chatSessionId);
 			}
 		}
 	}

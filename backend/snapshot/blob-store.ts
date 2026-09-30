@@ -32,7 +32,7 @@ class BlobStore {
 	private initialized = false;
 
 	/**
-	 * Cache: filepath -> { mtimeMs, size, hash }
+	 * Cache: absolute path -> { mtimeMs, size, hash }
 	 * Avoids re-reading files that haven't changed (based on mtime + size).
 	 */
 	private fileHashCache = new Map<string, FileHashCacheEntry>();
@@ -115,22 +115,26 @@ class BlobStore {
 	 * If the file has changed, reads content, hashes it, stores blob, and caches.
 	 * Reads as Buffer to safely handle binary files (images, PDFs, etc.).
 	 *
+	 * Cached by absolute path. It used to be keyed by whatever the caller passed,
+	 * which was the project-relative path — shared by every project and every
+	 * worktree copy, where the same file often has the same size.
+	 *
 	 * @returns hash and content Buffer (content is null if cache hit and blob already exists)
 	 */
-	async hashFile(filepath: string, fullPath: string): Promise<{ hash: string; content: Buffer | null; cached: boolean }> {
+	async hashFile(fullPath: string): Promise<{ hash: string; content: Buffer | null; cached: boolean }> {
 		await this.init();
 
 		const stat = await fs.stat(fullPath);
 
 		// Check mtime cache
-		const cached = this.fileHashCache.get(filepath);
+		const cached = this.fileHashCache.get(fullPath);
 		if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
 			// Verify blob still exists on disk (could have been cleaned up)
 			if (await this.hasBlob(cached.hash)) {
 				return { hash: cached.hash, content: null, cached: true };
 			}
 			// Blob was deleted — invalidate cache, fall through to re-read and re-store
-			this.fileHashCache.delete(filepath);
+			this.fileHashCache.delete(fullPath);
 		}
 
 		// File changed or cache miss - read as Buffer (binary-safe, no encoding conversion)
@@ -141,7 +145,7 @@ class BlobStore {
 		await this.storeBlob(content);
 
 		// Update cache
-		this.fileHashCache.set(filepath, {
+		this.fileHashCache.set(fullPath, {
 			mtimeMs: stat.mtimeMs,
 			size: stat.size,
 			hash

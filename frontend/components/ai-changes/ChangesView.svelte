@@ -24,6 +24,7 @@
 		aiChangesState,
 		turnId,
 		requestAiReveal,
+		type ChangeTotals,
 		type TurnChanges,
 		type TurnFileChange
 	} from '$frontend/stores/features/ai-changes.svelte';
@@ -74,6 +75,7 @@
 
 	/** Turns for a session other than the one the store holds (history view). */
 	let foreignTurns = $state<TurnChanges[]>([]);
+	let foreignNet = $state<ChangeTotals>({ filesChanged: 0, insertions: 0, deletions: 0 });
 	let foreignLoading = $state(false);
 
 	const isStoreSession = $derived(!!sessionId && sessionId === aiChangesState.sessionId);
@@ -90,6 +92,7 @@
 			.then((response) => {
 				if (sessionId !== target) return;
 				foreignTurns = response.turns as TurnChanges[];
+				foreignNet = response.net;
 			})
 			.catch((error) => {
 				debug.error('snapshot', 'Failed to load turn changes:', error);
@@ -160,7 +163,22 @@
 		return Array.from(byPath.values()).sort((a, b) => naturalCompare(a.path, b.path));
 	});
 
+	const isFiltered = $derived(!!query || (uncommittedOnly && canReadWorkingTree));
+
 	const totals = $derived.by(() => {
+		// Unfiltered, the footer states what the chat changed: the backend's net,
+		// the same numbers the composer shows. A filtered view can only add up
+		// the rows it kept.
+		if (!isFiltered) {
+			const net = isStoreSession ? aiChangesState.net : foreignNet;
+			return {
+				files: net.filesChanged,
+				insertions: net.insertions,
+				deletions: net.deletions,
+				turns: visibleTurns.length
+			};
+		}
+
 		const paths = new Set<string>();
 		let insertions = 0;
 		let deletions = 0;

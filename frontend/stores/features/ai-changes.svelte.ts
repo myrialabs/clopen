@@ -52,15 +52,33 @@ interface AiChangesState {
 	turns: TurnChanges[];
 	/** Absolute path → what happened to it. The panels' lookup table. */
 	byPath: Map<string, PathChanges>;
+	/**
+	 * What the chat changed overall, netted across turns by the backend — a
+	 * file edited in three turns is one file, and an edit undone by a later
+	 * turn is no change. Includes the running turn while there is one.
+	 */
+	net: ChangeTotals;
 	loading: boolean;
 }
+
+export interface ChangeTotals {
+	filesChanged: number;
+	insertions: number;
+	deletions: number;
+}
+
+const NO_CHANGES: ChangeTotals = { filesChanged: 0, insertions: 0, deletions: 0 };
 
 export const aiChangesState = $state<AiChangesState>({
 	sessionId: null,
 	turns: [],
 	byPath: new Map(),
+	net: NO_CHANGES,
 	loading: false
 });
+
+/** Net of the settled turns alone; the running turn's net replaces it while it runs. */
+let settledNet: ChangeTotals = NO_CHANGES;
 
 // ========================================
 // DERIVED INDEX
@@ -105,6 +123,8 @@ export function clearAiChanges(): void {
 	aiChangesState.sessionId = null;
 	aiChangesState.turns = [];
 	aiChangesState.byPath = new Map();
+	aiChangesState.net = NO_CHANGES;
+	settledNet = NO_CHANGES;
 	aiChangesState.loading = false;
 }
 
@@ -133,12 +153,16 @@ export async function loadAiChanges(sessionId: string | null): Promise<void> {
 			promptText: turn.promptText,
 			files: turn.files as TurnFileChange[]
 		}));
+		settledNet = response.net;
+		aiChangesState.net = settledNet;
 		reindex();
 	} catch (error) {
 		if (mine !== generation) return;
 		debug.error('snapshot', 'Failed to load AI changes:', error);
 		aiChangesState.turns = [];
 		aiChangesState.byPath = new Map();
+		settledNet = NO_CHANGES;
+		aiChangesState.net = NO_CHANGES;
 	} finally {
 		if (mine === generation) aiChangesState.loading = false;
 	}
@@ -179,6 +203,7 @@ async function readPendingChanges(): Promise<void> {
 		if (mine !== generation) return;
 
 		const settled = aiChangesState.turns.filter((turn) => turn.checkpointMessageId !== null);
+		aiChangesState.net = response.net ?? settledNet;
 		if (response.files.length === 0) {
 			aiChangesState.turns = settled;
 		} else {

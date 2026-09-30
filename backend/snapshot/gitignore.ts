@@ -9,10 +9,12 @@
  */
 
 import fs from 'fs/promises';
+import type { Dirent } from 'fs';
 import path from 'path';
 import { debug } from '$shared/utils/logger';
 import { execGit } from '../git/git-executor';
 import { findNestedRepoPaths } from '../git/nested-repos';
+import { hasGeneratedSignature, isIgnoredName, isMarkedOutputDir } from '../files/watch-ignore';
 
 /**
  * Safety-net directories to always exclude regardless of .gitignore.
@@ -25,25 +27,60 @@ const ALWAYS_EXCLUDE_DIRS = new Set([
 
 
 /**
+ * The result of a scan, including what it could NOT see.
+ *
+ * `incomplete` lists the project-relative directories (with a trailing slash,
+ * or '' for the whole project) whose listing failed. That distinction is load
+ * bearing for snapshots: a file that was not listed because its directory
+ * could not be read is not a deleted file, and treating it as one recorded
+ * deletions that a later restore would then carry out on a perfectly healthy
+ * file.
+ */
+export interface SnapshotScan {
+	files: string[];
+	incomplete: string[];
+}
+
+export interface SnapshotScanOptions {
+	/**
+	 * Skip generated directories (dependency stores, build output, caches) in
+	 * projects that have no git to say what is ignored. Uses the same layered
+	 * policy as the file watcher, so the two agree on what "generated" means.
+	 * Git projects are unaffected: `.gitignore` is the authority there.
+	 */
+	pruneGenerated?: boolean;
+}
+
+/**
  * Get list of snapshot-eligible files using git (preferred) or manual scan.
- * Returns full absolute paths.
+ * Returns full absolute paths. Unreadable parts are silently left out — use
+ * {@link scanSnapshotFiles} when the difference between "absent" and "not
+ * seen" matters.
  */
 export async function getSnapshotFiles(projectPath: string): Promise<string[]> {
+	return (await scanSnapshotFiles(projectPath)).files;
+}
+
+/** Scan snapshot-eligible files and report which parts could not be read. */
+export async function scanSnapshotFiles(
+	projectPath: string,
+	options: SnapshotScanOptions = {}
+): Promise<SnapshotScan> {
 	// Try git-based scan first (handles all .gitignore rules perfectly)
-	const gitFiles = await scanWithGit(projectPath);
-	if (gitFiles !== null) {
-		return gitFiles;
+	const gitScan = await scanWithGit(projectPath);
+	if (gitScan !== null) {
+		return gitScan;
 	}
 
 	// Fallback: manual scan with .gitignore parsing
-	return scanWithGitignoreParsing(projectPath);
+	return scanWithGitignoreParsing(projectPath, options);
 }
 
 // ============================================================================
 // Strategy 1: Git-based scanning
 // ============================================================================
 
-async function scanWithGit(dirPath: string): Promise<string[] | null> {
+async function scanWithGit(dirPath: string): Promise<SnapshotScan | null> {
 	// Check if this is a git repo
 	try {
 		await fs.access(path.join(dirPath, '.git'));
@@ -51,58 +88,69 @@ async function scanWithGit(dirPath: string): Promise<string[] | null> {
 		return null;
 	}
 
+	let files: string[];
 	try {
 		// Scan the outer repo
-		const files = await scanSingleGitRepo(dirPath);
-
-		// Find and scan nested git repos — separate repositories living inside
-		// the project (e.g. a theme extracted into its own repo). The parent
-		// repo's `git ls-files --exclude-standard` skips these because git treats
-		// a nested repo as a single gitlink entry (or excludes it entirely when
-		// it's listed in the parent's .gitignore). Without this step, files
-		// inside nested repos are invisible to the snapshot system, so AI
-		// changes to them never appear in the checkpoint banner.
-		const nestedFiles = await findAndScanNestedRepos(dirPath);
-
-		const allFiles = [...files, ...nestedFiles];
-		debug.log('snapshot', `Git scan found ${allFiles.length} files (${files.length} outer, ${nestedFiles.length} nested)`);
-		return allFiles;
+		files = await scanSingleGitRepo(dirPath);
 	} catch (err) {
-		debug.warn('snapshot', 'git ls-files failed, falling back to manual scan:', err);
-		return null;
+		// Deliberately NOT a fallback to the manual scan: its ignore semantics
+		// differ from git's, so switching strategy mid-session would report
+		// every file the two disagree on as added or deleted.
+		debug.warn('snapshot', 'git ls-files failed for the project root:', err);
+		return { files: [], incomplete: [''] };
 	}
+
+	// Find and scan nested git repos — separate repositories living inside
+	// the project (e.g. a theme extracted into its own repo). The parent
+	// repo's `git ls-files --exclude-standard` skips these because git treats
+	// a nested repo as a single gitlink entry (or excludes it entirely when
+	// it's listed in the parent's .gitignore). Without this step, files
+	// inside nested repos are invisible to the snapshot system, so AI
+	// changes to them never appear in the checkpoint banner.
+	const nested = await findAndScanNestedRepos(dirPath);
+
+	const allFiles = [...files, ...nested.files];
+	debug.log('snapshot', `Git scan found ${allFiles.length} files (${files.length} outer, ${nested.files.length} nested)`);
+	return { files: allFiles, incomplete: nested.incomplete };
 }
 
 /**
- * Run `git ls-files -co --exclude-standard` in a single git repo and return
+ * Run `git ls-files -z -co --exclude-standard` in a single git repo and return
  * absolute paths. Used for both the outer repo and nested repos.
+ *
+ * Throws when git cannot answer. An empty list would be indistinguishable from
+ * a repository whose every file was just deleted.
  */
 async function scanSingleGitRepo(dirPath: string): Promise<string[]> {
-	try {
-		const result = await execGit(['ls-files', '-co', '--exclude-standard'], dirPath, 60_000);
-		if (result.exitCode !== 0) return [];
-
-		const files: string[] = [];
-		for (const line of result.stdout.split('\n')) {
-			const relativePath = line.trim();
-			if (!relativePath) continue;
-
-			// Skip always-excluded directories
-			const firstSegment = relativePath.split('/')[0];
-			if (ALWAYS_EXCLUDE_DIRS.has(firstSegment)) continue;
-
-			// Skip directory entries — git emits nested repos as a single
-			// entry with a trailing slash (e.g. `theme/`). These are handled
-			// by findAndScanNestedRepos, not here.
-			if (relativePath.endsWith('/')) continue;
-
-			files.push(path.join(dirPath, relativePath));
-		}
-		return files;
-	} catch (err) {
-		debug.warn('snapshot', `git ls-files failed for ${dirPath}:`, err);
-		return [];
+	// -z: without it git C-quotes any path with a non-ASCII byte
+	// ("caf\303\251.ts"), which then names no file on disk.
+	const result = await execGit(['ls-files', '-z', '-co', '--exclude-standard'], dirPath, 60_000);
+	if (result.exitCode !== 0) {
+		throw new Error(`git ls-files exited ${result.exitCode}: ${result.stderr.trim()}`);
 	}
+
+	const files: string[] = [];
+	for (const relativePath of result.stdout.split('\0')) {
+		if (!relativePath) continue;
+
+		// Skip always-excluded directories
+		const firstSegment = relativePath.split('/')[0];
+		if (ALWAYS_EXCLUDE_DIRS.has(firstSegment)) continue;
+
+		// Skip directory entries — git emits nested repos as a single
+		// entry with a trailing slash (e.g. `theme/`). These are handled
+		// by findAndScanNestedRepos, not here.
+		if (relativePath.endsWith('/')) continue;
+
+		files.push(path.join(dirPath, relativePath));
+	}
+	return files;
+}
+
+/** A directory as an `incomplete` entry: project-relative, trailing slash. */
+function incompleteEntry(rootPath: string, dirPath: string): string {
+	const relative = path.relative(rootPath, dirPath).replace(/\\/g, '/');
+	return relative ? `${relative}/` : '';
 }
 
 /**
@@ -113,12 +161,18 @@ async function scanSingleGitRepo(dirPath: string): Promise<string[]> {
  * is then scanned with its own `git ls-files --exclude-standard`, which applies
  * that repo's .gitignore rules.
  */
-async function findAndScanNestedRepos(rootPath: string): Promise<string[]> {
+async function findAndScanNestedRepos(rootPath: string): Promise<SnapshotScan> {
 	const files: string[] = [];
+	const incomplete: string[] = [];
 	for (const repoPath of await findNestedRepoPaths(rootPath)) {
-		files.push(...await scanSingleGitRepo(repoPath));
+		try {
+			files.push(...await scanSingleGitRepo(repoPath));
+		} catch (err) {
+			debug.warn('snapshot', `git ls-files failed for nested repo ${repoPath}:`, err);
+			incomplete.push(incompleteEntry(rootPath, repoPath));
+		}
 	}
-	return files;
+	return { files, incomplete };
 }
 
 // ============================================================================
@@ -304,58 +358,84 @@ class GitignoreFilter {
 /**
  * Scan directory manually, parsing .gitignore files at each level.
  */
-async function scanWithGitignoreParsing(projectPath: string): Promise<string[]> {
+async function scanWithGitignoreParsing(
+	projectPath: string,
+	options: SnapshotScanOptions
+): Promise<SnapshotScan> {
 	const files: string[] = [];
+	const incomplete: string[] = [];
 	const filter = new GitignoreFilter();
 
 	// Load root .gitignore
 	await filter.loadFromFile(path.join(projectPath, '.gitignore'), '');
 
 	const scan = async (currentPath: string): Promise<void> => {
+		let entries: Dirent[];
 		try {
-			const entries = await fs.readdir(currentPath, { withFileTypes: true });
-			const relativeDir = path.relative(projectPath, currentPath).replace(/\\/g, '/');
-
-			// Load .gitignore in this directory (if not root - root already loaded)
-			if (relativeDir) {
-				await filter.loadFromFile(path.join(currentPath, '.gitignore'), relativeDir);
-			}
-
-			for (const entry of entries) {
-				const fullPath = path.join(currentPath, entry.name);
-				const relativePath = path.relative(projectPath, fullPath).replace(/\\/g, '/');
-
-				// Always exclude certain directories
-				if (ALWAYS_EXCLUDE_DIRS.has(entry.name)) continue;
-
-				if (entry.isDirectory()) {
-					// Check if this is a nested git repo — scan it independently
-					// and bypass the .gitignore filter so files inside a
-					// gitignored nested repo are still tracked.
-					try {
-						await fs.access(path.join(fullPath, '.git'));
-						const nestedFiles = await scanSingleGitRepo(fullPath);
-						files.push(...nestedFiles);
-						continue;
-					} catch {
-						// Not a git repo — apply gitignore filter and recurse
-					}
-
-					if (!filter.isIgnored(relativePath, true)) {
-						await scan(fullPath);
-					}
-				} else if (entry.isFile()) {
-					if (!filter.isIgnored(relativePath, false)) {
-						files.push(fullPath);
-					}
-				}
-			}
+			entries = await fs.readdir(currentPath, { withFileTypes: true });
 		} catch (err) {
 			debug.warn('snapshot', `Could not read directory ${currentPath}:`, err);
+			incomplete.push(incompleteEntry(projectPath, currentPath));
+			return;
+		}
+
+		const relativeDir = path.relative(projectPath, currentPath).replace(/\\/g, '/');
+		const names = entries.map((entry) => entry.name);
+
+		// A directory that declares itself generated (a virtualenv, a cache
+		// with CACHEDIR.TAG) is skipped whole, whatever it is called.
+		if (options.pruneGenerated && relativeDir && hasGeneratedSignature(names)) return;
+
+		// Load .gitignore in this directory (if not root - root already loaded)
+		if (relativeDir) {
+			await filter.loadFromFile(path.join(currentPath, '.gitignore'), relativeDir);
+		}
+
+		for (const entry of entries) {
+			const fullPath = path.join(currentPath, entry.name);
+			const relativePath = path.relative(projectPath, fullPath).replace(/\\/g, '/');
+
+			// Always exclude certain directories
+			if (ALWAYS_EXCLUDE_DIRS.has(entry.name)) continue;
+
+			if (entry.isDirectory()) {
+				// Check if this is a nested git repo — scan it independently
+				// and bypass the .gitignore filter so files inside a
+				// gitignored nested repo are still tracked.
+				let isNestedRepo = false;
+				try {
+					await fs.access(path.join(fullPath, '.git'));
+					isNestedRepo = true;
+				} catch {
+					// Not a git repo — apply gitignore filter and recurse
+				}
+				if (isNestedRepo) {
+					try {
+						files.push(...await scanSingleGitRepo(fullPath));
+					} catch (err) {
+						debug.warn('snapshot', `git ls-files failed for nested repo ${fullPath}:`, err);
+						incomplete.push(incompleteEntry(projectPath, fullPath));
+					}
+					continue;
+				}
+
+				if (options.pruneGenerated && (isIgnoredName(entry.name) || isMarkedOutputDir(entry.name, names))) {
+					continue;
+				}
+
+				if (!filter.isIgnored(relativePath, true)) {
+					await scan(fullPath);
+				}
+			} else if (entry.isFile()) {
+				if (options.pruneGenerated && isIgnoredName(entry.name)) continue;
+				if (!filter.isIgnored(relativePath, false)) {
+					files.push(fullPath);
+				}
+			}
 		}
 	};
 
 	await scan(projectPath);
 	debug.log('snapshot', `Manual scan found ${files.length} files`);
-	return files;
+	return { files, incomplete };
 }
