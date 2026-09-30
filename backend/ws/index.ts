@@ -39,6 +39,7 @@ import { integrationsRouter } from './integrations';
 import { skillsRouter } from './skills';
 import { subagentsRouter } from './subagents';
 import { instructionsRouter } from './instructions';
+import { projectArtifactsRouter } from './project-artifacts';
 import { permissionsRouter } from './permissions';
 import { profilesRouter } from './profiles';
 import { artifactsRouter } from './artifacts';
@@ -111,6 +112,9 @@ export const wsRouter = createRouter()
 	.merge(subagentsRouter)
 	.merge(instructionsRouter)
 	.merge(permissionsRouter)
+
+	// The active project's own artifacts (`.agents/`, `.claude/`, AGENTS.md, …)
+	.merge(projectArtifactsRouter)
 
 	// Profiles (reusable artifact bundles activated per-session)
 	.merge(profilesRouter)

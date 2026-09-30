@@ -36,6 +36,7 @@ import { emptyGenerationError } from '../../structured-helpers';
 import { getEnabledMcpServers, getAllowedMcpTools } from '../../../mcp';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge, ensureClaudeProjectPlugin, buildProjectPromptContext } from '$backend/artifacts/project';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed, hasAnyRestriction, syncPermissions } from '$backend/permissions';
 import type { AIEngine, EngineQueryOptions } from '../../types';
@@ -181,6 +182,25 @@ export class ClaudeCodeEngine implements AIEngine {
       // equivalent — the PreToolUse hook below is the authoritative enforcement.
       await syncPermissions('claude');
 
+      // The repository's own artifacts Claude doesn't read natively (it reads
+      // `.claude/*` and CLAUDE.md itself via settingSources). All three ride
+      // per-query options, so nothing is written into the repo or into the
+      // isolated config dir another session shares:
+      //   - skills (e.g. `.agents/skills`) → a Clopen-owned local plugin;
+      //   - subagents (e.g. `.agents/agents`) → the SDK `agents` option;
+      //   - AGENTS.md + the Clopen-only project block → the appended system prompt.
+      const projectBridge = await resolveProjectBridge('claude', resolvedProjectPath, options.mcpContext?.projectId);
+      const projectPlugin = await ensureClaudeProjectPlugin(projectBridge);
+      const projectInstructions = buildProjectPromptContext(projectBridge, { instructions: true });
+      const projectAgents = projectBridge.subagents.length > 0
+        ? Object.fromEntries(projectBridge.subagents.map(sub => [sub.slug, {
+          description: sub.description || sub.name,
+          prompt: sub.prompt,
+          ...(sub.tools && { tools: sub.tools }),
+          ...(sub.model && { model: sub.model })
+        }]))
+        : undefined;
+
       // Resolve the effective permission policy once per stream. Enforcement
       // lives in the PreToolUse hook, NOT in canUseTool: under
       // permissionMode 'bypassPermissions' the CLI auto-approves a tool call
@@ -229,8 +249,14 @@ export class ClaudeCodeEngine implements AIEngine {
         allowDangerouslySkipPermissions: true,
         cwd: resolvedProjectPath,
         env: getEngineEnv(accountId, options.gitIdentityEnv),
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: projectInstructions
+          ? { type: "preset", preset: "claude_code", append: projectInstructions }
+          : { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
+        // The plugin carries skills only; its MCP discovery is off because
+        // project MCP servers come through Clopen's trust-gated bridge.
+        ...(projectPlugin && { plugins: [{ type: 'local' as const, path: projectPlugin, skipMcpDiscovery: true }] }),
+        ...(projectAgents && { agents: projectAgents }),
         forkSession: true,
         // Reasoning level → thinking/effort (see thinkingConfig above). Adaptive
         // thinking with summarized display keeps Opus 4.6+ emitting visible

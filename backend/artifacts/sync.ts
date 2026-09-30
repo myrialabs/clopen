@@ -77,7 +77,7 @@ async function folderInSync(sourceDir: string, destDir: string): Promise<boolean
 }
 
 /** Mirror one canonical folder into a destination dir under `<slug>/`, skipping the copy when it is already current. */
-async function mirrorFolder(sourceDir: string, destDir: string, slug: string): Promise<void> {
+export async function mirrorFolder(sourceDir: string, destDir: string, slug: string): Promise<void> {
 	if (!(await pathExists(sourceDir))) return;
 	const dest = join(destDir, slug);
 	if (await folderInSync(sourceDir, dest)) return;

@@ -185,18 +185,14 @@
 </script>
 
 <div class="space-y-6">
-	<div class="flex items-start justify-between gap-3">
-		{#if showHeader}
-			<div>
-				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Subagents</h3>
-				<p class="text-sm text-slate-600 dark:text-slate-500">
-					Specialized agents with their own tools, model, and instructions.
-				</p>
-			</div>
-		{:else}
-			<div></div>
-		{/if}
-	</div>
+	{#if showHeader}
+		<div>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Subagents</h3>
+			<p class="text-sm text-slate-600 dark:text-slate-500">
+				Specialized agents with their own tools, model, and instructions.
+			</p>
+		</div>
+	{/if}
 
 	{#if installed.length === 0}
 		<div class="flex flex-col items-center gap-2 py-10 text-center">

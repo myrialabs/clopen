@@ -39,7 +39,7 @@ export interface FetchedSkill {
 }
 
 const PAGE_SIZE = 30;
-const COMMUNITY_INDEX_URL = 'https://majiayu000.github.io/claude-skill-registry-core/search-index-lite.json';
+const COMMUNITY_INDEX_URL = 'https://majiayu000.github.io/claude-skill-registry/search-index-lite.json';
 
 /**
  * A lite-index entry. The index uses full keys (`name`/`description`/`install`/

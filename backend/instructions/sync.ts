@@ -1,13 +1,11 @@
 /**
  * Engine sync for Instructions — writes the managed instruction block into each
  * engine's memory file as a marker-region (`<!-- CLOPEN:INSTRUCTIONS:START … -->`).
- * Global scope always applies; project scope applies to the repo memory file
- * when a project is being streamed.
+ * Global scope only — see {@link syncInstructions} for where project
+ * instructions go.
  *
  * Ownership is MARKER-REGION: only the delimited block is Clopen's; the rest of
  * `CLAUDE.md` / `AGENTS.md` (hand-written by the user) is preserved verbatim.
- * Writing into a project's `CLAUDE.md` touches the repo working tree, so callers
- * pass the repo path explicitly — this is never silent guesswork.
  *
  * Never throws — a stream never breaks because instructions couldn't sync.
  */
@@ -36,13 +34,14 @@ export function buildInstructionsPromptContext(): string {
 }
 
 /**
- * Sync the global (and, when a project is provided, project) instruction block
- * into one engine's memory file(s).
+ * Sync the global instruction block into one engine's memory file.
+ *
+ * The per-project block is deliberately NOT written anywhere: it is the
+ * Clopen-only layer (never committed), delivered per session by the project
+ * bridge (`backend/artifacts/project/bridge.ts`). The committed project layer is
+ * the managed block of the repo's `AGENTS.md`, edited explicitly from Settings.
  */
-export async function syncInstructions(
-	engine: ArtifactEngine,
-	project?: { id: string; path: string }
-): Promise<void> {
+export async function syncInstructions(engine: ArtifactEngine): Promise<void> {
 	try {
 		// Global scope → engine's isolated global memory file, but ONLY for engines
 		// that actually read one. Writing `AGENTS.md` into Cline's or Cursor's
@@ -57,23 +56,7 @@ export async function syncInstructions(
 			if (globalTarget) await writeManagedBlock(globalTarget, globalBlock, MARKERS);
 		}
 
-		// Project scope → repo memory file (touches the working tree).
-		if (project) {
-			const row = instructionQueries.getForProject(project.id);
-			const projectTarget = resolveArtifact('instruction', { engine, scope: 'project', projectPath: project.path }).locateEffective({
-				engine,
-				scope: 'project',
-				projectPath: project.path
-			});
-			const projectBlock = row && row.is_enabled === 1 ? row.content : '';
-			// Only write when there is a managed block to add/update or a prior one to
-			// clear — avoids creating an empty repo memory file for nothing.
-			if (projectTarget && (projectBlock || row)) {
-				await writeManagedBlock(projectTarget, projectBlock, MARKERS);
-			}
-		}
-
-		debug.log('instructions', `📝 Synced instructions → ${engine}${project ? ' (+project)' : ''}`);
+		debug.log('instructions', `📝 Synced instructions → ${engine}`);
 	} catch (error) {
 		debug.warn('instructions', `⚠️ Instruction sync for ${engine} failed (continuing without):`, error);
 	}

@@ -32,6 +32,7 @@ import { SERVER_ENV } from '../../utils/env';
 import type { McpServerRow } from '$backend/database/queries';
 import type { EngineType } from '$shared/types/unified';
 import type { ResolvedExternalServer } from './types';
+import { getTrustedProjectServers, knownProjectNamespaces } from './project';
 
 /**
  * Codex `mcp_servers.<name>` config, flattened by the SDK to `--config` flags.
@@ -54,6 +55,28 @@ type CodexMcpServerConfig = {
  */
 function bridgeUrl(slug: string, engine: EngineType): string {
 	return `http://localhost:${SERVER_ENV.PORT}/mcp/ext/${slug}?engine=${engine}`;
+}
+
+/** Loopback URL of the per-project bridge for a server in `.agents/mcp.json`. */
+function projectBridgeUrl(projectId: string, name: string, engine: EngineType): string {
+	return `http://localhost:${SERVER_ENV.PORT}/mcp/proj/${encodeURIComponent(projectId)}/${encodeURIComponent(name)}?engine=${engine}`;
+}
+
+/**
+ * Every bridge an engine should receive for this stream: the enabled installed
+ * servers (profile-filtered) plus, when the stream has a project, the servers of
+ * its APPROVED `.agents/mcp.json`. Project servers are not profile-filtered —
+ * they belong to the repository, not to a bundle — and never shadow an
+ * installed server that happens to share the namespace.
+ */
+function bridgesFor(engine: EngineType, profileFilter?: Set<string>, projectId?: string | null): { namespace: string; url: string }[] {
+	const out = getEnabledExternalServers(profileFilter).map(s => ({ namespace: s.namespace, url: bridgeUrl(s.slug, engine) }));
+	const taken = new Set(out.map(b => b.namespace));
+	for (const s of getTrustedProjectServers(projectId)) {
+		if (taken.has(s.namespace)) continue;
+		out.push({ namespace: s.namespace, url: projectBridgeUrl(s.projectId, s.name, engine) });
+	}
+	return out;
 }
 
 /** The service-token bearer header every engine→bridge hop carries. */
@@ -145,28 +168,47 @@ export function remoteNeedsOAuth(s: ResolvedExternalServer): boolean {
 // ---------------------------------------------------------------------------
 
 /** Claude Agent SDK: Streamable-HTTP remote keyed by namespace. */
-export function getClaudeExternalMcpConfig(profileFilter?: Set<string>): Record<string, McpServerConfig> {
+export function getClaudeExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, McpServerConfig> {
 	const out: Record<string, McpServerConfig> = {};
-	for (const s of getEnabledExternalServers(profileFilter)) {
-		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug, 'claude-code'), headers: serviceAuthHeaders() };
+	for (const b of bridgesFor('claude-code', profileFilter, projectId)) {
+		out[b.namespace] = { type: 'http', url: b.url, headers: serviceAuthHeaders() };
 	}
 	logBuilt('Claude', out);
 	return out;
 }
 
 /** Open Code: `McpRemoteConfig` pointing at the bridge proxy. */
-export function getOpenCodeExternalMcpConfig(profileFilter?: Set<string>): Record<string, McpRemoteConfig> {
+export function getOpenCodeExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, McpRemoteConfig> {
 	const out: Record<string, McpRemoteConfig> = {};
-	for (const s of getEnabledExternalServers(profileFilter)) {
-		out[s.namespace] = {
+	for (const b of bridgesFor('opencode', profileFilter, projectId)) {
+		out[b.namespace] = {
 			type: 'remote',
-			url: bridgeUrl(s.slug, 'opencode'),
+			url: b.url,
 			enabled: true,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: serviceAuthHeaders()
 		};
 	}
 	logBuilt('Open Code', out);
+	return out;
+}
+
+/**
+ * Open Code entries for the project's approved `.agents/mcp.json` ONLY. The
+ * server pool caches the installed-server config per scope, so project servers
+ * are layered on at spawn-assembly time instead (see opencode/server.ts).
+ */
+export function getOpenCodeProjectMcpConfig(projectId: string | null | undefined): Record<string, McpRemoteConfig> {
+	const out: Record<string, McpRemoteConfig> = {};
+	for (const s of getTrustedProjectServers(projectId)) {
+		out[s.namespace] = {
+			type: 'remote',
+			url: projectBridgeUrl(s.projectId, s.name, 'opencode'),
+			enabled: true,
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
+			headers: serviceAuthHeaders()
+		};
+	}
 	return out;
 }
 
@@ -179,26 +221,26 @@ export function getOpenCodeExternalMcpConfig(profileFilter?: Set<string>): Recor
  * The server is registered so interactive/known-tool flows work; this limit is
  * unchanged by the proxy.
  */
-export function getCodexExternalMcpConfig(profileFilter?: Set<string>): Record<string, CodexMcpServerConfig> {
+export function getCodexExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, CodexMcpServerConfig> {
 	const out: Record<string, CodexMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers(profileFilter)) {
-		out[s.namespace] = { url: bridgeUrl(s.slug, 'codex'), http_headers: serviceAuthHeaders() };
+	for (const b of bridgesFor('codex', profileFilter, projectId)) {
+		out[b.namespace] = { url: b.url, http_headers: serviceAuthHeaders() };
 	}
 	logBuilt('Codex', out);
 	return out;
 }
 
 /** Copilot: `MCPHTTPServerConfig` pointing at the bridge proxy. */
-export function getCopilotExternalMcpConfig(profileFilter?: Set<string>): Record<string, CopilotMcpServerConfig> {
+export function getCopilotExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, CopilotMcpServerConfig> {
 	const out: Record<string, CopilotMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers(profileFilter)) {
+	for (const b of bridgesFor('copilot', profileFilter, projectId)) {
 		// `tools: ['*']` makes the Copilot runtime expose ALL of the proxy's
 		// tools. Leaving it unset relies on the SDK's documented "undefined =
 		// all" default, which the bundled CLI does not honour for dynamically
 		// discovered servers — the tools never reach the model.
-		out[s.namespace] = {
+		out[b.namespace] = {
 			type: 'http',
-			url: bridgeUrl(s.slug, 'copilot'),
+			url: b.url,
 			tools: ['*'],
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			headers: serviceAuthHeaders()
@@ -210,20 +252,20 @@ export function getCopilotExternalMcpConfig(profileFilter?: Set<string>): Record
 
 /** Qwen Code: `CLIMcpServerConfig` Streamable-HTTP (`httpUrl`) at the bridge proxy. */
 /** Cursor: `McpServerConfig` (http variant) pointing at the bridge proxy. */
-export function getCursorExternalMcpConfig(profileFilter?: Set<string>): Record<string, CursorMcpServerConfig> {
+export function getCursorExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, CursorMcpServerConfig> {
 	const out: Record<string, CursorMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers(profileFilter)) {
-		out[s.namespace] = { type: 'http', url: bridgeUrl(s.slug, 'cursor'), headers: serviceAuthHeaders() };
+	for (const b of bridgesFor('cursor', profileFilter, projectId)) {
+		out[b.namespace] = { type: 'http', url: b.url, headers: serviceAuthHeaders() };
 	}
 	logBuilt('Cursor', out);
 	return out;
 }
 
-export function getQwenExternalMcpConfig(profileFilter?: Set<string>): Record<string, QwenMcpServerConfig> {
+export function getQwenExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, QwenMcpServerConfig> {
 	const out: Record<string, QwenMcpServerConfig> = {};
-	for (const s of getEnabledExternalServers(profileFilter)) {
-		out[s.namespace] = {
-			httpUrl: bridgeUrl(s.slug, 'qwen'),
+	for (const b of bridgesFor('qwen', profileFilter, projectId)) {
+		out[b.namespace] = {
+			httpUrl: b.url,
 			timeout: MCP_TOOL_CALL_TIMEOUT_MS,
 			trust: true,
 			headers: serviceAuthHeaders()
@@ -251,8 +293,8 @@ export function getQwenExternalMcpConfig(profileFilter?: Set<string>): Record<st
  * Returns null if the name doesn't belong to any enabled external server.
  */
 export function resolveExternalToolName(toolName: string): string | null {
-	for (const s of getEnabledExternalServers()) {
-		const ns = s.namespace;
+	const namespaces = [...getEnabledExternalServers().map(s => s.namespace), ...knownProjectNamespaces()];
+	for (const ns of namespaces) {
 		if (toolName.startsWith(`mcp__${ns}__`)) return toolName;
 		for (const sep of ['_', '-']) {
 			const prefix = `${ns}${sep}`;

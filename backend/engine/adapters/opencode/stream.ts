@@ -45,6 +45,8 @@ import {
 import { ensureClient, acquireServer, releaseServer, getDefaultServer, type ServerInstance } from './server';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge } from '$backend/artifacts/project';
+import { resolveOsPath } from '$backend/utils/paths';
 import { artifactFilter } from '$backend/profiles';
 import { buildOpenCodeInlineAgents } from '$backend/subagents';
 import { getOpenCodeProfileDisabledToolIds } from '$backend/mcp';
@@ -221,7 +223,20 @@ export class OpenCodeEngine implements AIEngine {
 		// server, different Profiles get isolated servers, concurrently.
 		const mcpProfileFilter = artifactFilter(profileId, 'mcp') ?? undefined;
 		const subagentFilter = artifactFilter(profileId, 'subagent') ?? undefined;
-		const inlineAgents = await buildOpenCodeInlineAgents(profileId);
+		// Repository artifacts Open Code doesn't read natively (it reads
+		// `.opencode/*`, `.agents/skills`, `.claude/skills` and AGENTS.md itself).
+		// Project subagents join the inline agents (an installed one wins a slug
+		// clash); the approved `.agents/mcp.json` joins MCP via `projectId`.
+		const projectBridge = await resolveProjectBridge('opencode', resolveOsPath(projectPath), options.mcpContext?.projectId);
+		const inlineAgents = {
+			...Object.fromEntries(projectBridge.subagents.map(sub => [sub.slug, {
+				description: sub.description || sub.name,
+				mode: 'subagent' as const,
+				prompt: sub.prompt,
+				...(sub.model ? { model: sub.model } : {})
+			}])),
+			...(await buildOpenCodeInlineAgents(profileId))
+		};
 		// The pool derives the key from the config it is about to spawn with, so a
 		// changed connector set, provider, credential or subagent prompt routes this
 		// stream to a server built from it — while any server still serving another
@@ -229,7 +244,7 @@ export class OpenCodeEngine implements AIEngine {
 		// stream id is what makes that safe: a held server is never reaped.
 		const holderId = options.mcpContext?.streamId;
 		const server = await acquireServer(
-			{ mcpProfileFilter, subagentFilter, inlineAgents, gitIdentityEnv: options.gitIdentityEnv },
+			{ mcpProfileFilter, subagentFilter, inlineAgents, gitIdentityEnv: options.gitIdentityEnv, projectId: options.mcpContext?.projectId ?? null },
 			holderId
 		);
 		run.server = server;
@@ -253,7 +268,7 @@ export class OpenCodeEngine implements AIEngine {
 			// so advertise the profile-scoped set PER-SESSION by prepending it as a
 			// leading context part each turn (authoritative for synthetic skills;
 			// advisory on top of the native command/agent dirs).
-			const artifactsContext = buildArtifactsPromptContext('opencode', profileId);
+			const artifactsContext = buildArtifactsPromptContext('opencode', profileId, projectBridge);
 			if (artifactsContext) {
 				promptParts.unshift({ type: 'text', text: artifactsContext });
 			}

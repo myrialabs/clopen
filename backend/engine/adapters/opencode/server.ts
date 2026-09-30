@@ -70,7 +70,7 @@ import { readdir, readFile, rename, stat } from 'fs/promises';
 import { createServer } from 'node:net';
 import type { OpencodeClient } from '@opencode-ai/sdk';
 import type { Subprocess } from 'bun';
-import { getOpenCodeMcpConfig, getEnabledServerNames, getEnabledToolsForServer } from '../../../mcp';
+import { getOpenCodeMcpConfig, getOpenCodeProjectMcpConfig, getEnabledServerNames, getEnabledToolsForServer } from '../../../mcp';
 import { engineQueries, settingsQueries } from '../../../database/queries';
 import { generateOpenCodeProviderConfig, parseCredentialMap } from './config';
 import type { OpenCodeInlineAgent } from '$backend/subagents';
@@ -155,6 +155,13 @@ export interface ServerConfigSpec {
 	 * every turn and the signature does not move, so no extra server is spawned.
 	 */
 	gitIdentityEnv?: Record<string, string>;
+	/**
+	 * Project whose approved `.agents/mcp.json` servers join the MCP set. Folded
+	 * in at assembly time (not in the per-scope cache), so it changes the process
+	 * signature but not the data dir — a project without such a file resolves to
+	 * the same server as before.
+	 */
+	projectId?: string | null;
 }
 
 /** Everything needed to spawn a server, plus the key derived from it. */
@@ -643,10 +650,13 @@ async function resolveConfig(spec: ServerConfigSpec, scopeKey: string): Promise<
 function assembleConfigContent(
 	cached: CachedConfig,
 	enabledProviders: string[],
-	inlineAgents?: Record<string, OpenCodeInlineAgent>
+	inlineAgents?: Record<string, OpenCodeInlineAgent>,
+	projectMcp: Record<string, unknown> = {}
 ): string {
 	const mergedConfig: Record<string, unknown> = {};
-	if (Object.keys(cached.mcpConfig).length > 0) mergedConfig.mcp = cached.mcpConfig;
+	// Project servers never shadow an installed server of the same namespace.
+	const mcp = { ...projectMcp, ...cached.mcpConfig };
+	if (Object.keys(mcp).length > 0) mergedConfig.mcp = mcp;
 	if (enabledProviders.length > 0) mergedConfig.enabled_providers = enabledProviders;
 	if (inlineAgents && Object.keys(inlineAgents).length > 0) mergedConfig.agent = inlineAgents;
 	if (Object.keys(cached.providerSection).length > 0) mergedConfig.provider = cached.providerSection;
@@ -666,7 +676,7 @@ async function resolvePlan(spec: ServerConfigSpec): Promise<SpawnPlan> {
 	// Cheap and DB-derived, so it is resolved per call rather than cached — the
 	// models.dev catalog it reads lives in `settings`, which bumps no revision.
 	const providerConfig = generateOpenCodeProviderConfig();
-	const configContent = assembleConfigContent(config, providerConfig.enabledProviders, spec.inlineAgents);
+	const configContent = assembleConfigContent(config, providerConfig.enabledProviders, spec.inlineAgents, getOpenCodeProjectMcpConfig(spec.projectId));
 	// Sorted so the key order the builder happens to emit is not mistaken for a
 	// different identity.
 	const gitIdentityEnv = spec.gitIdentityEnv ?? {};

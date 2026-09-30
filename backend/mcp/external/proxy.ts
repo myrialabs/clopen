@@ -40,6 +40,7 @@ import { debug } from '$shared/utils/logger';
 import { mcpServerQueries, permissionSetQueries, profileQueries } from '$backend/database/queries';
 import type { EngineType } from '$shared/types/unified';
 import { resolveServerRow } from './config';
+import { requireTrustedProjectServer, type ResolvedProjectServer } from './project';
 import { parseToolOverrides, isToolExposed } from './tools';
 // Import the PURE resolver (no `$backend/mcp` dependency) to avoid an
 // mcp → permissions/service → mcp import cycle.
@@ -54,7 +55,7 @@ const UPSTREAM_CONNECT_TIMEOUT_MS = 30_000;
  * subprocess or remote HTTP/SSE). OAuth/API-key headers come from
  * `resolveServerRow`, which injects the Clopen-managed bearer.
  */
-async function connectUpstream(s: ResolvedExternalServer): Promise<Client> {
+async function connectUpstream(s: ResolvedExternalServer & { cwd?: string }): Promise<Client> {
 	const client = new Client({ name: 'clopen-proxy', version: '1.0.0' }, { capabilities: {} });
 
 	if (s.transport === 'stdio') {
@@ -65,6 +66,8 @@ async function connectUpstream(s: ResolvedExternalServer): Promise<Client> {
 			command: s.command,
 			args: s.args,
 			env: { ...getDefaultEnvironment(), ...s.env },
+			// Project servers (`.agents/mcp.json`) start inside their repository.
+			...(s.cwd ? { cwd: s.cwd } : {}),
 			stderr: 'ignore'
 		});
 		await client.connect(transport, { timeout: UPSTREAM_CONNECT_TIMEOUT_MS });
@@ -185,20 +188,46 @@ export async function createExternalProxyServer(slug: string, engine?: EngineTyp
 		throw new Error(`External MCP server is disabled: ${slug}`);
 	}
 
-	const resolved = resolveServerRow(row);
-	const overrides = parseToolOverrides(row.tool_overrides);
-	const client = await connectUpstream(resolved);
-
-	// Global tool-permission policy for this engine (Settings → Permissions).
-	// MCP tools carry no permission hook on some engines (e.g. OpenCode only gates
+	// Global tool-permission policy for this engine (Settings → Permissions). MCP
+	// tools carry no permission hook on some engines (e.g. OpenCode only gates
 	// edit/bash/webfetch), so the bridge is the single reliable enforcement point
-	// for MCP deny/allow across every engine — it filters the tool out before the
-	// engine ever sees it. Rules are matched against the canonical engine-facing
-	// name `mcp__<namespace>__<tool>` (the identity the Permissions UI uses).
-	// Global scope only: the bridge has no session/project context.
+	// for MCP deny/allow across every engine. Global scope only: this bridge has
+	// no session/project context.
 	const permissions = engine
 		? mergePermissions(pickEngineSet(permissionSetQueries.getGlobal(), engine), undefined)
 		: null;
+	return buildProxyServer(resolveServerRow(row), parseToolOverrides(row.tool_overrides), engine, permissions);
+}
+
+/**
+ * Proxy for one server of a project's approved `.agents/mcp.json` — the
+ * `/mcp/proj/<projectId>/<name>` bridge. Trust is re-checked here, at connect
+ * time: a file edited after the engine received its config is refused rather
+ * than run. Project-scoped permission rules apply on top of the global ones,
+ * because unlike the installed-server bridge this one knows its project.
+ */
+export async function createProjectProxyServer(projectId: string, name: string, engine?: EngineType): Promise<ExternalProxy> {
+	const resolved = requireTrustedProjectServer(projectId, name);
+	const permissions = engine
+		? mergePermissions(
+			pickEngineSet(permissionSetQueries.getGlobal(), engine),
+			pickEngineSet(permissionSetQueries.getForProject(projectId), engine)
+		)
+		: null;
+	return buildProxyServer(resolved, {}, engine, permissions);
+}
+
+async function buildProxyServer(
+	resolved: ResolvedExternalServer | ResolvedProjectServer,
+	overrides: ReturnType<typeof parseToolOverrides>,
+	engine: EngineType | undefined,
+	permissions: ReturnType<typeof mergePermissions> | null
+): Promise<ExternalProxy> {
+	const slug = resolved.slug;
+	const client = await connectUpstream(resolved);
+
+	// Rules match the canonical engine-facing name `mcp__<namespace>__<tool>`
+	// (the identity the Permissions UI uses).
 	const permitted = (toolName: string): boolean =>
 		!permissions || isToolAllowed(permissions, `mcp__${resolved.namespace}__${toolName}`);
 
@@ -264,6 +293,31 @@ async function withUpstreamClient<T>(slug: string, fn: (client: Client) => Promi
 	} finally {
 		client.close().catch(error => debug.warn('mcp', `Introspect ${slug}: error closing client:`, error));
 	}
+}
+
+/** Same as {@link withUpstreamClient} for a project server (trust-checked). */
+async function withProjectUpstreamClient<T>(projectId: string, name: string, fn: (client: Client) => Promise<T>): Promise<T> {
+	const client = await connectUpstream(requireTrustedProjectServer(projectId, name));
+	try {
+		return await fn(client);
+	} finally {
+		client.close().catch(error => debug.warn('mcp', `Project MCP ${name}: error closing client:`, error));
+	}
+}
+
+/** Sanitized tools of a trusted project server — for the in-process engines (Pi, Cline). */
+export async function listProjectServerTools(projectId: string, name: string): Promise<Tool[]> {
+	return withProjectUpstreamClient(projectId, name, async (client) => (await listAllToolsRaw(client)).map(sanitizeTool));
+}
+
+/** Call one tool of a trusted project server — for the in-process engines (Pi, Cline). */
+export async function callProjectServerTool(projectId: string, name: string, toolName: string, args: unknown): Promise<unknown> {
+	return withProjectUpstreamClient(projectId, name, async (client) =>
+		client.request(
+			{ method: 'tools/call', params: { name: toolName, arguments: (args ?? {}) as Record<string, unknown> } },
+			CompatibilityCallToolResultSchema
+		)
+	);
 }
 
 /** List a server's sanitized tools live (unfiltered) — for the Settings tool panel. */

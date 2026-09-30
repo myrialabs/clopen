@@ -28,6 +28,7 @@ import { EngineRuns } from '../run-registry';
 import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge } from '$backend/artifacts/project';
 import { resolvePermissionsFromDb, isToolAllowed, type ResolvedPermissions } from '$backend/permissions';
 import { handleStreamError, buildSessionError } from './error-handler';
 import { fetchCopilotModels } from './models';
@@ -279,13 +280,15 @@ export class CopilotEngine implements AIEngine {
 		// the authoritative per-session signal (synthetic commands/subagents are
 		// stripped from the global file; the native skill mirror still loads the
 		// filtered folders).
-		const artifactsContext = buildArtifactsPromptContext('copilot', profileId);
+		const resolvedProjectPath = resolveOsPath(projectPath);
+		// Copilot reads `.github/*`, `.agents/skills`, `.claude/skills` and
+		// AGENTS.md itself; the rest of the repo's artifacts join the preamble.
+		const projectBridge = await resolveProjectBridge('copilot', resolvedProjectPath, options.mcpContext?.projectId);
+		const artifactsContext = buildArtifactsPromptContext('copilot', profileId, projectBridge);
 
 		// Resolve the permission policy once per stream; onPermissionRequest below
 		// enforces it (Copilot otherwise approves every tool via approveAll).
 		const permissions = resolvePermissionsFromDb('copilot', options.mcpContext?.projectId, profileId);
-
-		const resolvedProjectPath = resolveOsPath(projectPath);
 		const state = createStreamConverterState('', modelId);
 
 		// Buffered queue between async event handler and the for-await consumer.

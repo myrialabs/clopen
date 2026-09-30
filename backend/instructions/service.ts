@@ -1,8 +1,10 @@
 /**
  * Instruction service — reads/writes the Clopen-managed instruction block for
- * the single global scope and per project. The content is materialized into each
- * engine's memory file as a MARKER-REGION (see `sync.ts`), so hand-written parts
- * of `CLAUDE.md` / `AGENTS.md` are never touched.
+ * the single global scope and per project. The global block is materialized into
+ * each engine's memory file as a MARKER-REGION (see `sync.ts`), so hand-written
+ * parts of `CLAUDE.md` / `AGENTS.md` are never touched. The per-project block is
+ * the Clopen-only layer: never committed, delivered per session by the project
+ * bridge (`backend/artifacts/project/bridge.ts`).
  *
  * This is distinct from Skills/Commands/Subagents (which are discrete
  * installable artifacts): Instructions is one managed block of prose per scope.

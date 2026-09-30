@@ -59,7 +59,7 @@ export {
 export * from './internal/servers';
 
 // Remote MCP HTTP bridge (serves internal tools + external proxies to non-Claude engines)
-export { handleMcpRequest, handleExternalMcpRequest, closeMcpServer } from './internal/remote-server';
+export { handleMcpRequest, handleExternalMcpRequest, handleProjectMcpRequest, closeMcpServer } from './internal/remote-server';
 
 // Project context service for MCP tool handlers
 export { projectContextService } from './internal/project-context';
@@ -75,8 +75,10 @@ export {
 
 // External catalog + types (used by the WS layer and Settings → MCP)
 export { listRegistryServers, mapRegistryServer } from './external/registry-client';
-export { getEnabledExternalServers, resolveServerRow, remoteNeedsOAuth, getEngineConfigsForServer } from './external/config';
-export { listExternalServerTools, callExternalServerTool } from './external/proxy';
+export { getEnabledExternalServers, resolveServerRow, remoteNeedsOAuth, getEngineConfigsForServer, getOpenCodeProjectMcpConfig } from './external/config';
+export { listExternalServerTools, callExternalServerTool, listProjectServerTools, callProjectServerTool } from './external/proxy';
+export { getTrustedProjectServers, projectNamespace, readProjectMcpFile } from './external/project';
+export type { ResolvedProjectServer } from './external/project';
 export { parseToolOverrides, resolveToolExposure, pruneToolOverrides, MCP_ENGINES } from './external/tools';
 export type { ToolExposure } from './external/tools';
 export { probeServer } from './external/probe';
@@ -108,11 +110,14 @@ export type { ParsedMcpServer, ParsedField, ParseResult } from './external/parse
 export async function getEnabledMcpServers(context?: McpExecutionContext, profileFilter?: Set<string>): Promise<Record<string, McpServerConfig>> {
 	return {
 		...(await internal.getEnabledMcpServers(context, profileFilter)),
-		...external.getClaudeExternalMcpConfig(profileFilter)
+		...external.getClaudeExternalMcpConfig(profileFilter, context?.projectId)
 	};
 }
 
-/** Open Code MCP config: internal `clopen-mcp` remote bridge + external servers. */
+/**
+ * Open Code MCP config: internal `clopen-mcp` remote bridge + external servers.
+ * Project servers are NOT included — see {@link getOpenCodeProjectMcpConfig}.
+ */
 export function getOpenCodeMcpConfig(profileFilter?: Set<string>) {
 	return {
 		...internal.getOpenCodeMcpConfig(profileFilter),
@@ -124,7 +129,7 @@ export function getOpenCodeMcpConfig(profileFilter?: Set<string>) {
 export function getCodexMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
 		...internal.getCodexMcpConfig(profileFilter, context),
-		...external.getCodexExternalMcpConfig(profileFilter)
+		...external.getCodexExternalMcpConfig(profileFilter, context?.projectId)
 	};
 }
 
@@ -132,7 +137,7 @@ export function getCodexMcpConfig(profileFilter?: Set<string>, context?: McpExec
 export function getCopilotMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
 		...internal.getCopilotMcpConfig(profileFilter, context),
-		...external.getCopilotExternalMcpConfig(profileFilter)
+		...external.getCopilotExternalMcpConfig(profileFilter, context?.projectId)
 	};
 }
 
@@ -140,7 +145,7 @@ export function getCopilotMcpConfig(profileFilter?: Set<string>, context?: McpEx
 export function getCursorMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
 		...internal.getCursorMcpConfig(profileFilter, context),
-		...external.getCursorExternalMcpConfig(profileFilter)
+		...external.getCursorExternalMcpConfig(profileFilter, context?.projectId)
 	};
 }
 
@@ -148,7 +153,7 @@ export function getCursorMcpConfig(profileFilter?: Set<string>, context?: McpExe
 export function getQwenMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
 		...internal.getQwenMcpConfig(profileFilter, context),
-		...external.getQwenExternalMcpConfig(profileFilter)
+		...external.getQwenExternalMcpConfig(profileFilter, context?.projectId)
 	};
 }
 

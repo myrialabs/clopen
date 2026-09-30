@@ -36,6 +36,9 @@ import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
+import { resolveProjectBridge, buildProjectPromptContext } from '$backend/artifacts/project';
+import { homedir } from 'node:os';
+import { join, sep } from 'node:path';
 import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
@@ -165,6 +168,13 @@ export class PiEngine implements AIEngine {
 		await syncSkills('pi', profileId);
 		await syncEngineArtifacts('pi', profileId);
 
+		// Repository artifacts Pi doesn't read natively (it reads `.pi/*`,
+		// `.agents/skills` and AGENTS.md itself): skills go in as extra skill
+		// paths, instructions as an appended system prompt, subagents join the
+		// dispatch tool below.
+		const projectBridge = await resolveProjectBridge('pi', resolvedProjectPath, options.mcpContext?.projectId);
+		const projectInstructions = buildProjectPromptContext(projectBridge, { instructions: true });
+
 		// ── Permissions (enforced at the `tool_call` extension hook) ──
 		const permissions = resolvePermissionsFromDb('pi', options.mcpContext?.projectId, profileId);
 		const permissionBlocker = (pi: ExtensionAPI) => {
@@ -194,13 +204,24 @@ export class PiEngine implements AIEngine {
 		// Subagent dispatch — Pi has no native Agent tool, so materialising the
 		// "Available Subagents" preamble isn't enough; expose a tool that actually
 		// spawns a sub-session with the chosen subagent's system prompt.
-		const subagents: SubagentInfo[] = subagentQueries.getEnabled().map((s) => ({ slug: s.slug, name: s.name, description: s.description }));
+		// Project subagents Pi can't read natively (`.agents/agents`, `.claude/agents`,
+		// …) join the same dispatch tool; an installed subagent wins a slug clash.
+		const installedSubagents = subagentQueries.getEnabled();
+		const installedSlugs = new Set(installedSubagents.map((s) => s.slug));
+		const projectSubagents = new Map(projectBridge.subagents.filter((s) => !installedSlugs.has(s.slug)).map((s) => [s.slug, s]));
+		const subagents: SubagentInfo[] = [
+			...installedSubagents.map((s) => ({ slug: s.slug, name: s.name, description: s.description })),
+			...[...projectSubagents.values()].map((s) => ({ slug: s.slug, name: s.name, description: s.description })),
+		];
 		if (subagents.length > 0) {
 			const agentTool = createAgentDispatchTool({
 				subagents,
 				run: async (subagent, subPrompt, toolCallId, signal) => {
-					const md = (await readSubagentMd(subagent.slug)) ?? '';
-					const instructions = stripFrontmatter(md) || `You are the ${subagent.name} subagent. ${subagent.description}`;
+					const projectSubagent = projectSubagents.get(subagent.slug);
+					const md = projectSubagent ? '' : ((await readSubagentMd(subagent.slug)) ?? '');
+					const instructions = projectSubagent?.prompt
+						|| stripFrontmatter(md)
+						|| `You are the ${subagent.name} subagent. ${subagent.description}`;
 					// APPEND the subagent instructions to Pi's base coding prompt —
 					// replacing it wholesale strips the tool-use scaffolding and the
 					// sub-agent then produces nothing. Keep the sub-session bounded:
@@ -264,10 +285,21 @@ export class PiEngine implements AIEngine {
 		}
 
 		// ── Resource loader (discovers synced skills/prompts/AGENTS.md) ──
+		// Pi also scans the REAL `~/.agents/skills` (via $HOME, with no override),
+		// which leaks the user's personal CLI skills past Clopen's per-engine
+		// isolation. Drop anything loaded from there; project `.agents/skills`
+		// and Clopen's own synced dir are unaffected.
+		const userAgentsSkillsDir = join(process.env.HOME || homedir(), '.agents', 'skills') + sep;
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: resolvedProjectPath,
 			agentDir,
 			extensionFactories: [permissionBlocker],
+			...(projectBridge.skills.length > 0 && { additionalSkillPaths: projectBridge.skills.map((s) => s.skillMd) }),
+			...(projectInstructions && { appendSystemPrompt: [projectInstructions] }),
+			skillsOverride: (base) => ({
+				...base,
+				skills: base.skills.filter((skill) => !skill.filePath.startsWith(userAgentsSkillsDir)),
+			}),
 		});
 		await resourceLoader.reload();
 

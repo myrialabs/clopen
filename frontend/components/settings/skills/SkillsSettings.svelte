@@ -325,6 +325,8 @@
 	let installLoading = $state(false);
 	let installSaving = $state(false);
 	let installError = $state<string | null>(null);
+	/** Shown on the Browse tab when a skill's SKILL.md couldn't be loaded. */
+	let installWarning = $state<string | null>(null);
 
 	async function openInstall(skill: MarketplaceSkill) {
 		installTarget = skill;
@@ -333,6 +335,7 @@
 		inLicense = '';
 		inBody = '';
 		installError = null;
+		installWarning = null;
 		installLoading = true;
 		installOpen = true;
 		try {
@@ -342,7 +345,10 @@
 			inLicense = detail.license ?? '';
 			inBody = detail.body;
 		} catch (error) {
-			installError = error instanceof Error ? error.message : 'Failed to load skill';
+			// Nothing to review — skip the editor and warn on the Browse tab instead.
+			debug.error('settings', 'load marketplace skill failed', error);
+			installWarning = `Can't install "${skill.name}": ${error instanceof Error ? error.message : 'failed to load skill'}`;
+			closeInstall();
 		} finally {
 			installLoading = false;
 		}
@@ -398,66 +404,23 @@
 </script>
 
 <div class="space-y-6">
-	<!-- Header row: title/description on left, tabs on right -->
-	<div class="flex items-start justify-between gap-3">
-		{#if showHeader}
-			<div>
-				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Skills</h3>
-				<p class="text-sm text-slate-600 dark:text-slate-500">
-					Reusable instructions the agent loads when they fit, or you run as <code class="text-[11px]">/commands</code>.
-				</p>
-			</div>
-		{:else}
-			<div></div>
-		{/if}
-		<div class="flex gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-lg shrink-0">
-			<button
-				type="button"
-				class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors
-					{activeTab === 'installed'
-					? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
-					: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
-				onclick={() => (activeTab = 'installed')}
-			>
-				Installed{installed.length ? ` (${installed.length})` : ''}
-			</button>
-			<button
-				type="button"
-				class="px-3.5 py-1.5 text-sm font-semibold rounded-md transition-colors
-					{activeTab === 'browse'
-					? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm'
-					: 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
-				onclick={goBrowse}
-			>
-				Browse
-			</button>
+	{#if showHeader}
+		<div>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Skills</h3>
+			<p class="text-sm text-slate-600 dark:text-slate-500">
+				Reusable instructions the agent loads when they fit, or you run as <code class="text-[11px]">/commands</code>.
+			</p>
 		</div>
-	</div>
+	{/if}
 
-	{#if activeTab === 'installed'}
-		{#if installed.length === 0}
-			<div class="flex flex-col items-center gap-2 py-10 text-center">
-				<Icon name="lucide:graduation-cap" class="w-8 h-8 text-slate-400" />
-				<p class="text-sm text-slate-500 dark:text-slate-400">No skills yet.</p>
-				<div class="flex items-center gap-2">
-					<Button variant="primary" size="sm" class="gap-1.5" onclick={openCreate}>
-						<Icon name="lucide:plus" class="w-4 h-4" />
-						Create skill
-					</Button>
-					<Button variant="outline" size="sm" class="gap-1.5" onclick={openImport}>
-						<Icon name="lucide:upload" class="w-4 h-4" />
-						Import
-					</Button>
-					<Button variant="outline" size="sm" onclick={goBrowse}>Browse</Button>
-				</div>
-			</div>
-		{:else}
+	<!-- Same two-row shape as Integrations: the toolbar for the current view,
+	     then one segmented bar. Browse is a view of that bar rather than a
+	     separate tab level, so there is only ever one row of tabs. -->
+	<div class="space-y-2">
+		{#if activeTab === 'installed'}
 			<div class="flex items-center gap-2">
-				<div class="relative flex-1">
-					<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
-						<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-						<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-					</svg>
+				<div class="relative flex-1 min-w-0">
+					<Icon name="lucide:search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
 					<input
 						type="text"
 						bind:value={installedFilter}
@@ -474,21 +437,59 @@
 					Create
 				</Button>
 			</div>
+		{:else}
+			<form class="flex items-center gap-2" onsubmit={(e) => { e.preventDefault(); runSearch(); }}>
+				<div class="relative flex-1 min-w-0">
+					<Icon name="lucide:search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+					<input
+						type="text"
+						bind:value={searchInput}
+						placeholder="Search the registry (e.g. pdf, frontend, testing)…"
+						class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
+					/>
+				</div>
+				{#if skillsStore.catalogLoading}
+					<Button variant="outline" size="sm" class="shrink-0" onclick={() => skillsStore.cancelSearch()}>Cancel</Button>
+				{:else}
+					<Button type="submit" variant="primary" size="sm" class="shrink-0" onclick={runSearch}>Search</Button>
+				{/if}
+			</form>
+		{/if}
+		<div class="flex gap-1 p-1 bg-slate-100 dark:bg-slate-900 rounded-lg overflow-x-auto" role="tablist">
+			{#each FILTERS as filter (filter.id)}
+				{@const active = activeTab === 'installed' && triggerFilter === filter.id}
+				<button
+					type="button"
+					role="tab"
+					aria-selected={active}
+					class="px-3 py-1.5 text-sm font-semibold rounded-md transition-colors whitespace-nowrap
+						{active ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+					onclick={() => { activeTab = 'installed'; triggerFilter = filter.id; }}
+				>
+					{filter.label} ({counts[filter.id]})
+				</button>
+			{/each}
+			<button
+				type="button"
+				role="tab"
+				aria-selected={activeTab === 'browse'}
+				class="px-3 py-1.5 text-sm font-semibold rounded-md transition-colors whitespace-nowrap
+					{activeTab === 'browse' ? 'bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 shadow-sm' : 'text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
+				onclick={goBrowse}
+			>
+				Browse
+			</button>
+		</div>
+	</div>
 
-			<div class="flex items-center gap-1.5 flex-wrap">
-				{#each FILTERS as filter (filter.id)}
-					<button
-						type="button"
-						class="px-2.5 py-1 text-xs font-semibold rounded-full border transition-colors
-							{triggerFilter === filter.id
-							? 'bg-violet-500/10 border-violet-500/40 text-violet-700 dark:text-violet-300'
-							: 'border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}"
-						onclick={() => (triggerFilter = filter.id)}
-					>
-						{filter.label} ({counts[filter.id]})
-					</button>
-				{/each}
+	{#if activeTab === 'installed'}
+		{#if installed.length === 0}
+			<div class="flex flex-col items-center gap-2 py-10 text-center">
+				<Icon name="lucide:graduation-cap" class="w-8 h-8 text-slate-400" />
+				<p class="text-sm text-slate-500 dark:text-slate-400">No skills yet.</p>
+				<Button variant="outline" size="sm" onclick={goBrowse}>Browse the registry</Button>
 			</div>
+		{:else}
 
 			{#if filteredInstalled.length === 0}
 				<p class="text-sm text-slate-500 dark:text-slate-400 text-center py-6">No skill matches this filter.</p>
@@ -600,26 +601,7 @@
 			</div>
 		{/if}
 	{:else}
-		<!-- Browse marketplace -->
-		<form class="flex gap-2" onsubmit={(e) => { e.preventDefault(); runSearch(); }}>
-			<div class="relative flex-1">
-				<svg viewBox="0 0 24 24" fill="none" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" aria-hidden="true">
-					<circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2" />
-					<path d="M21 21l-4.35-4.35" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
-				</svg>
-				<input
-					type="text"
-					bind:value={searchInput}
-					placeholder="Search skills (e.g. pdf, frontend, testing)…"
-					class="w-full pl-9 pr-3 py-2 text-sm bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-2 focus:ring-violet-500/20 focus:border-violet-600 transition-colors text-slate-900 dark:text-slate-100 placeholder-slate-400"
-				/>
-			</div>
-			{#if skillsStore.catalogLoading}
-				<Button variant="outline" size="sm" onclick={() => skillsStore.cancelSearch()}>Cancel</Button>
-			{:else}
-				<Button type="submit" variant="primary" size="sm" onclick={runSearch}>Search</Button>
-			{/if}
-		</form>
+		<!-- Browse marketplace (its search box is the toolbar above) -->
 
 		{#if skillsStore.catalogError}
 			<div class="flex items-start gap-2 p-3 bg-red-500/5 border border-red-500/20 rounded-lg text-sm text-red-600 dark:text-red-400">
@@ -928,6 +910,18 @@
 </Modal>
 
 <!-- Delete confirmation -->
+<Modal isOpen={installWarning !== null} onClose={() => (installWarning = null)} title="Can't install skill" size="sm">
+	{#snippet children()}
+		<div class="flex items-start gap-2.5 text-sm text-amber-700 dark:text-amber-400">
+			<Icon name="lucide:triangle-alert" class="w-4 h-4 mt-0.5 shrink-0" />
+			<span class="break-words min-w-0">{installWarning}</span>
+		</div>
+	{/snippet}
+	{#snippet footer()}
+		<Button variant="primary" onclick={() => (installWarning = null)}>OK</Button>
+	{/snippet}
+</Modal>
+
 <Modal isOpen={deleteTarget !== null} onClose={() => (deleteTarget = null)} title="Delete skill" size="sm">
 	{#snippet children()}
 		{#if deleteTarget}
