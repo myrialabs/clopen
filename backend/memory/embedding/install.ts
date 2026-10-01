@@ -20,7 +20,7 @@
  * neighbours forever, which is far harder to notice than a failed download.
  */
 
-import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { debug } from '$shared/utils/logger';
 import { embedder } from './embedder';
@@ -160,6 +160,7 @@ async function run(): Promise<boolean> {
 	if (isEmbeddingArtifactInstalled()) {
 		const loaded = await embedder.load();
 		if (loaded) {
+			void pruneStaleVersions();
 			clearRetry();
 			setStatus({
 				phase: 'installed',
@@ -233,6 +234,7 @@ async function run(): Promise<boolean> {
 	embedder.unload();
 	const loaded = await embedder.load();
 	if (loaded) {
+		void pruneStaleVersions();
 		clearRetry();
 		setStatus({
 			phase: 'installed',
@@ -248,6 +250,32 @@ async function run(): Promise<boolean> {
 		scheduleRetry('corrupt', embedder.status().error ?? 'artifact failed to load');
 	}
 	return loaded;
+}
+
+/**
+ * Remove every other version's directory — and any leftover `.partial` staging
+ * dir — once the current version has loaded. A version bump downloads into a
+ * fresh directory and nothing ever read the old one again, so it sat there for
+ * good. Gated on a successful load so an upgrade that fails keeps the previous
+ * artifact on disk.
+ */
+async function pruneStaleVersions(): Promise<void> {
+	const root = getStackEmbeddingDir();
+	let entries: string[];
+	try {
+		entries = await readdir(root);
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		if (entry === EMBEDDING_VERSION) continue;
+		try {
+			await rm(join(root, entry), { recursive: true, force: true });
+			debug.log('memory', `Removed superseded embedding artifact: ${entry}`);
+		} catch (error) {
+			debug.warn('memory', `Could not remove superseded embedding artifact ${entry}`, error);
+		}
+	}
 }
 
 /** Marker so the catch can tell a bad payload from a bad connection. */

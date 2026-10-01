@@ -43,6 +43,7 @@ import { initializeDatabase, closeDatabase } from './database';
 import { bootstrapAfterDbInit } from './bootstrap';
 import { startEngineConfigWatcher } from './engine/config-revision';
 import { startEngineHotReload } from './engine/hot-reload';
+import { pruneStaleChromeBuilds } from './engine/install-recipes';
 import { disposeAllEngines } from './engine';
 import { connectionManager } from './db-client/connection-manager';
 import { sshClientPool } from './ssh/client-pool';
@@ -308,6 +309,10 @@ async function startServer() {
 		// Shared with the clear-data handler so a DB wipe on the live process
 		// restores them without a restart.
 		bootstrapAfterDbInit();
+		// Before anything can launch Chrome, so the build being deleted is never
+		// one that is running. Not in bootstrapAfterDbInit(): during "Clear All
+		// Data" the live process may have a browser open.
+		pruneStaleChromeBuilds();
 		// Start expired session cleanup now that the database is ready
 		sessionCleanupScheduler.start();
 		uploadTempCleanup.start();

@@ -13,14 +13,15 @@
  * surface a copy-able command and a docs link, regardless of platform.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { debug } from '$shared/utils/logger';
 import { isElevated } from '$backend/utils/privilege';
 import { getClopenDir } from '$backend/utils/paths';
 import { resolveBinary, resolveBinaryWithRefresh } from '$backend/utils/cli';
 import { resolveStaticCurlAsset } from '$backend/utils/static-curl';
 import { getStackEnginesDir, readEngineSdkVersion, getRequiredSdkVersion } from './sdk-loader';
-import { engineCliInstallArg, getEngineCliSpec, getRequiredEngineCliSpec, resolveEngineCli } from './engine-cli';
+import { engineCliInstallArg, engineCliTrustedPackages, getEngineCliSpec, getRequiredEngineCliSpec, resolveEngineCli } from './engine-cli';
 
 export type ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor' | 'chrome';
 
@@ -120,6 +121,16 @@ export const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
 	cursor: ['@cursor/sdk'],
 };
 
+/**
+ * Every package clopen may declare in the stack project: each engine's
+ * packages plus the CLI packages installed beside them. Anything else declared
+ * there was dropped from this list by a later clopen (Copilot's CLI, once the
+ * SDK began shipping its own runtime) and is pruned after the next install.
+ */
+export function knownStackEnginePackages(): Set<string> {
+	return new Set([...Object.values(ENGINE_PACKAGES).flat(), ...engineCliTrustedPackages()]);
+}
+
 function isEngineTool(tool: ToolId): boolean {
 	return tool in ENGINE_PACKAGES;
 }
@@ -175,48 +186,85 @@ function detectMacPkgMgr(): 'brew' | null {
 // Chrome detection
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** Chrome for Testing builds live under `<cache>/chrome/<platform>-<buildId>/`. */
+function getClopenChromeCacheDir(): string {
+	return join(getClopenDir(), 'bin', 'chrome');
+}
+
+function chromeExecutableIn(buildDir: string): string | null {
+	const candidates = process.platform === 'darwin'
+		? ['chrome-mac-arm64', 'chrome-mac-x64', 'chrome-mac'].map(dir => join(
+			buildDir, dir,
+			'Google Chrome for Testing.app',
+			'Contents', 'MacOS', 'Google Chrome for Testing'
+		))
+		: process.platform === 'win32'
+			? ['chrome-win64', 'chrome-win'].map(dir => join(buildDir, dir, 'chrome.exe'))
+			: ['chrome-linux64', 'chrome-linux'].map(dir => join(buildDir, dir, 'chrome'));
+	return candidates.find(candidate => existsSync(candidate)) ?? null;
+}
+
+/** Numeric compare of dotted build ids (`141.0.7390.54`), highest first. */
+function compareBuildIdsDesc(a: string, b: string): number {
+	const pa = a.split('.').map(Number);
+	const pb = b.split('.').map(Number);
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const diff = (pb[i] || 0) - (pa[i] || 0);
+		if (diff !== 0) return diff;
+	}
+	return 0;
+}
+
 /**
- * Resolve the Chrome for Testing executable path under ~/.clopen/bin using
- * the @puppeteer/browsers cache layout: <cache>/chrome/<platform>-<buildId>/<archive>/<binary>.
- * Only macOS and Windows install Chrome this way — on Linux we install
- * Google Chrome via the distro package manager and skip this scan.
+ * Installed Chrome for Testing builds, newest first. `chrome@stable` installs
+ * each new build BESIDE the old one, and directory order is alphabetical — so
+ * picking the first entry used to keep launching the oldest build after an
+ * update. `.metadata` and anything without a binary are skipped.
+ */
+function listClopenChromeBuilds(): { dir: string; executable: string }[] {
+	const cacheDir = getClopenChromeCacheDir();
+	if (!existsSync(cacheDir)) return [];
+	try {
+		return readdirSync(cacheDir)
+			.filter(entry => entry.includes('-'))
+			.sort((a, b) => compareBuildIdsDesc(a.slice(a.indexOf('-') + 1), b.slice(b.indexOf('-') + 1)))
+			.flatMap(entry => {
+				const dir = join(cacheDir, entry);
+				const executable = chromeExecutableIn(dir);
+				return executable ? [{ dir, executable }] : [];
+			});
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * Resolve the newest Chrome for Testing executable under ~/.clopen/bin (the
+ * @puppeteer/browsers cache layout). Only macOS and Windows install Chrome
+ * this way — on Linux we install Google Chrome via the distro package manager.
  */
 export function resolveClopenChromePath(): string | null {
-	const cacheDir = join(getClopenDir(), 'bin', 'chrome');
-	if (!existsSync(cacheDir)) return null;
+	return listClopenChromeBuilds()[0]?.executable ?? null;
+}
 
-	try {
-		const entries = readdirSync(cacheDir);
-		for (const entry of entries) {
-			const buildDir = join(cacheDir, entry);
-			if (process.platform === 'darwin') {
-				const macDirs = ['chrome-mac-arm64', 'chrome-mac-x64', 'chrome-mac'];
-				for (const dir of macDirs) {
-					const candidate = join(
-						buildDir, dir,
-						'Google Chrome for Testing.app',
-						'Contents', 'MacOS', 'Google Chrome for Testing'
-					);
-					if (existsSync(candidate)) return candidate;
-				}
-			} else if (process.platform === 'win32') {
-				const winDirs = ['chrome-win64', 'chrome-win'];
-				for (const dir of winDirs) {
-					const candidate = join(buildDir, dir, 'chrome.exe');
-					if (existsSync(candidate)) return candidate;
-				}
-			} else {
-				const linuxDirs = ['chrome-linux64', 'chrome-linux'];
-				for (const dir of linuxDirs) {
-					const candidate = join(buildDir, dir, 'chrome');
-					if (existsSync(candidate)) return candidate;
-				}
-			}
+/**
+ * Remove every Chrome for Testing build but the newest. Each one is a few
+ * hundred MB, and an update never removes its predecessor.
+ *
+ * Runs at server startup, before anything launches Chrome: right after an
+ * update the old build may still be running, and deleting a live app bundle
+ * (macOS) or a locked executable (Windows) is not safe. A failed removal is
+ * left for the next start.
+ */
+export function pruneStaleChromeBuilds(): void {
+	for (const { dir } of listClopenChromeBuilds().slice(1)) {
+		try {
+			rmSync(dir, { recursive: true, force: true });
+			debug.log('server', `Removed superseded Chrome build: ${dir}`);
+		} catch (error) {
+			debug.warn('server', `Could not remove superseded Chrome build ${dir}:`, error);
 		}
-	} catch {
-		// Fall through
 	}
-	return null;
 }
 
 function detectSystemChrome(): string | null {
