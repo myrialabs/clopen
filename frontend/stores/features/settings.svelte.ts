@@ -42,6 +42,7 @@ const defaultSettings: AppSettings = {
 	chatAppearance: 'classic',
 	gitDiffSideBySide: true,
 	workDiffSideBySide: false,
+	diffChangesOnly: true,
 	commitGenerator: {
 		useCustomModel: false,
 		engine: 'claude-code',

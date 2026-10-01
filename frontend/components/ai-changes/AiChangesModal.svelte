@@ -16,11 +16,20 @@
 	import { aiChangesModal, closeAiChanges } from '$frontend/stores/ui/ai-changes-modal.svelte';
 
 	const sessionId = $derived(sessionState.currentSession?.id);
+
+	let view = $state<ChangesView | null>(null);
+
+	// Escape, the backdrop and the close button all go through the view, which
+	// asks before dropping unsaved edits.
+	function handleClose() {
+		if (view) view.requestClose();
+		else closeAiChanges();
+	}
 </script>
 
 <Modal
 	isOpen={aiChangesModal.isOpen}
-	onClose={closeAiChanges}
+	onClose={handleClose}
 	bare
 	mobileFullscreen
 	ariaLabelledBy="ai-changes-title"
@@ -28,6 +37,7 @@
 >
 	{#snippet children()}
 		<ChangesView
+			bind:this={view}
 			{sessionId}
 			focusPath={aiChangesModal.focusPath}
 			onClose={closeAiChanges}
