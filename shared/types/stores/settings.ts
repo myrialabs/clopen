@@ -79,6 +79,11 @@ export interface AppSettings {
 	 * else's change is mostly reading the new side.
 	 */
 	workDiffSideBySide: boolean;
+	/**
+	 * Whole-file diffs (a chat's changes) fold the lines no change touches,
+	 * keeping a little context around each change. Default: true.
+	 */
+	diffChangesOnly: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
 	/** AI authoring model for artifact generation (optional; falls back to assistant model) */

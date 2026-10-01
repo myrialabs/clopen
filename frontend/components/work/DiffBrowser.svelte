@@ -17,6 +17,10 @@
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
+	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
+	import DiffLayoutToggle from '$frontend/components/common/editor/DiffLayoutToggle.svelte';
+	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
+	import { NO_CHANGES, type ChangeControls, type ChangeState } from '$frontend/components/common/editor/editor-changes';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import { SvelteSet } from 'svelte/reactivity';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -40,6 +44,14 @@
 	// in a way they do not in the Git panel — and reading someone else's change
 	// is mostly reading the new side.
 	const renderSideBySide = $derived(settings.workDiffSideBySide);
+
+	let diffEditorRef = $state<MonacoDiffEditor | null>(null);
+	let changeState = $state<ChangeState>(NO_CHANGES);
+	// A review diff is read, not edited: steps only.
+	const changeControls: ChangeControls = {
+		previous: () => diffEditorRef?.previousChange(),
+		next: () => diffEditorRef?.nextChange()
+	};
 
 	let selectedPath = $state<string | null>(null);
 	let viewing = $state<FileChange | null>(null);
@@ -207,53 +219,47 @@
 					</select>
 				</div>
 
-				<header class="flex items-center gap-2 px-3 py-1.5 shrink-0 bg-slate-50 dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800">
-					<Icon name={getFileIcon(active.path)} class="w-3.5 h-3.5 shrink-0" />
-					<span class="flex-1 min-w-0 truncate text-xs font-mono text-slate-800 dark:text-slate-200" title={active.path}>
-						{active.path}
-					</span>
-					<span class="shrink-0 text-[0.65rem] capitalize {statusTone(active.status)}">{active.status}</span>
-					<span class="shrink-0 text-xs text-green-600 dark:text-green-400">+{active.additions}</span>
-					<span class="shrink-0 text-xs text-red-600 dark:text-red-400">−{active.deletions}</span>
-					<button
-						type="button"
-						class="flex items-center justify-center w-6 h-6 shrink-0 bg-transparent border-none rounded text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-						onclick={() => updateSettings({ workDiffSideBySide: !settings.workDiffSideBySide })}
-						title={renderSideBySide ? 'Switch to inline (1 column)' : 'Switch to side-by-side (2 columns)'}
-						aria-label="Toggle diff layout"
-					>
-						<Icon name={renderSideBySide ? 'lucide:rows-2' : 'lucide:columns-2'} class="w-3 h-3" />
-					</button>
-					<button
-						type="button"
-						class="flex items-center justify-center w-6 h-6 shrink-0 bg-transparent border-none rounded text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-						onclick={() => copyPath(active.path)}
-						title="Copy the path"
-						aria-label="Copy the path"
-					>
-						<Icon name="lucide:copy" class="w-3 h-3" />
-					</button>
-					<button
-						type="button"
-						class="flex items-center justify-center w-6 h-6 shrink-0 bg-transparent border-none rounded text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-						onclick={() => (viewing = active)}
-						title="View the whole file"
-						aria-label="View the whole file"
-					>
-						<Icon name="lucide:file-search" class="w-3 h-3" />
-					</button>
-					{#if active.url}
-						<a
-							href={active.url}
-							target="_blank"
-							rel="noreferrer noopener"
-							class="flex items-center justify-center w-6 h-6 shrink-0 rounded text-slate-500 no-underline hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-							title="Open the file on the web"
-						>
-							<Icon name="lucide:external-link" class="w-3 h-3" />
-						</a>
-					{/if}
-				</header>
+				<EditorHeader
+					icon={getFileIcon(active.path)}
+					title={active.path.split('/').pop() || active.path}
+					subtitle={active.path}
+					changes={sides.isEmpty ? undefined : { state: changeState, controls: changeControls }}
+				>
+					{#snippet meta()}
+						{#if active}
+							<span class="shrink-0 text-xs capitalize {statusTone(active.status)}">{active.status}</span>
+							<span class="shrink-0 text-xs text-green-600 dark:text-green-400">+{active.additions}</span>
+							<span class="shrink-0 text-xs text-red-600 dark:text-red-400">−{active.deletions}</span>
+						{/if}
+					{/snippet}
+					{#snippet actions()}
+						{#if active}
+							{@const current = active}
+							<DiffLayoutToggle
+								sideBySide={renderSideBySide}
+								onToggle={() => updateSettings({ workDiffSideBySide: !settings.workDiffSideBySide })}
+							/>
+							<button type="button" class={HEADER_BUTTON} onclick={() => copyPath(current.path)} title="Copy the path" aria-label="Copy the path">
+								<Icon name="lucide:copy" class={HEADER_ICON} />
+							</button>
+							<button type="button" class={HEADER_BUTTON} onclick={() => (viewing = current)} title="View the whole file" aria-label="View the whole file">
+								<Icon name="lucide:file-search" class={HEADER_ICON} />
+							</button>
+							{#if current.url}
+								<a
+									href={current.url}
+									target="_blank"
+									rel="noreferrer noopener"
+									class="{HEADER_BUTTON} no-underline"
+									title="Open the file on the web"
+									aria-label="Open the file on the web"
+								>
+									<Icon name="lucide:external-link" class={HEADER_ICON} />
+								</a>
+							{/if}
+						{/if}
+					{/snippet}
+				</EditorHeader>
 
 				{#if sides.isEmpty}
 					<div class="flex flex-col items-center justify-center gap-2 flex-1 px-6 text-center">
@@ -277,6 +283,7 @@
 						     than having two models swapped underneath it. -->
 						{#key active.path}
 							<MonacoDiffEditor
+								bind:this={diffEditorRef}
 								original={sides.original}
 								modified={sides.modified}
 								originalLineNumbers={sides.originalLineNumbers}
@@ -285,7 +292,7 @@
 								originalPath={active.previousPath ?? active.path}
 								modifiedPath={active.path}
 								{renderSideBySide}
-								fontScale={0.78}
+								onChangesUpdate={(state) => (changeState = state)}
 							/>
 						{/key}
 					</div>

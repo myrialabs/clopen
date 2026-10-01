@@ -6950,6 +6950,7 @@
 				diff={activeTab.diff}
 				isLoading={activeTab.isLoading}
 				inlinePreview={activeTab.section === 'conflicted'}
+				section={activeTab.section}
 				scrollTop={activeTab.scrollTop ?? 0}
 				onScroll={handleDiffScroll}
 			/>

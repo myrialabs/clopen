@@ -1,7 +1,12 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MediaPreview from '$frontend/components/common/media/MediaPreview.svelte';
+	import type { editor } from 'monaco-editor';
 	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
+	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
+	import DiffLayoutToggle from '$frontend/components/common/editor/DiffLayoutToggle.svelte';
+	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
+	import { NO_CHANGES, type ChangeControls, type ChangeState } from '$frontend/components/common/editor/editor-changes';
 	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
@@ -12,6 +17,10 @@
 	import type { IconName } from '$shared/types/ui/icons';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
+	import { showError } from '$frontend/stores/ui/notification.svelte';
+	import { applyLineEdit, invertLineEdit, LineEditConflictError, type LineEdit } from '$frontend/utils/line-edit';
+	import ws from '$frontend/utils/ws';
+	import { debug } from '$shared/utils/logger';
 
 	interface Props {
 		diff: GitFileDiff | null;
@@ -27,11 +36,20 @@
 		scrollTop?: number;
 		/** Fired when the user scrolls the diff. */
 		onScroll?: (top: number) => void;
+		/**
+		 * Which list the diff came from. Only a working-tree ("unstaged") diff can
+		 * have a change discarded: anything else is already in the index or in
+		 * history, where putting lines back on disk would not undo it.
+		 */
+		section?: string;
 	}
 
-	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0, inlinePreview = false, scrollTop = 0, onScroll }: Props = $props();
+	const { diff, diffs = [], isLoading, onSelectFile, selectedFileIndex = 0, inlinePreview = false, scrollTop = 0, onScroll, section }: Props = $props();
 
 	const renderSideBySide = $derived(settings.gitDiffSideBySide);
+
+	let diffEditorRef = $state<MonacoDiffEditor | null>(null);
+	let changeState = $state<ChangeState>(NO_CHANGES);
 
 	function toggleRenderSideBySide() {
 		updateSettings({ gitDiffSideBySide: !settings.gitDiffSideBySide });
@@ -91,14 +109,154 @@
 		return path.split(/[\\/]/).pop() || path;
 	}
 
+	function absolutePathOf(relativePath: string): string | null {
+		const basePath = projectState.currentProject?.path;
+		if (!basePath) return null;
+		const separator = basePath.includes('\\') ? '\\' : '/';
+		return `${basePath}${separator}${relativePath}`;
+	}
+
 	function openInFilesPanel() {
 		if (!activeDiff) return;
-		const basePath = projectState.currentProject?.path;
-		if (!basePath) return;
-		const relativePath = activeDiff.newPath || activeDiff.oldPath;
-		const separator = basePath.includes('\\') ? '\\' : '/';
-		revealFile(`${basePath}${separator}${relativePath}`);
+		const absolute = absolutePathOf(activeDiff.newPath || activeDiff.oldPath);
+		if (absolute) revealFile(absolute);
 	}
+
+	// ── Discarding a change on disk ──────────────────────────────────────────
+	//
+	// The diff is built from git's hunks, so its lines carry the file's real
+	// line numbers. A change is put back by swapping those exact lines on disk,
+	// and remembered so Undo can swap them again — one history per file, kept
+	// while it stays open. Each step is checked against the file first, so one
+	// that no longer fits is refused rather than written in the wrong place.
+
+	const discardable = $derived(section === 'unstaged' && !inlinePreview && !activeDiff?.isBinary);
+
+	let undoStack = $state<LineEdit[]>([]);
+	let redoStack = $state<LineEdit[]>([]);
+	let busy = $state(false);
+
+	// History belongs to one file; another file starts clean.
+	$effect(() => {
+		void activePath;
+		undoStack = [];
+		redoStack = [];
+	});
+
+	/** Real line numbers for built lines `from..to`, if they run without a gap. */
+	function realLines(numbers: number[], from: number, to: number): number[] | null {
+		const real = numbers.slice(from - 1, to);
+		if (real.length !== to - from + 1 || real.some((n) => !n)) return null;
+		for (let i = 1; i < real.length; i++) if (real[i] !== real[i - 1] + 1) return null;
+		return real;
+	}
+
+	/**
+	 * The disk edit that undoes one change of the diff, or null when the change
+	 * straddles two hunks (where the built text has a gap the file does not).
+	 */
+	function editForChange(change: editor.ILineChange): LineEdit | null {
+		const { originalStartLineNumber: oStart, originalEndLineNumber: oEnd } = change;
+		const { modifiedStartLineNumber: mStart, modifiedEndLineNumber: mEnd } = change;
+		const originalLines = originalContent.split('\n');
+		const modifiedLines = modifiedContent.split('\n');
+
+		if (oEnd !== 0 && !realLines(originalLineNumbers, oStart, oEnd)) return null;
+
+		let start: number;
+		if (mEnd !== 0) {
+			const real = realLines(modifiedLineNumbers, mStart, mEnd);
+			if (!real) return null;
+			start = real[0];
+		} else {
+			// Removed lines go back after the line they followed.
+			const after = mStart > 0 ? modifiedLineNumbers[mStart - 1] : (modifiedLineNumbers[0] ?? 1) - 1;
+			if (after === undefined || after < 0) return null;
+			start = after + 1;
+		}
+
+		return {
+			start,
+			remove: mEnd === 0 ? [] : modifiedLines.slice(mStart - 1, mEnd),
+			insert: oEnd === 0 ? [] : originalLines.slice(oStart - 1, oEnd)
+		};
+	}
+
+	/** Apply one edit to the working-tree file. The Git panel re-reads the diff on its own. */
+	async function writeEdit(edit: LineEdit): Promise<boolean> {
+		const absolute = activeDiff ? absolutePathOf(activeDiff.newPath || activeDiff.oldPath) : null;
+		if (!absolute) return false;
+		busy = true;
+		try {
+			const file = await ws.http('files:read-file', { file_path: absolute });
+			const next = applyLineEdit(file.content ?? '', edit);
+			await ws.http('files:write-file', { filePath: absolute, content: next, baseModified: file.modified });
+			return true;
+		} catch (error) {
+			const conflict = error instanceof LineEditConflictError || String(error).includes('FILE_CONFLICT');
+			if (!conflict) debug.error('git', 'Failed to change the working tree:', error);
+			showError(
+				'Nothing changed',
+				conflict ? 'The file changed since this diff was loaded.' : error instanceof Error ? error.message : String(error)
+			);
+			if (conflict) {
+				undoStack = [];
+				redoStack = [];
+			}
+			return false;
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function discardChange(change: editor.ILineChange) {
+		const edit = editForChange(change);
+		if (!edit || busy) return;
+		if (await writeEdit(edit)) {
+			undoStack = [...undoStack, edit];
+			redoStack = [];
+		}
+	}
+
+	async function undo() {
+		const edit = undoStack.at(-1);
+		if (!edit || busy) return;
+		if (await writeEdit(invertLineEdit(edit))) {
+			undoStack = undoStack.slice(0, -1);
+			redoStack = [...redoStack, edit];
+		}
+	}
+
+	async function redo() {
+		const edit = redoStack.at(-1);
+		if (!edit || busy) return;
+		if (await writeEdit(edit)) {
+			redoStack = redoStack.slice(0, -1);
+			undoStack = [...undoStack, edit];
+		}
+	}
+
+	const headerState = $derived<ChangeState>({
+		...changeState,
+		canDiscard: discardable && !busy && changeState.canDiscard,
+		canUndo: !busy && undoStack.length > 0,
+		canRedo: !busy && redoStack.length > 0
+	});
+
+	const changeControls = $derived<ChangeControls>(
+		discardable
+			? {
+				previous: () => diffEditorRef?.previousChange(),
+				next: () => diffEditorRef?.nextChange(),
+				discard: () => diffEditorRef?.discardChange(),
+				undo,
+				redo
+			}
+			: {
+				previous: () => diffEditorRef?.previousChange(),
+				next: () => diffEditorRef?.nextChange()
+			}
+	);
 </script>
 
 <div class="h-full flex flex-col">
@@ -112,45 +270,30 @@
 			<span>Select a file to view diff</span>
 		</div>
 	{:else}
-		<!-- File header -->
-		<div class="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-slate-200 dark:border-slate-700">
-			<div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-				<Icon name={getFileIcon(getFileName(activeDiff.newPath || activeDiff.oldPath)) as IconName} class="w-7 h-7 shrink-0" />
-				<div class="min-w-0 flex-1">
-					<h3 class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
-						{getFileName(activeDiff.newPath || activeDiff.oldPath)}
-					</h3>
-					<p class="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
-						{activeDiff.newPath || activeDiff.oldPath}
-					</p>
-				</div>
-			</div>
-			<div class="flex items-center gap-1.5 sm:gap-1 flex-shrink-0">
-				{#if !activeDiff.isBinary && !inlinePreview}
-					<button
-						type="button"
-						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200 cursor-pointer"
-						onclick={toggleRenderSideBySide}
-						title={renderSideBySide ? 'Switch to inline (1 column)' : 'Switch to side-by-side (2 columns)'}
-					>
-						<Icon name={renderSideBySide ? 'lucide:columns-2' : 'lucide:rows-2'} class="w-4 h-4" />
+		<EditorHeader
+			icon={getFileIcon(getFileName(activePath)) as IconName}
+			title={getFileName(activePath)}
+			subtitle={activePath}
+			changes={!activeDiff.isBinary && !inlinePreview ? { state: headerState, controls: changeControls } : undefined}
+		>
+			{#snippet meta()}
+				{#if activeDiff}
+					<span class="text-3xs font-bold px-1.5 py-0.5 rounded {getGitStatusBadgeColor(activeDiff.status)}">
+						{getGitStatusBadgeLabel(activeDiff.status)}
+					</span>
+				{/if}
+			{/snippet}
+			{#snippet actions()}
+				{#if activeDiff && !activeDiff.isBinary && !inlinePreview}
+					<DiffLayoutToggle sideBySide={renderSideBySide} onToggle={toggleRenderSideBySide} />
+				{/if}
+				{#if activeDiff && activeDiff.status !== 'D'}
+					<button type="button" class={HEADER_BUTTON} onclick={openInFilesPanel} title="Open in Files" aria-label="Open in Files">
+						<Icon name="lucide:file-symlink" class={HEADER_ICON} />
 					</button>
 				{/if}
-				{#if activeDiff.status !== 'D'}
-					<button
-						type="button"
-						class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200 cursor-pointer"
-						onclick={openInFilesPanel}
-						title="Open in Files"
-					>
-						<Icon name="lucide:file-symlink" class="w-4 h-4" />
-					</button>
-				{/if}
-				<span class="text-3xs font-bold px-1.5 py-0.5 rounded {getGitStatusBadgeColor(activeDiff.status)}">
-					{getGitStatusBadgeLabel(activeDiff.status)}
-				</span>
-			</div>
-		</div>
+			{/snippet}
+		</EditorHeader>
 
 		{#if activeDiff.isBinary}
 			{@const isDeleted = activeDiff.status === 'D'}
@@ -195,6 +338,7 @@
 			<div class="flex-1 overflow-hidden">
 				{#key activePath}
 					<MonacoDiffEditor
+						bind:this={diffEditorRef}
 						original={originalContent}
 						modified={modifiedContent}
 						{originalLineNumbers}
@@ -205,6 +349,9 @@
 						{renderSideBySide}
 						{scrollTop}
 						{onScroll}
+						onChangesUpdate={(state) => (changeState = state)}
+						onDiscardChange={discardChange}
+						canDiscardChange={(change) => discardable && editForChange(change) !== null}
 					/>
 				{/key}
 			</div>

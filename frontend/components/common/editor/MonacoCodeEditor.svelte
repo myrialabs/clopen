@@ -2,7 +2,6 @@
 	import { onMount } from 'svelte';
 	import type { editor } from 'monaco-editor';
 	import { themeStore } from '$frontend/stores/ui/theme.svelte';
-	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { debug } from '$shared/utils/logger';
 	import {
 		initMonaco,
@@ -12,6 +11,7 @@
 	} from './monaco-loader';
 	import { THEMES, getThemeName, registerThemes } from './monaco-themes';
 	import { detectLanguageFromFilename as detectLang } from './monaco-languages';
+	import { EDITOR_CHROME, editorFontMetrics } from './editor-options';
 
 	interface Props {
 		value: string;
@@ -64,12 +64,8 @@
 	let resizeObserver: ResizeObserver | null = null;
 
 	const EDITOR_CONFIG: editor.IStandaloneEditorConstructionOptions = {
-		fontSize: 12,
-		lineHeight: 18,
 		lineNumbers: 'on',
 		glyphMargin: true,
-		minimap: { enabled: false },
-		scrollBeyondLastLine: false,
 		wordWrap: 'on',
 		automaticLayout: true,
 		tabSize: 2,
@@ -132,8 +128,8 @@
 		theme: string
 	): editor.IStandaloneEditorConstructionOptions => ({
 		...EDITOR_CONFIG,
-		fontSize: Math.round(settings.fontSize * 0.9),
-		lineHeight: Math.round(settings.fontSize * 0.9 * 1.5),
+		...EDITOR_CHROME,
+		...editorFontMetrics(),
 		model,
 		theme,
 		readOnly: readonly,
@@ -226,12 +222,10 @@
 	});
 
 	$effect(() => {
-		const size = settings.fontSize;
+		// Read inside the effect so a font-size change re-runs it.
+		const metrics = editorFontMetrics();
 		if (monacoEditor && isInitialized) {
-			monacoEditor.updateOptions({
-				fontSize: Math.round(size * 0.9),
-				lineHeight: Math.round(size * 0.9 * 1.5),
-			});
+			monacoEditor.updateOptions(metrics);
 		}
 	});
 

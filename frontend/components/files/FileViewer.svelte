@@ -24,11 +24,27 @@
 	import { computeLineDiff, type GutterChange } from '$frontend/utils/line-diff';
 	import { buildLineMap, remapHunks } from '$frontend/utils/line-map';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
-	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { aiChangesState, turnsForPath, turnId, onAiReveal, consumeAiReveal } from '$frontend/stores/features/ai-changes.svelte';
 	import type { TurnChanges } from '$frontend/stores/features/ai-changes.svelte';
 	import { gutterModeState, setGutterViewMode } from '$frontend/stores/ui/gutter-mode.svelte';
+	import { saveShortcut } from '$frontend/utils/save-shortcut';
+	import { showError } from '$frontend/stores/ui/notification.svelte';
+	import { editorFontMetrics } from '$frontend/components/common/editor/editor-options';
+	import { isMac } from '$frontend/utils/platform';
+	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
+	import SaveButton from '$frontend/components/common/editor/SaveButton.svelte';
+	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
+	import {
+		ChangeNavigator,
+		changeOverviewRuler,
+		editorHistory,
+		redoIn,
+		undoIn,
+		NO_CHANGES,
+		type ChangeControls,
+		type ChangeState
+	} from '$frontend/components/common/editor/editor-changes';
 
 	// Interface untuk MonacoCodeEditor component
 	interface MonacoEditorComponent {
@@ -233,7 +249,6 @@
 		isAi: boolean;
 		escHandler: (e: KeyboardEvent) => void;
 		domNode: HTMLElement;
-		overlayWidget: editor.IOverlayWidget;
 		scrollDispose: () => void;
 		layoutDispose: () => void;
 		detachSwallow: () => void;
@@ -333,21 +348,17 @@
 		}
 	}
 
-	// Keyboard shortcut for save
+	// Ctrl/Cmd+S goes through the shared save shortcut on the root element (see
+	// the template): a window listener of our own never fired inside a dialog,
+	// and fired for every open viewer at once outside one.
+	function saveFromShortcut() {
+		if (canSave) saveChanges();
+	}
+
 	onMount(() => {
-		function handleKeyDown(e: KeyboardEvent) {
-			if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-				e.preventDefault();
-				if (canSave) {
-					saveChanges();
-				}
-			}
-		}
-
-		window.addEventListener('keydown', handleKeyDown);
-
 		return () => {
-			window.removeEventListener('keydown', handleKeyDown);
+			changeNav?.dispose();
+			changeNav = null;
 			if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
 			clearTargetTimers();
 			scrollListenerDispose?.();
@@ -355,7 +366,7 @@
 			gutterClickDispose?.();
 			gutterClickDispose = null;
 			if (activeDiffZone) {
-				window.removeEventListener('keydown', activeDiffZone.escHandler);
+				window.removeEventListener('keydown', activeDiffZone.escHandler, true);
 				activeDiffZone.scrollDispose();
 				activeDiffZone.layoutDispose();
 				activeDiffZone.detachSwallow();
@@ -723,7 +734,7 @@
 
 		const clear = () => {
 			aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, []);
-			aiGutterChanges = [];
+			setAiChanges([]);
 		};
 
 		const path = file?.path || '';
@@ -777,14 +788,11 @@
 			options: {
 				isWholeLine: false,
 				linesDecorationsClassName: `ai-gutter-${change.type}`,
-				overviewRuler: {
-					color: colorForChangeType(change.type),
-					position: OVERVIEW_RULER_RIGHT
-				}
+				overviewRuler: changeOverviewRuler(change.type, isDark)
 			}
 		}));
 
-		aiGutterChanges = changes;
+		setAiChanges(changes);
 		aiChangeDecorations = editor.deltaDecorations(aiChangeDecorations, newDecorations);
 
 		if (pendingAiReveal) {
@@ -824,19 +832,12 @@
 		}, 200);
 	}
 
-	function colorForChangeType(type: GutterChange['type']): string {
-		if (isDark) {
-			return type === 'added' ? '#047857' : type === 'modified' ? '#2563eb' : '#b91c1c';
-		}
-		return type === 'added' ? '#10b981' : type === 'modified' ? '#3b82f6' : '#ef4444';
-	}
-
 	function updateGutterDecorations(forceClear = false) {
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
 
 		if (forceClear || gutterMode === 'ai') {
-			gutterChanges = [];
+			setGitChanges([]);
 			gutterDecorations = editor.deltaDecorations(gutterDecorations, []);
 			if (activeDiffZone && !activeDiffZone.isAi) {
 				closeDiffPeek();
@@ -846,7 +847,7 @@
 
 		// No HEAD content (untracked, missing repo) — clear any existing gutter
 		if (headContent === null || headContent === undefined) {
-			gutterChanges = [];
+			setGitChanges([]);
 			gutterDecorations = editor.deltaDecorations(gutterDecorations, []);
 			if (activeDiffZone && !activeDiffZone.isAi) {
 				closeDiffPeek();
@@ -855,7 +856,7 @@
 		}
 
 		const changes = computeLineDiff(headContent, editableContent);
-		gutterChanges = changes;
+		setGitChanges(changes);
 
 		// Close any open peek whose anchor line is no longer marked as changed
 		if (activeDiffZone && !activeDiffZone.isAi) {
@@ -866,7 +867,6 @@
 		}
 
 		const newDecorations = changes.map((change) => {
-			const color = colorForChangeType(change.type);
 			return {
 				range: {
 					startLineNumber: change.startLine,
@@ -882,10 +882,7 @@
 							: change.type === 'modified'
 								? 'git-gutter-modified'
 								: 'git-gutter-deleted',
-					overviewRuler: {
-						color,
-						position: OVERVIEW_RULER_RIGHT
-					}
+					overviewRuler: changeOverviewRuler(change.type, isDark)
 				}
 			};
 		});
@@ -947,33 +944,6 @@
 			envDecorations = [];
 		}
 	});
-
-	// Icon SVGs (inline so we can attach them to dynamically-created DOM nodes)
-	const ICON_CHEVRON_UP =
-		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 10 8 5 13 10"/></svg>';
-	const ICON_CHEVRON_DOWN =
-		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 8 11 13 6"/></svg>';
-	const ICON_CLOSE =
-		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/></svg>';
-	const ICON_DISCARD =
-		'<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 8a6 6 0 1 0 1.76-4.24"/><polyline points="2 2 2 5 5 5"/></svg>';
-
-	// Buttons inside view zones must intercept pointerdown FIRST — Monaco's
-	// cursor-placement uses pointer events, which fire before mousedown, so
-	// stopping only mousedown lets Monaco still steal the click.
-	function attachPeekButton(btn: HTMLButtonElement, handler: () => void) {
-		const stop = (e: Event) => {
-			e.stopPropagation();
-			e.preventDefault();
-		};
-		btn.addEventListener('pointerdown', stop);
-		btn.addEventListener('mousedown', stop);
-		btn.addEventListener('click', (e) => {
-			e.stopPropagation();
-			e.preventDefault();
-			handler();
-		});
-	}
 
 	/**
 	 * Rows rendered per side before the peek truncates. A whole-file Write hunk can
@@ -1170,98 +1140,6 @@
 		editorInstance.pushUndoStop();
 	}
 
-	// The peek's header is rendered as a Monaco overlay widget instead of
-	// inside the view zone's DOM. View zones split into two clipped trees
-	// (.margin and .monaco-scrollable-element) so a single in-zone header
-	// cannot physically span both columns. An overlay widget sits in
-	// .overlayWidgets — a sibling of those clipping containers — so it can
-	// span the full editor width as one continuous bar across the gutter
-	// and content.
-	function buildPeekOverlayHeader(
-		change: GutterChange,
-		index: number,
-		total: number,
-		isAi = false
-	): HTMLElement {
-		const root = document.createElement('div');
-		root.className = `git-diff-peek-overlay-header git-diff-peek-overlay-header-${change.type}`;
-
-		const title = document.createElement('span');
-		title.className = 'git-diff-peek-overlay-title';
-		const fileName = file?.name ?? '';
-		title.textContent = `${fileName} · ${index} of ${total}`;
-		root.appendChild(title);
-
-		const actions = document.createElement('div');
-		actions.className = 'git-diff-peek-overlay-actions';
-
-		const prevBtn = document.createElement('button');
-		prevBtn.className = 'git-diff-peek-iconbtn';
-		prevBtn.type = 'button';
-		prevBtn.title = 'Previous change';
-		prevBtn.setAttribute('aria-label', 'Previous change');
-		prevBtn.innerHTML = ICON_CHEVRON_UP;
-		prevBtn.disabled = total <= 1;
-		attachPeekButton(prevBtn, () => navigatePeek(-1));
-		actions.appendChild(prevBtn);
-
-		const nextBtn = document.createElement('button');
-		nextBtn.className = 'git-diff-peek-iconbtn';
-		nextBtn.type = 'button';
-		nextBtn.title = 'Next change';
-		nextBtn.setAttribute('aria-label', 'Next change');
-		nextBtn.innerHTML = ICON_CHEVRON_DOWN;
-		nextBtn.disabled = total <= 1;
-		attachPeekButton(nextBtn, () => navigatePeek(1));
-		actions.appendChild(nextBtn);
-
-		// Discard reverts the hunk to whatever it replaced: HEAD for a git hunk, the
-		// file as it stood before the scoped turn for an AI hunk. Withheld when the
-		// hunk was carried over from an earlier turn and its lines have shifted or
-		// partly gone since — reverting that range would take a later change with it.
-		if (change.exact !== false) {
-			const discardBtn = document.createElement('button');
-			discardBtn.className = 'git-diff-peek-discard-btn';
-			discardBtn.type = 'button';
-			discardBtn.title = isAi
-				? 'Discard this change (revert to the content before this AI edit)'
-				: 'Discard this change (revert to HEAD)';
-			discardBtn.setAttribute('aria-label', 'Discard this change');
-			discardBtn.innerHTML = `${ICON_DISCARD}<span>Discard</span>`;
-			attachPeekButton(discardBtn, () => discardHunk(change));
-			actions.appendChild(discardBtn);
-		}
-
-		const closeBtn = document.createElement('button');
-		closeBtn.className = 'git-diff-peek-iconbtn git-diff-peek-close';
-		closeBtn.type = 'button';
-		closeBtn.title = 'Close (Esc)';
-		closeBtn.setAttribute('aria-label', 'Close diff preview');
-		closeBtn.innerHTML = ICON_CLOSE;
-		attachPeekButton(closeBtn, () => closeDiffPeek());
-		actions.appendChild(closeBtn);
-
-		root.appendChild(actions);
-		return root;
-	}
-
-	function navigatePeek(direction: 1 | -1) {
-		if (!activeDiffZone) return;
-		const changes = getActiveChanges(activeDiffZone.isAi);
-		if (changes.length === 0) return;
-		const currentLine = activeDiffZone.line;
-		const currentIdx = changes.findIndex(
-			(c) => c.startLine === currentLine
-		);
-		if (currentIdx === -1) return;
-		const nextIdx =
-			(currentIdx + direction + changes.length) % changes.length;
-		const next = changes[nextIdx];
-		const editor = monacoEditorRef?.getEditor();
-		if (editor) editor.revealLineInCenter(next.startLine);
-		showDiffPeek(next, activeDiffZone.isAi);
-	}
-
 	/**
 	 * The editor is the single source of truth for the peek's typography. Monaco
 	 * writes its resolved font info as inline styles on `.view-lines`, and the
@@ -1290,14 +1168,10 @@
 		// Editor not laid out yet — mirror MonacoCodeEditor's construction options.
 		return {
 			fontFamily: '',
-			fontSize: Math.round(settings.fontSize * 0.9),
-			lineHeight: Math.round(settings.fontSize * 0.9 * 1.5),
+			...editorFontMetrics(),
 			letterSpacing: ''
 		};
 	}
-
-	/** Height of the overlay header; the peek's two columns reserve it as padding. */
-	const PEEK_HEADER_PX = 28;
 
 	function applyPeekSizing(editorInstance: editor.IStandaloneCodeEditor, nodes: HTMLElement[]) {
 		const layoutInfo = editorInstance.getLayoutInfo();
@@ -1323,7 +1197,6 @@
 			node.style.setProperty('--peek-letter-spacing', font.letterSpacing);
 			node.style.setProperty('--peek-tab-size', String(tabSize));
 			node.style.setProperty('--peek-numbers-pad-right', `${numbersPadRight}px`);
-			node.style.setProperty('--peek-header-height', `${PEEK_HEADER_PX}px`);
 		}
 	}
 
@@ -1361,11 +1234,10 @@
 
 		const changes = getActiveChanges(isAi);
 		const foundIdx = changes.findIndex(c => c.startLine === change.startLine && c.type === change.type);
-		const index = foundIdx < 0 ? 1 : foundIdx + 1;
-		const total = changes.length;
+		if (foundIdx >= 0) changeNav?.select(foundIdx);
+		peekOpen = true;
 		const domNode = buildPeekDom(change, isAi);
 		const marginDomNode = buildPeekMargin(change);
-		const overlayHeader = buildPeekOverlayHeader(change, index, total, isAi);
 		applyPeekSizing(editorInstance, [domNode, marginDomNode]);
 		applyPeekScroll(domNode, editorInstance.getScrollLeft());
 
@@ -1373,17 +1245,14 @@
 		// capture phase, so a bubble-phase stopPropagation on the peek root
 		// fires *after* Monaco already received the event. Listen on document
 		// in capture phase instead — we run before any ancestor handler and
-		// only stop events whose target lies inside the peek. We deliberately
-		// don't capture click/dblclick: cursor positioning happens on
-		// mouse/pointer-down, while the peek's header buttons rely on click
-		// events reaching their handlers.
+		// only stop events whose target lies inside the peek. Click and
+		// dblclick are left alone: cursor positioning happens on
+		// mouse/pointer-down, and text selection in the peek needs the rest.
 		const swallowIfInside = (e: Event) => {
 			const target = e.target as Node | null;
 			if (
 				target &&
-				(domNode.contains(target) ||
-					marginDomNode.contains(target) ||
-					overlayHeader.contains(target))
+				(domNode.contains(target) || marginDomNode.contains(target))
 			) {
 				e.stopPropagation();
 			}
@@ -1418,12 +1287,7 @@
 		const wheelHandler = (e: WheelEvent) => {
 			const target = e.target as Node | null;
 			if (!target) return;
-			if (
-				!domNode.contains(target) &&
-				!marginDomNode.contains(target) &&
-				!overlayHeader.contains(target)
-			)
-				return;
+			if (!domNode.contains(target) && !marginDomNode.contains(target)) return;
 			if (!innerEl) return;
 
 			if (e.timeStamp - lastWheelAt >= STREAM_GAP_MS) scrolledInStream = false;
@@ -1470,21 +1334,7 @@
 		const oldPx = Math.min(change.oldLines.length * editorLineHeight, sectionMaxPx);
 		const newPx = Math.min(change.newLines.length * editorLineHeight, sectionMaxPx);
 		const contentPx = (oldPx + newPx) || editorLineHeight;
-		const heightInPx = Math.ceil(PEEK_HEADER_PX + contentPx + 6);
-
-		const widgetId = `git-diff-peek-overlay-${change.startLine}-${Date.now()}`;
-		const overlayWidget: editor.IOverlayWidget = {
-			getId: () => widgetId,
-			getDomNode: () => overlayHeader,
-			// Returning null lets us position the overlay manually via the
-			// view zone's onDomNodeTop callback, so the header stays glued to
-			// the top of the peek as the editor scrolls vertically.
-			getPosition: () => null
-		};
-		editorInstance.addOverlayWidget(overlayWidget);
-		// Hide until the view zone reports a valid top — avoids a frame of
-		// the overlay rendering at top:0 before Monaco lays out the zone.
-		overlayHeader.style.visibility = 'hidden';
+		const heightInPx = Math.ceil(contentPx + 6);
 
 		let zoneId = '';
 		editorInstance.changeViewZones((accessor) => {
@@ -1493,21 +1343,20 @@
 				heightInPx,
 				domNode,
 				marginDomNode,
-				suppressMouseDown: true,
-				onDomNodeTop: (top: number) => {
-					overlayHeader.style.top = `${top}px`;
-					overlayHeader.style.visibility = '';
-				}
+				suppressMouseDown: true
 			});
 		});
 
+		// Capture phase, so Escape closes the peek and stops there. A dialog
+		// hosting this viewer listens on window too; in the bubble phase both
+		// fired, and one Escape closed the peek and the whole dialog with it.
 		const escHandler = (e: KeyboardEvent) => {
 			if (e.key === 'Escape') {
 				e.stopPropagation();
 				closeDiffPeek();
 			}
 		};
-		window.addEventListener('keydown', escHandler);
+		window.addEventListener('keydown', escHandler, true);
 
 		const scrollDisposable = editorInstance.onDidScrollChange((e) => {
 			if (e.scrollLeftChanged) applyPeekScroll(domNode, e.scrollLeft);
@@ -1522,7 +1371,6 @@
 			isAi,
 			escHandler,
 			domNode,
-			overlayWidget,
 			scrollDispose: () => scrollDisposable.dispose(),
 			layoutDispose: () => layoutDisposable.dispose(),
 			detachSwallow
@@ -1532,6 +1380,91 @@
 	function getActiveChanges(isAi: boolean): GutterChange[] {
 		return isAi ? aiGutterChanges : gutterChanges;
 	}
+
+	// ── The header's change controls ─────────────────────────────────────────
+	//
+	// The same navigator the diff editors use, fed with whichever gutter is
+	// showing. Stepping to a change opens the peek on it; Discard, Undo and
+	// Redo act on the buffer, so nothing reaches disk until a save.
+
+	let changeNav: ChangeNavigator | null = null;
+	let changeState = $state<ChangeState>(NO_CHANGES);
+	let peekOpen = $state(false);
+
+	function setGitChanges(changes: GutterChange[]) {
+		gutterChanges = changes;
+		syncNavigatorChanges();
+	}
+
+	function setAiChanges(changes: GutterChange[]) {
+		aiGutterChanges = changes;
+		syncNavigatorChanges();
+	}
+
+	function syncNavigatorChanges() {
+		changeNav?.setChanges(
+			getActiveChanges(gutterMode === 'ai').map((change) => ({
+				type: change.type,
+				start: change.startLine,
+				end: Math.max(change.startLine, change.endLine)
+			}))
+		);
+	}
+
+	function currentGutterChange(): GutterChange | undefined {
+		const index = changeNav?.index ?? -1;
+		return index >= 0 ? getActiveChanges(gutterMode === 'ai')[index] : undefined;
+	}
+
+	function syncChangeState() {
+		if (!changeNav) {
+			changeState = NO_CHANGES;
+			return;
+		}
+		const current = currentGutterChange();
+		changeState = {
+			count: changeNav.count,
+			index: changeNav.index,
+			canDiscard: canEdit && !!current && current.exact !== false,
+			...(canEdit ? editorHistory(monacoEditorRef?.getEditor()) : { canUndo: false, canRedo: false })
+		};
+	}
+
+	/** The file is shown as code in the editor (not a preview, an image or a binary). */
+	const hasCodeEditor = $derived(
+		!!file &&
+			file.type === 'file' &&
+			!isBinary &&
+			!isBinaryContent(content) &&
+			!isImageFile(file.name) &&
+			!isBinaryFile(file.name) &&
+			!isPdfFile(file.name) &&
+			!isAudioFile(file.name) &&
+			!isVideoFile(file.name) &&
+			!(isSvgFile(file.name) && svgViewMode === 'visual') &&
+			!(isMarkdown && mdViewMode === 'visual')
+	);
+
+	/** The buffer can be edited and saved here (a review modal only reads). */
+	const canEdit = $derived(!!onSave);
+
+	const changeControls = $derived<ChangeControls>(
+		canEdit
+			? {
+				previous: () => changeNav?.step(-1),
+				next: () => changeNav?.step(1),
+				discard: () => {
+					const change = currentGutterChange();
+					if (change && change.exact !== false) discardHunk(change);
+				},
+				undo: () => undoIn(monacoEditorRef?.getEditor()),
+				redo: () => redoIn(monacoEditorRef?.getEditor())
+			}
+			: {
+				previous: () => changeNav?.step(-1),
+				next: () => changeNav?.step(1)
+			}
+	);
 
 	function refreshActiveDiffPeek() {
 		if (!activeDiffZone) return;
@@ -1552,15 +1485,14 @@
 	function closeDiffPeek() {
 		if (!activeDiffZone) return;
 		const editorInstance = monacoEditorRef?.getEditor();
-		const { id, escHandler, scrollDispose, layoutDispose, detachSwallow, overlayWidget } =
-			activeDiffZone;
+		const { id, escHandler, scrollDispose, layoutDispose, detachSwallow } = activeDiffZone;
 		activeDiffZone = null;
-		window.removeEventListener('keydown', escHandler);
+		peekOpen = false;
+		window.removeEventListener('keydown', escHandler, true);
 		scrollDispose();
 		layoutDispose();
 		detachSwallow();
 		if (editorInstance) {
-			editorInstance.removeOverlayWidget(overlayWidget);
 			editorInstance.changeViewZones((accessor) => {
 				accessor.removeZone(id);
 			});
@@ -1604,6 +1536,17 @@
 	// re-apply gutter decorations + pending scroll restore each time.
 	function handleEditorMount(editorInstance: editor.IStandaloneCodeEditor) {
 		envDecoEditor = editorInstance;
+		changeNav?.dispose();
+		changeNav = new ChangeNavigator(editorInstance, {
+			onUpdate: syncChangeState,
+			onReveal: (_span, index) => {
+				const isAi = gutterMode === 'ai';
+				const change = getActiveChanges(isAi)[index];
+				if (change) showDiffPeek(change, isAi);
+			},
+			// An open peek holds the current change while the reader scrolls it.
+			isPinned: () => peekOpen
+		});
 		scrollListenerDispose?.();
 		const disposable = editorInstance.onDidScrollChange((e) => {
 			if (e.scrollTopChanged) {
@@ -1627,7 +1570,7 @@
 
 		// Previous editor's view zones are gone with the disposed instance
 		if (activeDiffZone) {
-			window.removeEventListener('keydown', activeDiffZone.escHandler);
+			window.removeEventListener('keydown', activeDiffZone.escHandler, true);
 			activeDiffZone.scrollDispose();
 			activeDiffZone.layoutDispose();
 			activeDiffZone.detachSwallow();
@@ -1672,6 +1615,9 @@
 	function handleContentChange(newContent: string) {
 		hasChanges = newContent !== referenceContent;
 		onContentChange?.(newContent);
+		// After the edit settles: an undo reports its content before the model
+		// has moved it onto the redo stack.
+		queueMicrotask(syncChangeState);
 		// User edits invalidate the captured HEAD-side hunk in the peek; close it
 		if (activeDiffZone) closeDiffPeek();
 		scheduleGutterUpdate();
@@ -1825,6 +1771,13 @@
 			hasChanges = false;
 		} catch (error) {
 			debug.error('file', 'Failed to save file:', error);
+			// A failed save used to end in the log alone; in a dialog nothing else
+			// would ever say the edits are still unsaved.
+			const message = error instanceof Error ? error.message : String(error);
+			showError(
+				'Not saved',
+				message.includes('FILE_CONFLICT') ? 'The file changed on disk since it was opened.' : message
+			);
 		} finally {
 			isSaving = false;
 		}
@@ -1934,23 +1887,18 @@
 </script>
 
 {#if file}
-	<div class="w-full h-full flex flex-col">
+	<div class="w-full h-full flex flex-col" use:saveShortcut={saveFromShortcut}>
 		<!-- Header -->
 		{#if !hideHeader}
-		<div class="flex-shrink-0 flex items-center justify-between px-4 py-2.5 border-b border-slate-200 dark:border-slate-700">
-			<div class="flex items-center gap-2 sm:gap-3 min-w-0 flex-1">
-				<Icon name={getDisplayIcon(file.name, file.type === 'directory')} class="w-7 h-7" />
-				<div class="min-w-0 flex-1">
-					<h3 id={titleId} class="text-xs sm:text-sm font-bold text-slate-900 dark:text-slate-100 truncate">
-						{file.name}
-					</h3>
-					<p class="text-xs text-slate-600 dark:text-slate-400 truncate mt-0.5">
-						<span class="hidden sm:inline">{displayPath} • </span> {formatFileSize(file.size || 0)}
-					</p>
-				</div>
-			</div>
-
-			<div class="flex items-center gap-1.5 sm:gap-1 flex-shrink-0">
+		<EditorHeader
+			icon={getDisplayIcon(file.name, file.type === 'directory')}
+			title={file.name}
+			subtitle={`${displayPath} • ${formatFileSize(file.size || 0)}`}
+			{titleId}
+			changes={hasCodeEditor ? { state: changeState, controls: changeControls, onHide: peekOpen ? closeDiffPeek : undefined } : undefined}
+			{onClose}
+		>
+			{#snippet actions()}
 				<!-- SVG view mode toggle -->
 				{#if file && file.type === 'file' && isSvgFile(file.name)}
 					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
@@ -2008,7 +1956,7 @@
 				{/if}
 
 				<!-- Actions for editable files -->
-				{#if file && file.type === 'file' && !isBinary && !isBinaryContent(content) && !isImageFile(file.name) && !isBinaryFile(file.name) && !isPdfFile(file.name) && !isAudioFile(file.name) && !isVideoFile(file.name) && !(isSvgFile(file.name) && svgViewMode === 'visual') && !(isMarkdown && mdViewMode === 'visual')}
+				{#if hasCodeEditor}
 					<!-- Env values toggle -->
 					{#if isEnvFile}
 						<button
@@ -2132,31 +2080,13 @@
 							<Icon name="lucide:wrap-text" class="w-4 h-4" />
 						</button>
 					{/if}
-					<!-- Save button -->
-					<button
-						class="flex p-2 text-green-600 dark:text-green-400 hover:text-green-700 dark:hover:text-green-300 hover:bg-green-50 dark:hover:bg-green-900/30 rounded-lg transition-all duration-200 {saveButtonDisabled ? 'opacity-50 cursor-not-allowed' : ''}"
-						onclick={() => {
-							if (canSave) {
-								saveChanges();
-							}
-						}}
-						disabled={saveButtonDisabled}
-						title={saveButtonDisabled ? (hasChanges ? 'Saving...' : 'No changes to save') : 'Save changes (Ctrl+S)'}
-					>
-						{#if isSaving}
-							<div class="w-4 h-4 border-2 border-green-600 border-t-transparent rounded-full animate-spin"></div>
-						{:else}
-							<Icon name="lucide:save" class="w-4 h-4" />
-						{/if}
-					</button>
+					{#if canEdit}
+						<SaveButton dirty={hasChanges} saving={isSaving} onSave={() => { if (canSave) saveChanges(); }} />
+					{/if}
 
 					{#if editableContent}
-						<button
-							class="flex p-2 text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30 rounded-lg transition-all duration-200"
-							onclick={copyToClipboard}
-							title="Copy content"
-						>
-							<Icon name="lucide:copy" class="w-4 h-4" />
+						<button class={HEADER_BUTTON} onclick={copyToClipboard} title="Copy content" aria-label="Copy content">
+							<Icon name="lucide:copy" class={HEADER_ICON} />
 						</button>
 					{/if}
 				{:else if file && file.type === 'file'}
@@ -2171,23 +2101,8 @@
 						</button>
 					{/if}
 				{/if}
-
-				<!-- Close, when the viewer is hosted in a modal that has no chrome of
-				     its own. Sits outside the editable/preview branches so every file
-				     type keeps a way out. -->
-				{#if onClose}
-					<button
-						type="button"
-						class="flex p-2 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-all duration-200"
-						onclick={onClose}
-						title="Close (Esc)"
-						aria-label="Close"
-					>
-						<Icon name="lucide:x" class="w-4 h-4" />
-					</button>
-				{/if}
-			</div>
-		</div>
+			{/snippet}
+		</EditorHeader>
 		{/if}
 
 		<!-- A turn that left this file alone. Said out loud, because an empty
@@ -2243,12 +2158,9 @@
 									onChange={handleContentChange}
 									onEditorMount={handleEditorMount}
 									options={{
-										minimap: { enabled: false },
 										wordWrap: 'off',
 										renderWhitespace: 'none',
-										mouseWheelZoom: false,
-										overviewRulerLanes: 1,
-										overviewRulerBorder: false
+										mouseWheelZoom: false
 									}}
 								/>
 								{/key}
@@ -2339,12 +2251,9 @@
 								readonly={true}
 								onEditorMount={handleEditorMount}
 								options={{
-									minimap: { enabled: false },
 									wordWrap: wordWrap ? 'on' : 'off',
 									renderWhitespace: 'none',
-									mouseWheelZoom: false,
-									overviewRulerLanes: 1,
-									overviewRulerBorder: false
+									mouseWheelZoom: false
 								}}
 							/>
 						{:else}
@@ -2357,12 +2266,9 @@
 								onChange={handleContentChange}
 								onEditorMount={handleEditorMount}
 								options={{
-									minimap: { enabled: false },
 									wordWrap: wordWrap ? 'on' : 'off',
 									renderWhitespace: 'none',
-									mouseWheelZoom: false,
-									overviewRulerLanes: 1,
-									overviewRulerBorder: false
+									mouseWheelZoom: false
 								}}
 							/>
 						{/if}
@@ -2499,8 +2405,8 @@
 	/* Inline diff peek view — VS Code-like presentation of the HEAD-side hunk.
 	   .git-diff-peek matches the full view-zone width (which can equal the
 	   source scrollWidth); .git-diff-peek-inner scrolls horizontally so long
-	   lines are reachable. The action buttons live in a Monaco overlay widget
-	   outside the peek inner, so they stay accessible regardless of scroll. */
+	   lines are reachable. Its controls (steps, Discard, hide) live in the
+	   editor header, not in the peek. */
 	:global(.git-diff-peek) {
 		position: relative;
 		width: 100%;
@@ -2533,7 +2439,6 @@
 		background-color: var(--vscode-editor-background, #ffffff);
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		padding-top: var(--peek-header-height, 28px);
 		overflow-y: auto;
 		overflow-x: auto;
 		box-sizing: border-box;
@@ -2545,59 +2450,9 @@
 		border-bottom-color: #30363d;
 	}
 
-	/* Merged peek header — a Monaco overlay widget positioned above the
-	   editor so it can span the gutter and content columns as one
-	   continuous bar (view zones split into two clipped DOM trees and
-	   cannot host a single full-width child). top is set imperatively by
-	   the view zone's onDomNodeTop callback. */
-	:global(.git-diff-peek-overlay-header) {
-		position: absolute;
-		left: 0;
-		right: 0;
-		display: flex;
-		align-items: center;
-		box-sizing: border-box;
-		height: 29px;
-		padding: 0 8px 0 12px;
-		font-family: 'SF Mono', Monaco, Inconsolata, 'Roboto Mono', Consolas, 'Courier New',
-			monospace;
-		font-size: 11px;
-		font-weight: 600;
-		color: #444;
-		background-color: #f3f3f3;
-		border-bottom: 1px solid #e0e0e0;
-		z-index: 5;
-		pointer-events: auto;
-	}
-	:global(.dark .git-diff-peek-overlay-header) {
-		color: #c9d1d9;
-		background-color: #161b22;
-		border-bottom-color: #30363d;
-	}
-
 	/* Type-tinted headers — green for added, red for deleted, blue for
 	   modified. The gutter bar already uses the same hues; mirroring them
 	   on the header makes the peek's type identifiable at a glance. */
-	:global(.git-diff-peek-added .git-diff-peek-overlay-header) {
-		background-color: #ecfdf5;
-		border-bottom-color: #a7f3d0;
-		color: #047857;
-	}
-	:global(.dark .git-diff-peek-added .git-diff-peek-overlay-header) {
-		background-color: #052e2b;
-		border-bottom-color: #065f46;
-		color: #6ee7b7;
-	}
-	:global(.git-diff-peek-deleted .git-diff-peek-overlay-header) {
-		background-color: #fef2f2;
-		border-bottom-color: #fecaca;
-		color: #b91c1c;
-	}
-	:global(.dark .git-diff-peek-deleted .git-diff-peek-overlay-header) {
-		background-color: #2b0a0a;
-		border-bottom-color: #7f1d1d;
-		color: #fca5a5;
-	}
 	:global(.git-diff-peek-added .git-diff-peek-inner) {
 		border-top-color: #10b981;
 		border-bottom-color: #10b981;
@@ -2629,75 +2484,6 @@
 	:global(.dark .git-diff-peek-deleted .git-diff-peek-margin) {
 		border-top-color: #dc2626;
 		border-bottom-color: #dc2626;
-	}
-
-	:global(.git-diff-peek-overlay-title) {
-		flex: 1;
-		min-width: 0;
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-
-	:global(.git-diff-peek-overlay-actions) {
-		flex-shrink: 0;
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		margin-left: 8px;
-	}
-
-	:global(.git-diff-peek-iconbtn) {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		width: 22px;
-		height: 22px;
-		padding: 0;
-		background: transparent;
-		border: none;
-		border-radius: 4px;
-		color: inherit;
-		cursor: pointer;
-		opacity: 0.65;
-		pointer-events: auto;
-		z-index: 1;
-	}
-	:global(.git-diff-peek-iconbtn:hover:not(:disabled)) {
-		background-color: rgba(0, 0, 0, 0.08);
-		opacity: 1;
-	}
-	:global(.dark .git-diff-peek-iconbtn:hover:not(:disabled)) {
-		background-color: rgba(255, 255, 255, 0.12);
-	}
-	:global(.git-diff-peek-iconbtn:disabled) {
-		opacity: 0.3;
-		cursor: default;
-	}
-
-	:global(.git-diff-peek-discard-btn) {
-		display: inline-flex;
-		align-items: center;
-		gap: 4px;
-		padding: 0 8px;
-		height: 22px;
-		background: transparent;
-		border: none;
-		border-radius: 4px;
-		color: inherit;
-		cursor: pointer;
-		opacity: 0.65;
-		font-size: 11px;
-		white-space: nowrap;
-		pointer-events: auto;
-		z-index: 1;
-	}
-	:global(.git-diff-peek-discard-btn:hover) {
-		background-color: rgba(0, 0, 0, 0.08);
-		opacity: 1;
-	}
-	:global(.dark .git-diff-peek-discard-btn:hover) {
-		background-color: rgba(255, 255, 255, 0.12);
 	}
 
 	:global(.git-diff-peek-body) {
@@ -2737,16 +2523,6 @@
 		border-top-color: #2563eb;
 		border-bottom-color: #2563eb;
 	}
-	:global(.git-diff-peek-modified .git-diff-peek-overlay-header) {
-		background-color: #eff6ff;
-		border-bottom-color: #bfdbfe;
-		color: #1e40af;
-	}
-	:global(.dark .git-diff-peek-modified .git-diff-peek-overlay-header) {
-		background-color: #172554;
-		border-bottom-color: #1e3a8a;
-		color: #93c5fd;
-	}
 	:global(.git-diff-peek-modified .git-diff-peek-margin) {
 		border-top-color: #3b82f6;
 		border-bottom-color: #3b82f6;
@@ -2776,9 +2552,7 @@
 
 	/* Margin area — Monaco places this in the gutter, so line numbers
 	   visually align with the editor's own line-number column above/below.
-	   padding-top reserves the strip where the overlay header sits, so the
-	   first line-number row aligns with the first body row on the content
-	   side. Top/bottom borders match .git-diff-peek-inner so the peek's
+	   Top/bottom borders match .git-diff-peek-inner so the peek's
 	   frame is continuous across the gutter and content columns. */
 	:global(.git-diff-peek-margin) {
 		display: flex;
@@ -2806,7 +2580,6 @@
 		pointer-events: auto;
 		border-top: 1px solid #d4d4d4;
 		border-bottom: 1px solid #d4d4d4;
-		padding-top: var(--peek-header-height, 28px);
 	}
 	:global(.git-diff-peek-margin-row-old) {
 		background-color: rgba(239, 68, 68, 0.10);
