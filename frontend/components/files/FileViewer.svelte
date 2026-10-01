@@ -14,9 +14,6 @@
 	import { formatFileSize } from '$frontend/utils/format';
 	import { fetchFileBlob, isAbortError, saveBlob } from '$frontend/utils/file-download';
 	import { onMount } from 'svelte';
-	import { scale } from 'svelte/transition';
-	import { cubicOut } from 'svelte/easing';
-	import { clickOutside } from '$frontend/utils/click-outside';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
@@ -33,8 +30,7 @@
 	import { editorFontMetrics } from '$frontend/components/common/editor/editor-options';
 	import { isMac } from '$frontend/utils/platform';
 	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
-	import SaveButton from '$frontend/components/common/editor/SaveButton.svelte';
-	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
+	import { saveAction, type HeaderAction, type HeaderChoice } from '$frontend/components/common/editor/header-actions';
 	import {
 		ChangeNavigator,
 		changeOverviewRuler,
@@ -232,10 +228,6 @@
 	let hasAiChanges = $state(false);
 	/** True when the scoped turn left this file alone, which the UI says out loud. */
 	let aiScopeEmpty = $state(false);
-	/** Anchor for the scope menu, measured to decide which edge it opens from. */
-	let aiMenuAnchor = $state<HTMLDivElement | null>(null);
-	let aiMenuFlipped = $state(false);
-	let aiMenuOpen = $state(false);
 	const gutterMode = $derived(gutterModeState.mode);
 	let headContent = $state<string | null>(null);
 	let headContentForPath = '';
@@ -256,10 +248,6 @@
 
 	// Monaco MouseTargetType.GUTTER_LINE_DECORATIONS — clicks on the colored bar
 	// land in the line-decorations strip (between line-numbers and content).
-	/** Width of the AI scope menu (w-64) and the gap it keeps from the edge. */
-	const AI_MENU_WIDTH = 256;
-	const AI_MENU_MARGIN = 8;
-
 	const GUTTER_LINE_DECORATIONS = 4;
 	const GUTTER_GLYPH_MARGIN = 5;
 
@@ -511,31 +499,12 @@
 	function selectAiScope(next: 'all' | 'latest' | string) {
 		setGutterViewMode('ai');
 		aiScope = next;
-		aiMenuOpen = false;
 		void ensureAiPair().then(() => {
 			applyAiChangeDecorations();
 			// Move an open peek onto the new scope's first hunk (or close it if the
 			// new scope has none) so the peek never outlives what it describes.
 			refreshActiveDiffPeek();
 		});
-	}
-
-	/**
-	 * Open the scope menu from whichever edge leaves room for it.
-	 *
-	 * Decided from the anchor rather than by measuring the menu after it renders,
-	 * so it never opens off-screen for a frame and then jumps back.
-	 */
-	function toggleAiMenu() {
-		if (aiMenuOpen) {
-			aiMenuOpen = false;
-			return;
-		}
-		const rect = aiMenuAnchor?.getBoundingClientRect();
-		aiMenuFlipped = rect
-			? rect.left + AI_MENU_WIDTH > window.innerWidth - AI_MENU_MARGIN
-			: false;
-		aiMenuOpen = true;
 	}
 
 	/** Reset the AI view to its default scope. */
@@ -546,7 +515,6 @@
 		aiPairCache.clear();
 		aiScopeEmpty = false;
 		pendingAiReveal = false;
-		aiMenuOpen = false;
 	}
 
 	/**
@@ -1836,6 +1804,105 @@
 		}
 	}
 
+	/** The header's actions; the ones that do not fit its width wait in "⋯". */
+	const headerActions = $derived.by<HeaderAction[]>(() => {
+		const list: HeaderAction[] = [];
+		const isFile = !!file && file.type === 'file';
+
+		if (isFile && file && isSvgFile(file.name)) {
+			const visual = svgViewMode === 'visual';
+			list.push({
+				id: 'svg-view',
+				label: visual ? 'Show code' : 'Show preview',
+				icon: visual ? 'lucide:eye' : 'lucide:code',
+				onclick: () => { svgViewMode = visual ? 'code' : 'visual'; },
+				priority: 8
+			});
+		}
+		if (isMarkdown) {
+			const visual = mdViewMode === 'visual';
+			list.push({
+				id: 'markdown-view',
+				label: visual ? 'Show source' : 'Show preview',
+				icon: visual ? 'lucide:book-open' : 'lucide:code',
+				onclick: () => switchMdMode(visual ? 'code' : 'visual'),
+				priority: 8
+			});
+		}
+		if (externallyChanged && onForceReload) {
+			list.push({
+				id: 'reload',
+				label: 'Reload from disk',
+				icon: 'lucide:refresh-cw',
+				tone: 'warning',
+				onclick: onForceReload,
+				priority: 15
+			});
+		}
+
+		if (hasCodeEditor) {
+			if (isEnvFile) {
+				list.push({
+					id: 'env-values',
+					label: hideEnvValues ? 'Show values' : 'Hide values',
+					icon: hideEnvValues ? 'lucide:eye-off' : 'lucide:eye',
+					active: !hideEnvValues,
+					onclick: () => { hideEnvValues = !hideEnvValues; },
+					priority: 6
+				});
+			}
+			if (hasAiChanges) {
+				const aiMode = gutterMode === 'ai';
+				const choices: HeaderChoice[] = [
+					{ label: 'Git changes', checked: !aiMode, onSelect: () => setGutterViewMode('git') },
+					{ kind: 'separator' },
+					{ kind: 'subheading', label: 'This chat' },
+					{ label: 'Latest turn', checked: aiMode && aiScope === 'latest', onSelect: () => selectAiScope('latest') },
+					{
+						label: `All ${chatTurns.length} ${chatTurns.length === 1 ? 'turn' : 'turns'}`,
+						checked: aiMode && aiScope === 'all',
+						onSelect: () => selectAiScope('all')
+					},
+					{ kind: 'separator' },
+					// Every turn of the chat, listed the same way whether or not it
+					// touched this file — a shorter menu on one file than on the next
+					// only hides which turns exist.
+					...chatTurns.map((turn): HeaderChoice => {
+						const touched = turnTouchedFile(turn);
+						return {
+							label: turn.promptText,
+							prefix: turn.turnIndex === null ? 'Now' : `Turn ${turn.turnIndex}`,
+							checked: aiMode && aiScope === turnId(turn),
+							dim: !touched,
+							title: touched ? turn.promptText : `${turn.promptText} — no changes to this file`,
+							onSelect: () => selectAiScope(turnId(turn))
+						};
+					})
+				];
+				list.push({
+					id: 'gutter-mode',
+					label: 'Show changes from',
+					icon: aiMode ? 'lucide:sparkles' : 'lucide:git-branch',
+					tone: aiMode ? 'default' : 'sky',
+					choices,
+					priority: 10
+				});
+			}
+			if (onToggleWordWrap) {
+				list.push({ id: 'word-wrap', label: 'Word wrap', icon: 'lucide:wrap-text', active: wordWrap, onclick: onToggleWordWrap, priority: 4 });
+			}
+			if (canEdit) {
+				list.push(saveAction({ dirty: hasChanges, saving: isSaving, onSave: () => { if (canSave) saveChanges(); } }));
+			}
+			if (editableContent) {
+				list.push({ id: 'copy', label: 'Copy content', icon: 'lucide:copy', onclick: copyToClipboard, priority: 1 });
+			}
+		} else if (isFile && canEditImage) {
+			list.push({ id: 'edit-image', label: 'Edit image', icon: 'lucide:pencil', tone: 'primary', onclick: () => { showImageEditor = true; }, priority: 100 });
+		}
+		return list;
+	});
+
 	// Progress of the one download this viewer can have in flight, so a large
 	// binary reports movement instead of sitting on a dead button.
 	let downloadProgress = $state<{ transferredBytes: number; totalBytes: number | null } | null>(null);
@@ -1896,210 +1963,14 @@
 			subtitle={`${displayPath} • ${formatFileSize(file.size || 0)}`}
 			{titleId}
 			changes={hasCodeEditor ? { state: changeState, controls: changeControls, onHide: peekOpen ? closeDiffPeek : undefined } : undefined}
+			actions={headerActions}
 			{onClose}
 		>
-			{#snippet actions()}
-				<!-- SVG view mode toggle -->
-				{#if file && file.type === 'file' && isSvgFile(file.name)}
-					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
-						<button
-							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {svgViewMode === 'visual' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
-							onclick={() => { svgViewMode = 'visual'; }}
-							title="Visual preview"
-						>
-							<Icon name="lucide:eye" class="w-3.5 h-3.5" />
-						</button>
-						<button
-							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {svgViewMode === 'code' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
-							onclick={() => { svgViewMode = 'code'; }}
-							title="Code view"
-						>
-							<Icon name="lucide:code" class="w-3.5 h-3.5" />
-						</button>
-					</div>
-				{/if}
-
-				<!-- Markdown view mode toggle -->
-				{#if isMarkdown}
-					<div class="flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60">
-						<button
-							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {mdViewMode === 'visual' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
-							onclick={() => switchMdMode('visual')}
-							title="Rendered markdown preview"
-						>
-							<Icon name="lucide:book-open" class="w-3.5 h-3.5" />
-						</button>
-						<button
-							class="flex items-center px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {mdViewMode === 'code' ? 'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'}"
-							onclick={() => switchMdMode('code')}
-							title="Source view"
-						>
-							<Icon name="lucide:code" class="w-3.5 h-3.5" />
-						</button>
-					</div>
-				{/if}
-
-				<!-- External change badge + refresh button -->
+			{#snippet meta()}
 				{#if externallyChanged && onForceReload}
-					<div class="flex items-center gap-1 mr-1">
-						<span class="text-3xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-400 font-medium whitespace-nowrap">
-							Changed externally
-						</span>
-						<button
-							class="flex p-1.5 text-amber-600 dark:text-amber-400 hover:text-amber-700 dark:hover:text-amber-300 hover:bg-amber-50 dark:hover:bg-amber-900/30 rounded-lg transition-all duration-200"
-							onclick={onForceReload}
-							title="Reload file from disk (discard local changes)"
-						>
-							<Icon name="lucide:refresh-cw" class="w-4 h-4" />
-						</button>
-					</div>
-				{/if}
-
-				<!-- Actions for editable files -->
-				{#if hasCodeEditor}
-					<!-- Env values toggle -->
-					{#if isEnvFile}
-						<button
-							class="flex p-2 rounded-lg transition-all duration-200
-							{!hideEnvValues ?
-								'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/50' :
-								'text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30'
-							}"
-							onclick={() => { hideEnvValues = !hideEnvValues; }}
-							title={hideEnvValues ? 'Show values' : 'Hide values'}
-						>
-							<Icon name={hideEnvValues ? 'lucide:eye-off' : 'lucide:eye'} class="w-4 h-4" />
-						</button>
-					{/if}
-					<!-- Gutter view mode: segmented AI | Git. The AI pill doubles as a
-					     dropdown scoping which turn of this chat the gutter paints. -->
-					{#if hasAiChanges}
-						<div
-							bind:this={aiMenuAnchor}
-							class="relative flex items-center gap-0.5 p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800/60"
-							role="group"
-							aria-label="Gutter view mode"
-							use:clickOutside={() => (aiMenuOpen = false)}
-						>
-							<button
-								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'ai' ?
-									'text-violet-700 dark:text-violet-300 bg-violet-100 dark:bg-violet-900/60 shadow-sm' :
-									'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-								}"
-								onclick={() => {
-									setGutterViewMode('ai');
-									toggleAiMenu();
-								}}
-								aria-pressed={gutterMode === 'ai'}
-								aria-haspopup="menu"
-								aria-expanded={aiMenuOpen}
-								title="Show this chat's changes"
-							>
-								<Icon name="lucide:sparkles" class="w-3.5 h-3.5" />
-								<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-70" />
-							</button>
-							<button
-								class="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-semibold transition-all duration-200 {gutterMode === 'git' ?
-									'text-sky-700 dark:text-sky-300 bg-sky-100 dark:bg-sky-900/60 shadow-sm' :
-									'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
-								}"
-								onclick={() => {
-									setGutterViewMode('git');
-									aiMenuOpen = false;
-								}}
-								aria-pressed={gutterMode === 'git'}
-								title="Show Git changes"
-							>
-								<Icon name="lucide:git-branch" class="w-3.5 h-3.5" />
-							</button>
-
-							{#if aiMenuOpen}
-								<div
-									class="absolute top-full {aiMenuFlipped ? 'right-0' : 'left-0'} mt-1 w-64 py-1 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 max-h-80 overflow-y-auto"
-									role="menu"
-									transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
-								>
-									<button
-										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
-										role="menuitemradio"
-										aria-checked={aiScope === 'latest'}
-										onclick={() => selectAiScope('latest')}
-									>
-										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiScope === 'latest' ? '' : 'opacity-0'}" />
-										<span>Latest turn</span>
-									</button>
-									<button
-										class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left text-slate-700 dark:text-slate-200 hover:bg-violet-500/10 transition-colors"
-										role="menuitemradio"
-										aria-checked={aiScope === 'all'}
-										onclick={() => selectAiScope('all')}
-									>
-										<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400 {aiScope === 'all' ? '' : 'opacity-0'}" />
-										<span>All {chatTurns.length} {chatTurns.length === 1 ? 'turn' : 'turns'} of this chat</span>
-									</button>
-									<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
-									<!-- Every turn of the chat, listed the same way whether or not it
-									     touched this file — a shorter menu on one file than on the
-									     next only hides which turns exist. -->
-									{#each chatTurns as turn (turnId(turn))}
-										{@const touched = turnTouchedFile(turn)}
-										<button
-											class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left transition-colors hover:bg-violet-500/10 {touched
-												? 'text-slate-700 dark:text-slate-200'
-												: 'text-slate-400 dark:text-slate-500'}"
-											role="menuitemradio"
-											aria-checked={aiScope === turnId(turn)}
-											onclick={() => selectAiScope(turnId(turn))}
-											title={touched ? turn.promptText : `${turn.promptText} — no changes to this file`}
-										>
-											<Icon name="lucide:check" class="w-3.5 h-3.5 shrink-0 text-violet-600 dark:text-violet-400 {aiScope === turnId(turn) ? '' : 'opacity-0'}" />
-											<span class="shrink-0 text-slate-400 dark:text-slate-500">
-												{turn.turnIndex === null ? 'Now' : `Turn ${turn.turnIndex}`}
-											</span>
-											<span class="min-w-0 flex-1 truncate">{turn.promptText}</span>
-											{#if !touched}
-												<span class="shrink-0 text-2xs text-slate-400 dark:text-slate-600">—</span>
-											{/if}
-										</button>
-									{/each}
-								</div>
-							{/if}
-						</div>
-					{/if}
-					<!-- Word Wrap toggle -->
-					{#if onToggleWordWrap}
-						<button
-							class="flex p-2 rounded-lg transition-all duration-200
-							{wordWrap ?
-								'text-violet-600 dark:text-violet-400 bg-violet-100 dark:bg-violet-900/50' :
-								'text-slate-600 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-900/30'
-							}"
-							onclick={onToggleWordWrap}
-							title="Toggle Word Wrap"
-						>
-							<Icon name="lucide:wrap-text" class="w-4 h-4" />
-						</button>
-					{/if}
-					{#if canEdit}
-						<SaveButton dirty={hasChanges} saving={isSaving} onSave={() => { if (canSave) saveChanges(); }} />
-					{/if}
-
-					{#if editableContent}
-						<button class={HEADER_BUTTON} onclick={copyToClipboard} title="Copy content" aria-label="Copy content">
-							<Icon name="lucide:copy" class={HEADER_ICON} />
-						</button>
-					{/if}
-				{:else if file && file.type === 'file'}
-					<!-- Edit button for raster images the editor can round-trip -->
-					{#if canEditImage}
-						<button
-							class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-white bg-violet-600 hover:bg-violet-700 rounded-lg transition-all duration-200"
-							onclick={() => { showImageEditor = true; }}
-							title="Edit image"
-						>
-							<Icon name="lucide:pencil" class="w-3.5 h-3.5" /> Edit
-						</button>
-					{/if}
+					<span class="text-3xs px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-400 font-medium whitespace-nowrap">
+						Changed externally
+					</span>
 				{/if}
 			{/snippet}
 		</EditorHeader>

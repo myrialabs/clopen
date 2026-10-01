@@ -21,8 +21,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
 	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
-	import SaveButton from '$frontend/components/common/editor/SaveButton.svelte';
-	import DiffLayoutToggle from '$frontend/components/common/editor/DiffLayoutToggle.svelte';
+	import { layoutAction, saveAction, type HeaderAction } from '$frontend/components/common/editor/header-actions';
 	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
 	import { NO_CHANGES, type ChangeControls, type ChangeState } from '$frontend/components/common/editor/editor-changes';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
@@ -539,6 +538,33 @@
 		onNavigateAway?.();
 	}
 
+	const headerActions = $derived.by<HeaderAction[]>(() => {
+		const list: HeaderAction[] = [];
+		if (diff && selected && !selected.file.isBinary) {
+			list.push({
+				id: 'changes-only',
+				label: settings.diffChangesOnly ? 'Show the full file' : 'Show only the changes',
+				icon: settings.diffChangesOnly ? 'lucide:unfold-vertical' : 'lucide:fold-vertical',
+				active: settings.diffChangesOnly,
+				onclick: () => updateSettings({ diffChangesOnly: !settings.diffChangesOnly }),
+				priority: 5
+			});
+			if (!isNarrow) {
+				list.push(
+					layoutAction({
+						sideBySide: settings.gitDiffSideBySide,
+						onToggle: () => updateSettings({ gitDiffSideBySide: !settings.gitDiffSideBySide })
+					})
+				);
+			}
+		}
+		if (editable) list.push(saveAction({ dirty, saving, onSave: saveDraft }));
+		if (selected && selected.file.status !== 'deleted' && canReadWorkingTree) {
+			list.push({ id: 'open-in-files', label: 'Open in Files', icon: 'lucide:file-symlink', onclick: openInEditor, priority: 4 });
+		}
+		return list;
+	});
+
 	let listElement = $state<HTMLDivElement | null>(null);
 
 	/**
@@ -857,6 +883,7 @@
 				title={`${fileNameOf(selected.file.path)}${dirty ? ' •' : ''}`}
 				subtitle={fileDir || undefined}
 				changes={isTextDiff ? { state: changeState, controls: changeControls } : undefined}
+				actions={headerActions}
 			>
 				{#snippet leading()}
 					{#if isNarrow}
@@ -876,40 +903,6 @@
 						class="shrink-0 px-1 text-xs text-slate-500 dark:text-slate-400"
 						title={selected?.turn.promptText}
 					>{selected ? turnLabel(selected.turn) : ''}</span>
-				{/snippet}
-				{#snippet actions()}
-					{#if isTextDiff}
-						<button
-							type="button"
-							onclick={() => updateSettings({ diffChangesOnly: !settings.diffChangesOnly })}
-							aria-pressed={settings.diffChangesOnly}
-							title={settings.diffChangesOnly ? 'Show the full file' : 'Show only the changes'}
-							aria-label={settings.diffChangesOnly ? 'Show the full file' : 'Show only the changes'}
-							class={HEADER_BUTTON}
-						>
-							<Icon name={settings.diffChangesOnly ? 'lucide:unfold-vertical' : 'lucide:fold-vertical'} class={HEADER_ICON} />
-						</button>
-						{#if !isNarrow}
-							<DiffLayoutToggle
-								sideBySide={settings.gitDiffSideBySide}
-								onToggle={() => updateSettings({ gitDiffSideBySide: !settings.gitDiffSideBySide })}
-							/>
-						{/if}
-					{/if}
-					{#if editable}
-						<SaveButton {dirty} {saving} onSave={saveDraft} />
-					{/if}
-					{#if selected?.file.status !== 'deleted' && canReadWorkingTree}
-						<button
-							type="button"
-							onclick={openInEditor}
-							title="Open in Files"
-							aria-label="Open in Files"
-							class={HEADER_BUTTON}
-						>
-							<Icon name="lucide:file-symlink" class={HEADER_ICON} />
-						</button>
-					{/if}
 				{/snippet}
 			</EditorHeader>
 

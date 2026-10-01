@@ -18,8 +18,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
 	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
-	import DiffLayoutToggle from '$frontend/components/common/editor/DiffLayoutToggle.svelte';
-	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
+	import { layoutAction, type HeaderAction } from '$frontend/components/common/editor/header-actions';
 	import { NO_CHANGES, type ChangeControls, type ChangeState } from '$frontend/components/common/editor/editor-changes';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
 	import { SvelteSet } from 'svelte/reactivity';
@@ -136,6 +135,23 @@
 		showInfo(ok ? 'Copied' : 'Could not copy', ok ? path : 'The clipboard refused the request.');
 	}
 
+	const headerActions = $derived.by<HeaderAction[]>(() => {
+		const current = active;
+		if (!current) return [];
+		const list: HeaderAction[] = [
+			layoutAction({
+				sideBySide: renderSideBySide,
+				onToggle: () => updateSettings({ workDiffSideBySide: !settings.workDiffSideBySide })
+			}),
+			{ id: 'copy-path', label: 'Copy the path', icon: 'lucide:copy', onclick: () => copyPath(current.path), priority: 3 },
+			{ id: 'view-file', label: 'View the whole file', icon: 'lucide:file-search', onclick: () => (viewing = current), priority: 4 }
+		];
+		if (current.url) {
+			list.push({ id: 'open-web', label: 'Open the file on the web', icon: 'lucide:external-link', href: current.url, priority: 2 });
+		}
+		return list;
+	});
+
 	function statusTone(status: string): string {
 		if (status === 'added') return 'text-green-600 dark:text-green-400';
 		if (status === 'removed') return 'text-red-600 dark:text-red-400';
@@ -224,39 +240,13 @@
 					title={active.path.split('/').pop() || active.path}
 					subtitle={active.path}
 					changes={sides.isEmpty ? undefined : { state: changeState, controls: changeControls }}
+					actions={headerActions}
 				>
 					{#snippet meta()}
 						{#if active}
 							<span class="shrink-0 text-xs capitalize {statusTone(active.status)}">{active.status}</span>
 							<span class="shrink-0 text-xs text-green-600 dark:text-green-400">+{active.additions}</span>
 							<span class="shrink-0 text-xs text-red-600 dark:text-red-400">−{active.deletions}</span>
-						{/if}
-					{/snippet}
-					{#snippet actions()}
-						{#if active}
-							{@const current = active}
-							<DiffLayoutToggle
-								sideBySide={renderSideBySide}
-								onToggle={() => updateSettings({ workDiffSideBySide: !settings.workDiffSideBySide })}
-							/>
-							<button type="button" class={HEADER_BUTTON} onclick={() => copyPath(current.path)} title="Copy the path" aria-label="Copy the path">
-								<Icon name="lucide:copy" class={HEADER_ICON} />
-							</button>
-							<button type="button" class={HEADER_BUTTON} onclick={() => (viewing = current)} title="View the whole file" aria-label="View the whole file">
-								<Icon name="lucide:file-search" class={HEADER_ICON} />
-							</button>
-							{#if current.url}
-								<a
-									href={current.url}
-									target="_blank"
-									rel="noreferrer noopener"
-									class="{HEADER_BUTTON} no-underline"
-									title="Open the file on the web"
-									aria-label="Open the file on the web"
-								>
-									<Icon name="lucide:external-link" class={HEADER_ICON} />
-								</a>
-							{/if}
 						{/if}
 					{/snippet}
 				</EditorHeader>
