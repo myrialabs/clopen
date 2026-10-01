@@ -76,7 +76,8 @@ before the first `bun add`.
 
 `getToolStatus(tool)` returns `{ tool, installed, version, source }` (engines
 additionally carry `requiredVersion` + `needsUpdate`):
-- `chrome` has a special path (puppeteer cache scan + system Chrome).
+- `chrome` has a special path (puppeteer cache scan, newest build first +
+  system Chrome).
 - `cloudflared` at `~/.clopen/bin/cloudflared` is marked `source: 'clopen'`.
 - **Engine SDKs** are detected by `readEngineSdkVersion(pkg)` — the SDK's
   version inside the stack dir, NOT a CLI on PATH. `source` is the stack dir;
@@ -97,8 +98,20 @@ additionally carry `requiredVersion` + `needsUpdate`):
 4. `Bun.spawn(spawnArgs, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore', env })`.
 5. Streams stdout/stderr per-line into a ring buffer (10k lines) + emits
    `stack:install-stream` to the user room.
-6. On exit: emits `stack:install-finished` + retains the session
+6. After a successful engine install, prunes the stack dir
+   (`pruneStackDependencies`): `bun remove`s packages that
+   `knownStackEnginePackages()` no longer lists, then sweeps `node_modules`
+   entries `bun.lock` does not resolve — bun leaves a dropped package's
+   platform binary behind on its own. Skipped while another install shares
+   the dir; a failed prune never fails the install.
+7. On exit: emits `stack:install-finished` + retains the session
    for 5 minutes for re-attach.
+
+The other managed stacks prune themselves too: the embedding artifact removes
+other version directories once the current one loads, and superseded Chrome
+for Testing builds are deleted at server startup (before anything can launch
+one). `resolveClopenChromePath()` picks the newest build by numeric build id —
+directory order is alphabetical, which used to select the oldest.
 
 Exit-code hints (`explainFailure(137|143, cancelled)`) explain SIGKILL OOM
 or SIGTERM with actual total/free memory readings.

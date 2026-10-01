@@ -1744,3 +1744,38 @@ that feeds the rendered list — across 2140 stored Task blocks, not one carries
 you its premise is wrong, so the replay lives in
 `frontend/utils/chat/task-progress.ts` now, behind unit tests that state each
 scenario, rather than inside a `$derived` where no test could reach it.
+
+### 10.28 Managed stack dirs never shed anything on their own
+
+Every managed stack only ever grew. Three independent mechanisms, one shape:
+
+- **Engines (`~/.clopen/stack/engines`).** `bun add` only adds or re-pins, so a
+  package dropped from `ENGINE_PACKAGES` / `ENGINE_CLI` stays declared — and
+  installed — forever. Worse, `bun remove` is not enough either: dropping a
+  package that carried per-platform optional dependencies leaves the platform
+  package in `node_modules`, absent from `bun.lock` and untouched by
+  `bun install --force` (measured: ~330 MB for a retired Copilot CLI). A
+  successful engine install now runs `pruneStackDependencies`
+  (`install-runner.ts`): `bun remove` whatever `knownStackEnginePackages()` no
+  longer lists, then `sweepOrphanedModules` deletes every top-level module
+  `bun.lock` does not resolve (plus dangling `.bin` links). The lockfile is the
+  authority — without a readable one nothing is deleted. Removing a top-level
+  declaration is safe while an older SDK still depends on the package: bun keeps
+  it as a transitive dependency. The prune is skipped while another install
+  shares the dir, because that install's extracted files may not be in the
+  lockfile yet; the last install to finish cleans up.
+- **Embedding (`~/.clopen/stack/embedding/<version>`).** A version bump downloads
+  into a fresh directory and nothing read the old one again. Other version dirs
+  (and stale `.partial` staging dirs) are removed once the current version has
+  **loaded** — gated on the load, so a failed upgrade keeps the previous
+  artifact.
+- **Chrome for Testing (`~/.clopen/bin/chrome/<platform>-<buildId>`).**
+  `chrome@stable` installs each build beside the last, and the resolver took the
+  first `readdir` entry — alphabetical, so after an update it kept launching the
+  **oldest** build (`mac_arm-140…` sorts before `mac_arm-141…`). It now sorts by numeric build id, and superseded builds are
+  deleted at server startup, before anything can launch one: right after an
+  update the old build may still be running, and deleting a live app bundle
+  (macOS) or a locked executable (Windows) is not safe.
+
+The rule for any future managed stack: decide at creation time **who removes
+what replaced it**, and gate the removal on the replacement being proven usable.

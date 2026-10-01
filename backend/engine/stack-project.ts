@@ -17,7 +17,7 @@
  * written by an older clopen picks the field up on its next install.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { debug } from '$shared/utils/logger';
 import { engineCliTrustedPackages } from './engine-cli';
@@ -69,4 +69,74 @@ export function ensureStackProject(dir: string): void {
 
 	writeFileSync(path, next);
 	debug.log('engine', `Stack project package.json ${existing ? 'updated' : 'created'}: ${path}`);
+}
+
+/**
+ * Dependencies declared in the stack project that clopen no longer installs.
+ * `bun add` only ever adds or re-pins, so a package dropped from the engine
+ * package list stays declared — and installed — forever without this.
+ */
+export function staleStackDependencies(dir: string, known: Set<string>): string[] {
+	const existing = readExisting(join(dir, 'package.json'));
+	const deps = existing?.dependencies;
+	if (!deps || typeof deps !== 'object') return [];
+	return Object.keys(deps as Record<string, string>).filter(name => !known.has(name)).sort();
+}
+
+/** Top-level package names the stack project's bun.lock resolves, or null if unreadable. */
+function lockedPackages(dir: string): Set<string> | null {
+	try {
+		const lock = Bun.JSONC.parse(readFileSync(join(dir, 'bun.lock'), 'utf8')) as { packages?: Record<string, unknown> };
+		if (!lock.packages || typeof lock.packages !== 'object') return null;
+		// Nested installs are keyed `parent/child` (or `@scope/parent/child`);
+		// only the hoisted top level maps onto `node_modules/<name>`.
+		return new Set(Object.keys(lock.packages).filter(key => key.split('/').length === (key.startsWith('@') ? 2 : 1)));
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Delete package directories under the stack's node_modules that bun.lock no
+ * longer resolves, plus `.bin` links left pointing at them.
+ *
+ * bun never removes them itself: dropping a package that carried per-platform
+ * optional dependencies leaves the platform package behind, even through
+ * `bun install --force`. Copilot's old CLI left ~330 MB this way. The lockfile
+ * is the authority — without a readable one nothing is touched.
+ */
+export function sweepOrphanedModules(dir: string): string[] {
+	const locked = lockedPackages(dir);
+	const modules = join(dir, 'node_modules');
+	if (!locked || !existsSync(modules)) return [];
+
+	const installed: string[] = [];
+	for (const entry of readdirSync(modules)) {
+		if (entry.startsWith('.')) continue;
+		if (entry.startsWith('@')) {
+			for (const name of readdirSync(join(modules, entry))) installed.push(`${entry}/${name}`);
+		} else {
+			installed.push(entry);
+		}
+	}
+
+	const removed = installed.filter(name => !locked.has(name)).sort();
+	for (const name of removed) {
+		rmSync(join(modules, name), { recursive: true, force: true });
+	}
+
+	const bin = join(modules, '.bin');
+	if (removed.length > 0 && existsSync(bin)) {
+		for (const link of readdirSync(bin)) {
+			const path = join(bin, link);
+			try {
+				statSync(path);
+			} catch {
+				if (lstatSync(path).isSymbolicLink()) rmSync(path, { force: true });
+			}
+		}
+	}
+
+	if (removed.length > 0) debug.log('engine', `Swept orphaned stack packages: ${removed.join(', ')}`);
+	return removed;
 }

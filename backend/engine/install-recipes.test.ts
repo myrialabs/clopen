@@ -24,15 +24,16 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { EngineType } from '$shared/types/unified';
-import { ENGINE_PACKAGES, engineInstallArgs, type ToolId } from './install-recipes';
+import { ENGINE_PACKAGES, engineInstallArgs, knownStackEnginePackages, pruneStaleChromeBuilds, resolveClopenChromePath, type ToolId } from './install-recipes';
+import { getClopenDir } from '$backend/utils/paths';
 import { ENGINE_SDK, TOOL_FOR_ENGINE } from './engine-setup';
 import { getRequiredSdkVersion } from './sdk-loader';
 import { ENGINE_CLI, engineCliTrustedPackages, getRequiredCliVersion } from './engine-cli';
-import { ensureStackProject } from './stack-project';
+import { ensureStackProject, staleStackDependencies, sweepOrphanedModules } from './stack-project';
 
 const pkg = JSON.parse(
 	readFileSync(join(import.meta.dir, '..', '..', 'package.json'), 'utf8')
@@ -194,6 +195,105 @@ describe('on-demand engine CLIs', () => {
 		expect(merged.dependencies).toEqual({ '@opencode-ai/sdk': '1.18.34' });
 		for (const pkg of engineCliTrustedPackages()) {
 			expect(merged.trustedDependencies).toContain(pkg);
+		}
+	});
+});
+
+describe('stack dir pruning', () => {
+	function stackDir(dependencies: Record<string, string>): string {
+		const dir = mkdtempSync(join(tmpdir(), 'clopen-stack-'));
+		writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'clopen-stack-engines', dependencies }));
+		return dir;
+	}
+
+	test('every package an install adds counts as known', () => {
+		// Otherwise the prune after an install would remove what it just added.
+		const known = knownStackEnginePackages();
+		const installed = (Object.keys(ENGINE_PACKAGES) as ToolId[])
+			.flatMap(tool => engineInstallArgs(tool))
+			.map(arg => arg.replace(/@[^@/]+$/, ''));
+		expect(installed.filter(name => !known.has(name))).toEqual([]);
+	});
+
+	test('a package clopen stopped installing is stale', () => {
+		// e.g. a CLI that used to be pinned beside its SDK until the SDK bundled it.
+		const dir = stackDir({ '@acme/retired-engine-cli': '1.0.0', '@opencode-ai/sdk': '1.18.34', 'opencode-ai': '1.18.34' });
+		expect(staleStackDependencies(dir, knownStackEnginePackages())).toEqual(['@acme/retired-engine-cli']);
+	});
+
+	test('modules bun.lock no longer resolves are swept, with their bin links', () => {
+		// bun leaves a dropped package's platform binary behind, even through
+		// `bun install --force` — this is what kept ~330 MB of the old Copilot CLI.
+		const dir = stackDir({ '@github/copilot-sdk': '1.0.16' });
+		writeFileSync(join(dir, 'bun.lock'), `{
+			"lockfileVersion": 1,
+			"packages": {
+				"@github/copilot-sdk": ["@github/copilot-sdk@1.0.16", "", {}, ""],
+				"koffi": ["koffi@3.2.1", "", {}, ""],
+				"koffi/nested": ["nested@1.0.0", "", {}, ""],
+			},
+		}`);
+		const modules = join(dir, 'node_modules');
+		for (const name of ['@github/copilot-sdk', '@github/copilot-darwin-arm64', 'koffi', 'detect-libc']) {
+			mkdirSync(join(modules, name), { recursive: true });
+		}
+		mkdirSync(join(modules, '.bin'));
+		symlinkSync(join(modules, '@github/copilot-darwin-arm64', 'copilot'), join(modules, '.bin', 'copilot-darwin-arm64'));
+
+		expect(sweepOrphanedModules(dir)).toEqual(['@github/copilot-darwin-arm64', 'detect-libc']);
+		expect(existsSync(join(modules, '@github/copilot-sdk'))).toBe(true);
+		expect(existsSync(join(modules, 'koffi'))).toBe(true);
+		expect(existsSync(join(modules, '@github/copilot-darwin-arm64'))).toBe(false);
+		expect(existsSync(join(modules, '.bin', 'copilot-darwin-arm64'))).toBe(false);
+	});
+
+	test('nothing is swept without a readable lockfile', () => {
+		const dir = stackDir({});
+		mkdirSync(join(dir, 'node_modules', 'anything'), { recursive: true });
+		expect(sweepOrphanedModules(dir)).toEqual([]);
+		expect(existsSync(join(dir, 'node_modules', 'anything'))).toBe(true);
+	});
+
+	test('a dir without dependencies has nothing stale', () => {
+		expect(staleStackDependencies(stackDir({}), knownStackEnginePackages())).toEqual([]);
+		expect(staleStackDependencies(mkdtempSync(join(tmpdir(), 'clopen-stack-')), knownStackEnginePackages())).toEqual([]);
+	});
+});
+
+describe('managed Chrome builds', () => {
+	const cacheDir = join(getClopenDir(), 'bin', 'chrome');
+
+	/** Lay out a fake build the way @puppeteer/browsers does. */
+	function fakeBuild(buildId: string): string {
+		const buildDir = join(cacheDir, `${process.platform === 'win32' ? 'win64' : process.platform === 'darwin' ? 'mac_arm' : 'linux'}-${buildId}`);
+		const executable = process.platform === 'darwin'
+			? join(buildDir, 'chrome-mac-arm64', 'Google Chrome for Testing.app', 'Contents', 'MacOS', 'Google Chrome for Testing')
+			: process.platform === 'win32'
+				? join(buildDir, 'chrome-win64', 'chrome.exe')
+				: join(buildDir, 'chrome-linux64', 'chrome');
+		mkdirSync(join(executable, '..'), { recursive: true });
+		writeFileSync(executable, '');
+		return executable;
+	}
+
+	test('the newest build wins and older ones are pruned', () => {
+		rmSync(cacheDir, { recursive: true, force: true });
+		try {
+			// Alphabetical order puts 99 last and 100 first; numeric order must not.
+			const older = fakeBuild('99.0.4844.51');
+			const newest = fakeBuild('141.0.7390.54');
+			const middle = fakeBuild('140.0.7339.80');
+			writeFileSync(join(cacheDir, '.metadata'), '{}');
+
+			expect(resolveClopenChromePath()).toBe(newest);
+
+			pruneStaleChromeBuilds();
+			expect(existsSync(newest)).toBe(true);
+			expect(existsSync(middle)).toBe(false);
+			expect(existsSync(older)).toBe(false);
+			expect(existsSync(join(cacheDir, '.metadata'))).toBe(true);
+		} finally {
+			rmSync(cacheDir, { recursive: true, force: true });
 		}
 	});
 });

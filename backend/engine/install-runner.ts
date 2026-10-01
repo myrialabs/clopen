@@ -24,8 +24,8 @@ import { getCleanSpawnEnv } from '$backend/utils/env';
 import { refreshProcessPath } from '$backend/utils/path-enrich';
 import { ensureCurlAvailable } from '$backend/utils/static-curl';
 import type { Recipe, ToolId } from './install-recipes';
-import { resolveRecipe } from './install-recipes';
-import { ensureStackProject } from './stack-project';
+import { knownStackEnginePackages, resolveRecipe } from './install-recipes';
+import { ensureStackProject, staleStackDependencies, sweepOrphanedModules } from './stack-project';
 import { invalidateEngineCliCache } from './engine-cli';
 
 const RING_BUFFER_LINES = 10_000;
@@ -304,8 +304,62 @@ async function runInstall(session: Session, env: Record<string, string>): Promis
 	if (exitCode !== 0) {
 		const hint = explainFailure(exitCode, session.status === 'cancelled');
 		if (hint) emitStream(session, 'stderr', hint + '\n');
+	} else if (recipe.cwd && session.status === 'running') {
+		await pruneStackDependencies(session, recipe.cwd, env);
 	}
 	finalizeSession(session, exitCode === 0 ? 'success' : 'failed', exitCode);
+}
+
+/**
+ * Drop what the stack project no longer needs, in two steps:
+ *   1. `bun remove` packages it still declares but clopen no longer installs.
+ *      Safe even while an older SDK still depends on one: bun keeps it as a
+ *      transitive dependency until nothing needs it.
+ *   2. Sweep node_modules entries bun.lock no longer resolves — bun leaves
+ *      those behind on its own (see `sweepOrphanedModules`).
+ *
+ * Runs only after a successful install, so the previous set stays usable if
+ * the install fails. A failed prune never fails the install that preceded it;
+ * the leftover is retried after the next one.
+ */
+async function pruneStackDependencies(session: Session, cwd: string, env: Record<string, string>): Promise<void> {
+	// Another install in the same dir may have extracted packages its bun.lock
+	// write hasn't recorded yet; sweeping now would delete them. The last
+	// install to finish does the cleanup instead.
+	const sharing = [...sessions.values()].some(other =>
+		other !== session && other.status === 'running' && other.recipe.cwd === cwd
+	);
+	if (sharing) return;
+
+	const stale = staleStackDependencies(cwd, knownStackEnginePackages());
+	if (stale.length > 0) await removeStackDependencies(session, cwd, env, stale);
+
+	try {
+		const swept = sweepOrphanedModules(cwd);
+		if (swept.length > 0) emitStream(session, 'stdout', `» Removed leftover packages: ${swept.join(', ')}\n`);
+	} catch (err) {
+		emitStream(session, 'stderr', `Could not remove leftover packages: ${err instanceof Error ? err.message : String(err)}\n`);
+	}
+}
+
+async function removeStackDependencies(session: Session, cwd: string, env: Record<string, string>, stale: string[]): Promise<void> {
+	emitStream(session, 'stdout', `» Removing packages clopen no longer uses: ${stale.join(', ')}\n`);
+	try {
+		const proc = Bun.spawn(['bun', 'remove', ...stale], {
+			stdout: 'pipe',
+			stderr: 'pipe',
+			stdin: 'ignore',
+			env,
+			cwd
+		});
+		session.proc = proc;
+		const exitCode = await runStreamedProcess(session, proc);
+		if (exitCode !== 0) {
+			emitStream(session, 'stderr', `Could not remove unused packages (exit ${exitCode}); will retry after the next install.\n`);
+		}
+	} catch (err) {
+		emitStream(session, 'stderr', `Could not remove unused packages: ${err instanceof Error ? err.message : String(err)}\n`);
+	}
 }
 
 /**
