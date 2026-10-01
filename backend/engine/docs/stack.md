@@ -66,8 +66,8 @@ its pinned SDK package(s) (`ENGINE_PACKAGES`, versions read from `package.json`
 via `getRequiredSdkVersion`) and installs them with `bun add <pkg>@<version>`
 run with `recipe.cwd = getStackEnginesDir()`, so they land in
 `~/.clopen/stack/engines` instead of the global store. Installing the SDK also
-pulls whatever CLI binary it bundles; the drifting Copilot CLI is pinned exact
-(`@github/copilot`). Because everything is fully clopen-managed, engine recipes
+pulls whatever runtime binary it ships as a platform package (Copilot, Claude,
+Codex). Because everything is fully clopen-managed, engine recipes
 carry **no** `manualInstructions` — there is no command for the user to run by
 hand. `install-runner.ts` bootstraps the stack dir + a minimal `package.json`
 before the first `bun add`.

@@ -86,8 +86,8 @@ export interface ToolStatus {
 /**
  * Engine → the npm package(s) clopen must install to run that engine on demand.
  * The FIRST entry is the SDK clopen imports (used for install-state detection);
- * any extras pin something the SDK would otherwise float — a transitive CLI
- * (copilot), a sibling package (pi, cline), or an unmet PEER dependency.
+ * any extras pin something the SDK would otherwise float — a sibling package
+ * (pi, cline) or an unmet PEER dependency.
  *
  * Peers are the subtle case. `@anthropic-ai/claude-agent-sdk` declares
  * `@anthropic-ai/sdk`, `@modelcontextprotocol/sdk` and `zod` as peers and ships
@@ -113,7 +113,7 @@ export const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
 		'zod'
 	],
 	opencode: ['@opencode-ai/sdk'],
-	copilot: ['@github/copilot-sdk', '@github/copilot'],
+	copilot: ['@github/copilot-sdk'],
 	codex: ['@openai/codex-sdk'],
 	qwen: ['@qwen-code/sdk'],
 	pi: ['@earendil-works/pi-coding-agent', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core'],

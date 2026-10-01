@@ -119,16 +119,16 @@ separate restart event.
 | `engine:copilot-accounts-switch`     | Set active                                    |
 | `engine:copilot-accounts-delete`     |                                               |
 | `engine:copilot-accounts-rename`     |                                               |
-| `engine:copilot-server-restart`      | Restart cached `CopilotClient` so a new PAT applies — same Restart-Server pattern as §4.2 |
 
 The Copilot setup flow does not need a PTY — the user pastes a GitHub
 Personal Access Token in the UI (Copilot Requests + read:user scope), and
 the handler stores it via `engineQueries.createAccount`. No re-auth dance.
 
-Copilot follows the **same Restart-Server pattern** documented in §4.2
-because `CopilotClient` takes the PAT at construction time. Account
-add / remove / switch flips a `needsRestart` flag in the UI that surfaces
-a "Restart Server" button in both Settings → Engines and Chat Input.
+Account add / remove / switch bumps the engine config revision, which
+retires the cached `CopilotClient` so the next stream starts one on the
+current active account. A chat that picks another account needs no restart
+at all: each session carries its own token (`SessionConfig.gitHubToken`) —
+see `lessons-learned.md` §10.9.
 
 ### 4.4 Stack — `stack:*`
 

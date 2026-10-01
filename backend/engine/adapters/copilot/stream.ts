@@ -13,8 +13,7 @@ import type {
 	ResumeSessionConfig,
 	SessionEvent,
 	ModelInfo,
-	PermissionRequest,
-	PermissionRequestResult,
+	MessageOptions,
 } from '@github/copilot-sdk';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
@@ -29,9 +28,10 @@ import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { resolveProjectBridge } from '$backend/artifacts/project';
-import { resolvePermissionsFromDb, isToolAllowed, type ResolvedPermissions } from '$backend/permissions';
+import { resolvePermissionsFromDb } from '$backend/permissions';
 import { handleStreamError, buildSessionError } from './error-handler';
 import { fetchCopilotModels } from './models';
+import { buildCopilotManagedSettings, enforceCopilotPermission } from './permissions';
 
 // `UserInputResponse` isn't part of the SDK's public type exports
 // (see `node_modules/@github/copilot-sdk/dist/index.d.ts`), but
@@ -39,38 +39,17 @@ import { fetchCopilotModels } from './models';
 // it from the SessionConfig field so we don't drift from the SDK.
 type UserInputResponse = Awaited<ReturnType<NonNullable<SessionConfig['onUserInputRequest']>>>;
 
-// `MessageOptions` is likewise not re-exported from the SDK root, so derive the
-// attachment element type from `session.send`'s options overload.
-type MessageAttachment = NonNullable<Parameters<CopilotSession['send']>[0] extends string
-	? never
-	: NonNullable<Extract<Parameters<CopilotSession['send']>[0], { prompt: string }>['attachments']>>[number];
+type MessageAttachment = NonNullable<MessageOptions['attachments']>[number];
+type CopilotReasoningEffort = NonNullable<ResumeSessionConfig['reasoningEffort']>;
 
 /**
- * Map a Copilot permission request to the token the permission policy matches on.
- * MCP / custom tools carry a `toolName`; everything else is matched by its
- * operation `kind` (`shell` / `write` / `read` / `url` / `memory` / …), which is
- * why the Copilot builtin catalog lists kinds rather than tool names.
+ * Every level the SDK's `reasoningEffort` accepts. Typed against the SDK union
+ * so a level it drops is a compile error here. The picker only offers what the
+ * model reports in `supportedReasoningEfforts`; this guards against a stale
+ * per-model default from another engine reaching the SDK.
  */
-function copilotPermissionToken(request: PermissionRequest): string {
-	const named = (request as { toolName?: string }).toolName;
-	return named && named.trim() ? named : request.kind;
-}
+const COPILOT_EFFORTS: ReadonlySet<string> = new Set<CopilotReasoningEffort>(['low', 'medium', 'high', 'xhigh', 'max']);
 
-/**
- * Enforce the resolved permission policy for one Copilot request. Returns a
- * reject decision for blocked tools, or null to fall through to auto-approve.
- */
-function enforceCopilotPermission(
-	permissions: ResolvedPermissions,
-	request: PermissionRequest
-): PermissionRequestResult | null {
-	const token = copilotPermissionToken(request);
-	if (!isToolAllowed(permissions, token)) {
-		debug.log('permissions', `⛔ Blocked tool "${token}" (Clopen permission policy)`);
-		return { kind: 'reject', feedback: `Blocked by Clopen permission policy: ${token}` };
-	}
-	return null;
-}
 import {
 	createStreamConverterState,
 	convertSessionStart,
@@ -134,12 +113,6 @@ export class CopilotEngine implements AIEngine {
 	 */
 	private runs = new EngineRuns<CopilotRun>();
 	private modelsCache: ModelInfo[] | null = null;
-	/**
-	 * Account ID currently baked into `this.client`. The Copilot SDK takes the
-	 * GitHub token as a constructor argument, so per-stream account overrides
-	 * require disposing and re-creating the client (see streamQuery below).
-	 */
-	private currentAccountId: number | null = null;
 
 	/**
 	 * AskUserQuestion bookkeeping. The Copilot SDK splits the `ask_user`
@@ -167,18 +140,17 @@ export class CopilotEngine implements AIEngine {
 		return this.runs.isActive;
 	}
 
+	/**
+	 * Start the runtime once per instance. The client-level token only
+	 * authenticates the runtime process and the model listing; every session
+	 * carries its own account's token (see `sessionAuth`), so a stream on another
+	 * account no longer tears the client down — which used to abort every other
+	 * chat streaming on this instance.
+	 */
 	async initialize(accountId?: number): Promise<void> {
-		if (this._isInitialized && (accountId == null || accountId === this.currentAccountId)) {
-			return;
-		}
+		if (this._isInitialized) return;
 
-		const account = accountId != null
-			? engineQueries.getAccount(accountId)
-			: engineQueries.getActiveAccountForEngine('copilot');
-		if (!account) {
-			throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
-		}
-
+		const account = resolveCopilotAccount(accountId);
 		const { CopilotClient } = await loadEngineSdk<typeof import('@github/copilot-sdk')>('copilot', '@github/copilot-sdk');
 
 		this.client = new CopilotClient({
@@ -188,10 +160,10 @@ export class CopilotEngine implements AIEngine {
 			// {clopenDir}/engine/copilot/user/ instead of the shared ~/.copilot. The SDK
 			// forwards this as COPILOT_HOME to the spawned runtime.
 			baseDirectory: getEngineUserConfigDir('copilot'),
+			clientInfo: { applicationName: 'clopen' },
 		});
 
 		await this.client.start();
-		this.currentAccountId = account.id;
 		this._isInitialized = true;
 		debug.log('engine', `Copilot engine initialized (account ${account.id})`);
 	}
@@ -217,7 +189,6 @@ export class CopilotEngine implements AIEngine {
 
 		this.client = null;
 		this.modelsCache = null;
-		this.currentAccountId = null;
 		this._isInitialized = false;
 		debug.log('engine', 'Copilot engine disposed');
 	}
@@ -238,22 +209,13 @@ export class CopilotEngine implements AIEngine {
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
 		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
 
-		// Copilot's `reasoningEffort` accepts low | medium | high | xhigh; only
-		// applied for models that support it (unsupported tokens are dropped so
-		// the SDK falls back to the model default).
-		const copilotEfforts = new Set<string>(['low', 'medium', 'high', 'xhigh']);
+		// Unknown tokens are dropped so the SDK falls back to the model default.
 		const reasoningOption: Pick<ResumeSessionConfig, 'reasoningEffort'> | Record<string, never> =
-			reasoningEffort && copilotEfforts.has(reasoningEffort)
-				? { reasoningEffort: reasoningEffort as ResumeSessionConfig['reasoningEffort'] }
+			reasoningEffort && COPILOT_EFFORTS.has(reasoningEffort)
+				? { reasoningEffort: reasoningEffort as CopilotReasoningEffort }
 				: {};
 
-		// Per-stream account override: the Copilot SDK takes the GitHub token at
-		// construction time, so an account switch requires recreating the client.
-		if (this._isInitialized && accountId != null && accountId !== this.currentAccountId) {
-			debug.log('engine', `Copilot account switch ${this.currentAccountId} → ${accountId}; re-initializing client`);
-			await this.dispose();
-		}
-
+		const auth = sessionAuth(accountId);
 		if (!this._isInitialized || !this.client) {
 			await this.initialize(accountId);
 		}
@@ -344,7 +306,13 @@ export class CopilotEngine implements AIEngine {
 		try {
 			const mcpConfig = getCopilotMcpConfig(mcpProfileFilter, options.mcpContext);
 
+			const managedSettings = buildCopilotManagedSettings(permissions);
+
 			const baseConfig: ResumeSessionConfig = {
+				...auth,
+				// Re-supplied on every resume: the runtime does not persist injected
+				// settings, and omitting them clears the layer.
+				...(managedSettings && { managedSettings }),
 				onPermissionRequest: (request, invocation) =>
 					enforceCopilotPermission(permissions, request) ?? approveAll(request, invocation),
 				// Enables the agent's `ask_user` tool. Without this callback the
@@ -429,12 +397,13 @@ export class CopilotEngine implements AIEngine {
 				try {
 					session = await this.client.resumeSession(resumeId, baseConfig);
 					debug.log('engine', `Copilot resumed session: ${resumeId}${resumeId === resume ? '' : ` (forked from ${resume})`}`);
+					await reloadInstructions(session);
 				} catch (error) {
 					debug.warn('engine', `Failed to resume Copilot session ${resumeId}, creating fresh:`, error);
-					session = await this.client.createSession({ ...baseConfig } as SessionConfig);
+					session = await this.client.createSession(freshSessionConfig(baseConfig));
 				}
 			} else {
-				session = await this.client.createSession({ ...baseConfig } as SessionConfig);
+				session = await this.client.createSession(freshSessionConfig(baseConfig));
 			}
 
 			run.session = session;
@@ -708,9 +677,7 @@ export class CopilotEngine implements AIEngine {
 			accountId,
 		} = options;
 
-		if (this._isInitialized && accountId != null && accountId !== this.currentAccountId) {
-			await this.dispose();
-		}
+		const auth = sessionAuth(accountId);
 		if (!this._isInitialized || !this.client) {
 			await this.initialize(accountId);
 		}
@@ -725,6 +692,7 @@ export class CopilotEngine implements AIEngine {
 		const jsonPrompt = buildJsonPrompt(prompt, schema);
 
 		const session = await this.client.createSession({
+			...auth,
 			model: modelId,
 			workingDirectory: resolvedProjectPath,
 			onPermissionRequest: approveAll,
@@ -777,6 +745,48 @@ export class CopilotEngine implements AIEngine {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+function resolveCopilotAccount(accountId?: number) {
+	const account = accountId != null
+		? engineQueries.getAccount(accountId)
+		: engineQueries.getActiveAccountForEngine('copilot');
+	if (!account) {
+		throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
+	}
+	return account;
+}
+
+/**
+ * Per-session GitHub identity. The runtime resolves this token into the
+ * session's login, plan, endpoints and quota, independently of the client's
+ * own token — so concurrent chats on different accounts share one runtime.
+ */
+function sessionAuth(accountId?: number): Pick<SessionConfig, 'gitHubToken'> {
+	return { gitHubToken: resolveCopilotAccount(accountId).credential };
+}
+
+/**
+ * Create-time config. Instruction discovery is cached process-wide by the
+ * runtime, and the client lives across turns while AGENTS.md, Copilot
+ * instruction files and Clopen's artifact sync rewrite them — so every new
+ * session re-reads them from disk instead of inheriting a stale cache.
+ */
+function freshSessionConfig(base: ResumeSessionConfig): SessionConfig {
+	return { ...base, refreshCustomInstructions: true } as SessionConfig;
+}
+
+/**
+ * Resume-time counterpart of `refreshCustomInstructions`, which only exists on
+ * create. Experimental RPC, so a failure is logged and the turn carries on with
+ * the instructions the runtime already has.
+ */
+async function reloadInstructions(session: CopilotSession): Promise<void> {
+	try {
+		await session.rpc.instructions.reload();
+	} catch (error) {
+		debug.warn('engine', 'Copilot instructions.reload failed (non-fatal):', error);
+	}
+}
 
 function extractPromptText(prompt: EngineQueryOptions['prompt']): string {
 	const parts: string[] = [];
