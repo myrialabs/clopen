@@ -905,10 +905,26 @@ alone — confirm against the binary's OpenAPI doc.**
 
 Consequence: the `question.asked` / `message.part.delta` / `permission.asked`
 handlers in `opencode/stream.ts` are correct at runtime but **not**
-type-checked against the SDK (the cast hides them). The future-proofing
-move — should the binary ever drop the legacy v1 stream in favour of
-`session.next*` — is to migrate the adapter onto the typed `@opencode-ai/sdk/v2`
-event protocol. Until then, v1 is intentional.
+type-checked against the SDK (the cast hides them). Every bump must therefore
+diff the binary's `/doc` between the old and new pin — paths, event literals
+and schemas — and watch one real prompt's event types arrive. The 1.18.34 pass
+did exactly that: zero operations, literals or schemas added or removed (only
+`ProviderConfig.timeout/chunkTimeout`, which Clopen never sets), and the
+legacy events still flow.
+
+**`@opencode-ai/sdk/v2` is not where OpenCode is going — OpenCode V2 is.**
+OpenCode 2.x is a separate product: binary `@opencode/cli`, clients
+`@opencode/client` (HTTP) and `@opencode/sdk` (in-process host, ~417 MB of
+dependencies), a `/api/*` contract with `session.text.*` / `session.tool.*` /
+`session.execution.*` events, `permissions[]` rules, forms for questions, and a
+native config shape (`mcp.servers`, `providers`, `agents`). Its binary no longer
+serves the v1 API at all — `/session`, `/event` and `/config/providers` fall
+through to the web UI — so moving there is an adapter rewrite, not an import
+swap. It does migrate a v1 `opencode.db` in place with session ids preserved,
+and `serve` without `--service` stays inside the `XDG_*` sandbox. Clopen stayed
+on the v1 line in October 2026 because V2's own OpenAPI calls itself an
+"Experimental HttpApi" and shipped 21 releases in its first 19 days while the
+1.18.x line kept releasing; revisit once that contract settles.
 
 ---
 

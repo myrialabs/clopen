@@ -89,7 +89,7 @@
     "@github/copilot": "1.0.79",
     "@github/copilot-sdk": "1.0.9",
     "@openai/codex-sdk": "0.147.0",
-    "@opencode-ai/sdk": "1.18.18",
+    "@opencode-ai/sdk": "1.18.34",
     "@qwen-code/sdk": "0.1.8",
     "@sveltejs/vite-plugin-svelte": "^6.0.0",
     "@tailwindcss/vite": "^4.1.11",
