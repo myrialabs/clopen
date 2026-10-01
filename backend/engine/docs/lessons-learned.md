@@ -194,37 +194,36 @@ flag is off.
 ### 10.9 Per-stream account override when the SDK takes the credential at construction
 
 Most SDKs accept env vars per-call (Claude) or read them from the
-subprocess environment (OpenCode). The Copilot SDK is different: the
-GitHub token is passed to `new CopilotClient({ gitHubToken })` at
-construction time and cannot be swapped on the fly.
+subprocess environment (OpenCode). The Copilot client takes a GitHub token
+at construction — but that token only authenticates the runtime process
+(and the model listing). Each session carries its own identity:
+`SessionConfig.gitHubToken` is resolved by the runtime into the session's
+login, plan, endpoints and quota, independently of the client's token.
 
 Pattern in `copilot/stream.ts`:
 
 ```ts
-private currentAccountId: number | null = null;
-
 async initialize(accountId?: number): Promise<void> {
-  if (this._isInitialized && (accountId == null || accountId === this.currentAccountId)) {
-    return;   // already initialised with this account → no-op
-  }
-  const account = accountId != null
-    ? engineQueries.getAccount(accountId)
-    : engineQueries.getActiveAccountForEngine('copilot');
+  if (this._isInitialized) return;   // one client per instance, whatever the account
+  const account = resolveCopilotAccount(accountId);
   this.client = new CopilotClient({ gitHubToken: account.credential, ... });
-  this.currentAccountId = account.id;
   ...
 }
 
 async *streamQuery(options) {
-  // Per-stream account override: dispose + re-init when it differs.
-  if (this._isInitialized && options.accountId != null
-      && options.accountId !== this.currentAccountId) {
-    await this.dispose();
-  }
+  const auth = sessionAuth(options.accountId);   // { gitHubToken } of THIS stream's account
   if (!this._isInitialized) await this.initialize(options.accountId);
+  const baseConfig = { ...auth, ... };          // on create AND resume
   ...
 }
 ```
+
+Until the 1.0.16 bump the adapter instead disposed and rebuilt the client
+whenever a stream named a different account. `dispose()` stops **every** run
+on the instance, so switching accounts in one chat aborted every other
+Copilot chat streaming in the same project. Prefer a per-session credential
+whenever the SDK has one; rebuilding a shared client is a cross-chat side
+effect even when it looks like a local one.
 
 The frontend wiring is shared with Claude (single-account-list engines —
 see §6.2): both stores expose the same API, so `EngineModelPicker.svelte`
@@ -248,7 +247,7 @@ resume.
 |-----------|----------------------------------------------------------------------------------------------|
 | Claude    | Pass `forkSession: true` in the SDK options on every call — native.                          |
 | OpenCode  | Call `client.session.fork({ path: { id: resume } })` on every resume — native.               |
-| Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (added in `@github/copilot-sdk` 1.0.0-beta.4; still marked `@experimental` in 1.0.9, so keep the fallback-to-plain-resume path). |
+| Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (added in `@github/copilot-sdk` 1.0.0-beta.4; still marked `@experimental` in 1.0.16, so keep the fallback-to-plain-resume path). |
 | Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
 | Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
 | Pi        | `SessionManager.forkFrom()` on the on-disk JSONL tree (in Clopen's isolated sessions dir) — native, on every resume. |
@@ -1611,6 +1610,41 @@ the risk sat entirely in the CLI-internal files the adapter reads.
   (`codex features list` with a scratch `CODEX_HOME`). When either flips, all
   three rollout readers (`patch-rollout`, `usage-rollout`, `session-fork`)
   break together; check that list on every bump.
+
+**The October 2026 Copilot pass (1.0.9 → 1.0.16) changed how the runtime
+ships, not just the API.** The `.d.ts` diff was additive and the event union
+only lost the experimental `factory.*` events, so `bun run check` passed on
+the first try. The work was elsewhere:
+
+- **The CLI package is gone; the runtime is a native binary.** 1.0.9 depended
+  on `@github/copilot` and, under Bun, spawned `node <platform-pkg>/index.js`
+  (`getNodeExecPath()` returns `"node"` when `process.versions.bun` is set) —
+  so Copilot quietly needed Node on PATH in a Bun-only project. 1.0.16 ships
+  `copilot-runtime` + `runtime.node` in per-platform optional packages
+  (`@github/copilot-sdk-<platform>`) and spawns the binary directly; a live
+  turn with `node` removed from PATH works. `ENGINE_PACKAGES.copilot` lost the
+  CLI pin. `koffi` only loads for `RuntimeConnection.forInProcess()`, which
+  Clopen does not use. `bun add` never removes a dropped pin, so existing
+  stack dirs keep the old CLI declared (and installed) on their own.
+- **`askUserVariant: "elicitation"` is not reachable on runtime 1.0.90.** With
+  only `onElicitationRequest`, the session has **no** `ask_user` tool; with
+  `onUserInputRequest` as well, the runtime keeps the legacy shape. Neither a
+  `featureFlags` entry, `COPILOT_EXPERIMENTS`, nor `enableExperimentalMode`
+  changed that (the binary gates it behind an `ASK_USER_ELICITATION`
+  experiment). The legacy `onUserInputRequest` path stays; re-probe on the next
+  bump before building a form UI for it.
+- **`managedSettings` accepts three rule families.** `Shell`, `Write` and `Read`
+  (any case, bare or with a `(glob)` argument). `url`, `memory`, MCP server
+  names or anything unknown make `session.create` fail outright, so an
+  unvalidated translation of Clopen's policy would break every turn instead of
+  restricting it. A managed deny is enforced before `onPermissionRequest` is
+  consulted — verified with `approveAll` in place — and the layer is not
+  persisted: it must ride every `resumeSession` too. See
+  `copilot/permissions.ts`; the hook still covers the other kinds.
+- **Instruction discovery is cached per runtime process.** The client outlives
+  turns while artifact sync and the user rewrite AGENTS.md and Copilot's
+  instruction files. New sessions pass `refreshCustomInstructions: true` (a
+  create-only option); resumed ones call `session.rpc.instructions.reload()`.
 
 ---
 

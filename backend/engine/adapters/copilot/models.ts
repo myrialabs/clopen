@@ -2,10 +2,13 @@
  * Copilot dynamic model discovery.
  *
  * Wraps `CopilotClient.listModels()` and translates `ModelInfo[]` into
- * `EngineModel[]`. Returns `[]` on any failure with a friendly error
- * message logged via `summariseModelsError` — common 4xx responses (PAT
- * missing the "Copilot Requests" scope, fine-grained PAT not accepted)
- * are mapped to actionable hints for the server log.
+ * `EngineModel[]`, always led by an `Auto` entry (see `AUTO_MODEL`).
+ *
+ * Failures are thrown, not returned as `[]`: an empty catalog renders as "No
+ * models available for this engine", which hid the real cause — most often a
+ * token GitHub no longer accepts — behind a message nobody could act on. The
+ * thrown text reaches the model picker, which offers to open Copilot's
+ * account settings.
  */
 
 import type { CopilotClient, ModelInfo } from '@github/copilot-sdk';
@@ -13,41 +16,65 @@ import type { EngineModel, ReasoningControl } from '$shared/types/unified';
 import { toReasoningOptions } from '$shared/constants/engines';
 import { debug } from '$shared/utils/logger';
 
+/**
+ * Copilot's own router. `models.list` only returns models whose CAPI entry is
+ * `model_picker_enabled`, and on Copilot Free none are — every model there is
+ * reached through Auto, which the runtime still accepts as a session model
+ * (runtime 1.0.90 routes it to an entitled model, e.g. `gpt-6-luna`). The 1.0.79
+ * runtime injected this entry itself; 1.0.90 no longer does, so without it a
+ * Free account has nothing to pick at all.
+ */
+const AUTO_MODEL: ModelInfo = {
+	id: 'auto',
+	name: 'Auto',
+	capabilities: { supports: {}, limits: { max_context_window_tokens: 0 } },
+} as ModelInfo;
+
 export async function fetchCopilotModels(
 	client: CopilotClient,
 	cache: ModelInfo[] | null,
 ): Promise<{ models: EngineModel[]; cache: ModelInfo[] | null }> {
-	try {
-		const infos = cache ?? await client.listModels();
-		return {
-			models: infos.map(info => mapModelInfoToEngineModel(info)),
-			cache: infos,
-		};
-	} catch (error) {
-		debug.warn('engine', `Copilot models unavailable: ${summariseModelsError(error)}`);
-		return { models: [], cache };
+	let infos = cache;
+	if (!infos) {
+		try {
+			infos = withAuto(await client.listModels());
+		} catch (error) {
+			const raw = error instanceof Error ? error.message : String(error);
+			// The models endpoint refuses fine-grained PATs that chat accepts, so
+			// Auto is still a working choice — offer it instead of failing.
+			if (raw.includes('Personal Access Tokens are not supported')) {
+				debug.warn('engine', 'Copilot models.list rejects fine-grained PATs; offering Auto only');
+				infos = [AUTO_MODEL];
+			} else {
+				throw new Error(summariseModelsError(raw));
+			}
+		}
 	}
+	return { models: infos.map(info => mapModelInfoToEngineModel(info)), cache: infos };
+}
+
+function withAuto(infos: ModelInfo[]): ModelInfo[] {
+	return infos.some(info => info.id === AUTO_MODEL.id) ? infos : [AUTO_MODEL, ...infos];
 }
 
 /**
- * Build a one-line, human-readable summary of a models.list failure for the
- * server log. Strips the JSON-RPC stack frame noise and maps known GitHub
- * Copilot 4xx responses to actionable hints.
+ * Turn a models.list failure into one actionable sentence for the picker.
+ * Strips the JSON-RPC stack noise and maps known GitHub Copilot responses.
  */
-function summariseModelsError(error: unknown): string {
-	const raw = error instanceof Error ? error.message : String(error);
-	const firstLine = raw.split('\n')[0]?.trim() || raw;
+function summariseModelsError(raw: string): string {
+	const firstLine = raw.split('\n')[0]?.replace(/^Request models\.list failed with message:\s*/, '').trim() || raw;
+	const fix = 'Update the token in Settings → Engines → Copilot.';
 
-	if (raw.includes('Personal Access Tokens are not supported')) {
-		return 'the models.list endpoint does not accept fine-grained PATs (chat will still work if the PAT has Copilot Requests).';
+	if (raw.includes('Not authenticated')) {
+		return `GitHub rejected the Copilot account's token — it is invalid, expired or revoked. ${fix}`;
 	}
 	if (raw.includes('Copilot Requests')) {
-		return 'PAT is missing the "Copilot Requests" permission.';
+		return `The Copilot token is missing the "Copilot Requests" permission. ${fix}`;
 	}
 	if (raw.includes('401') || raw.toLowerCase().includes('unauthorized')) {
-		return 'unauthorized — check that the GitHub PAT is valid and has Copilot access.';
+		return `GitHub refused the Copilot token. Check that it is valid and has Copilot access. ${fix}`;
 	}
-	return firstLine;
+	return `Could not load Copilot models: ${firstLine}`;
 }
 
 /**
