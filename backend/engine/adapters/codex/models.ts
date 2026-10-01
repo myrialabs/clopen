@@ -20,35 +20,50 @@
  * table but marked `visibility: "hide"` there, so they're deliberately left
  * out of this picker too.
  *
+ * Every entry also carries a `minimal_client_version`. The GPT-6 family needs
+ * 0.153 (`gpt-6-astra`, `gpt-6.1-sol`) or 0.155 (`gpt-6-sol`, `gpt-6-luna`), so
+ * this list must never run ahead of the pinned SDK: a model picked here that
+ * the bundled CLI is too old for fails at runtime, not at type-check.
+ *
  * Models tagged `requiresAuthMode` are filtered by the chat-input account
  * picker so the user can't pick a ChatGPT-only model while signed in with an
  * API key account (and vice versa).
  */
 
+import type { ModelReasoningEffort } from '@openai/codex-sdk';
 import type { EngineModel, ReasoningControl } from '$shared/types/unified';
 import { toReasoningOptions } from '$shared/constants/engines';
 
 /**
- * Codex's reasoning knob is the `model_reasoning_effort` config value. The
- * levels are per-model now: the 5.6 family added `max` and `ultra` above
+ * Codex's reasoning knob is the SDK `modelReasoningEffort` thread option. The
+ * levels are per-model: the 5.6 and 6 families reach `max` or `ultra` above
  * `xhigh`, and `minimal` is no longer accepted by any current model.
  *
- * `max` and `ultra` sit past the SDK's `ModelReasoningEffort` union, which
- * still stops at `xhigh` in 0.147 — see `resolveCodexEffort` for why sending
- * them anyway is sound.
+ * Typed against the SDK union so a level the SDK doesn't know is a compile
+ * error here rather than a cast at the call site.
  */
-const EFFORTS_TO_ULTRA = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const EFFORTS_TO_MAX = ['low', 'medium', 'high', 'xhigh', 'max'];
-const EFFORTS_TO_XHIGH = ['low', 'medium', 'high', 'xhigh'];
+const EFFORTS_TO_ULTRA: ModelReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const EFFORTS_TO_MAX: ModelReasoningEffort[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS_TO_XHIGH: ModelReasoningEffort[] = ['low', 'medium', 'high', 'xhigh'];
 
-function codexReasoning(levels: string[], fallback: string): ReasoningControl {
+function codexReasoning(levels: ModelReasoningEffort[], fallback: ModelReasoningEffort): ReasoningControl {
 	return { levels: toReasoningOptions(levels), default: fallback };
 }
+
+/**
+ * The table carries two windows per model: `context_window` (272k, what the
+ * CLI uses by default) and `max_context_window` (872k for the 5.6 and 6
+ * families, 272k for `gpt-5.5`). Clopen runs every model at its max — see
+ * `CODEX_CONTEXT_WINDOW_REQUEST` — so the catalog reports the max.
+ */
+const WINDOW_872K = 872_000;
+const WINDOW_272K = 272_000;
 
 /** Shared shape for a Codex catalog entry; `reasoning: null` = no reasoning knob. */
 function codexModel(
 	id: string,
 	name: string,
+	contextWindow: number,
 	reasoning: ReasoningControl | null,
 	extra?: { image?: boolean; requiresAuthMode?: 'chatgpt' },
 ): EngineModel {
@@ -59,8 +74,7 @@ function codexModel(
 			model: { id, name },
 			account: { id: 0, name: '' },
 		},
-		// Every preset in the table reports a 272k context window.
-		limit: { input: 272_000, output: 128_000 },
+		limit: { input: contextWindow, output: 128_000 },
 		modalities: {
 			input: { text: true, image: extra?.image ?? true, audio: false, video: false, pdf: false },
 			output: { text: true, image: false, audio: false, video: false, pdf: false },
@@ -78,14 +92,28 @@ function codexModel(
 
 /** Ordered by the CLI's own `priority` field, so the picker matches Codex's. */
 export const CODEX_MODELS: EngineModel[] = [
-	codexModel('gpt-6-astra', 'GPT-6-Astra', codexReasoning(EFFORTS_TO_ULTRA, 'low')),
-	codexModel('gpt-6-sol', 'GPT-6-Sol', codexReasoning(EFFORTS_TO_ULTRA, 'medium')),
-	codexModel('gpt-6-luna', 'GPT-6-Luna', codexReasoning(EFFORTS_TO_MAX, 'medium')),
-	codexModel('gpt-5.6-sol', 'GPT-5.6-Sol', codexReasoning(EFFORTS_TO_ULTRA, 'low')),
-	codexModel('gpt-5.6-terra', 'GPT-5.6-Terra', codexReasoning(EFFORTS_TO_ULTRA, 'medium')),
-	codexModel('gpt-5.6-luna', 'GPT-5.6-Luna', codexReasoning(EFFORTS_TO_MAX, 'medium')),
-	codexModel('gpt-5.5', 'GPT-5.5', codexReasoning(EFFORTS_TO_XHIGH, 'medium')),
+	codexModel('gpt-6.1-sol', 'GPT-6.1-Sol', WINDOW_872K, codexReasoning(EFFORTS_TO_ULTRA, 'low')),
+	codexModel('gpt-6-astra', 'GPT-6-Astra', WINDOW_872K, codexReasoning(EFFORTS_TO_ULTRA, 'low')),
+	codexModel('gpt-6-sol', 'GPT-6-Sol', WINDOW_872K, codexReasoning(EFFORTS_TO_ULTRA, 'medium')),
+	codexModel('gpt-6-luna', 'GPT-6-Luna', WINDOW_872K, codexReasoning(EFFORTS_TO_MAX, 'medium')),
+	codexModel('gpt-5.6-sol', 'GPT-5.6-Sol', WINDOW_872K, codexReasoning(EFFORTS_TO_ULTRA, 'low')),
+	codexModel('gpt-5.6-terra', 'GPT-5.6-Terra', WINDOW_872K, codexReasoning(EFFORTS_TO_ULTRA, 'medium')),
+	codexModel('gpt-5.6-luna', 'GPT-5.6-Luna', WINDOW_872K, codexReasoning(EFFORTS_TO_MAX, 'medium')),
+	codexModel('gpt-5.5', 'GPT-5.5', WINDOW_272K, codexReasoning(EFFORTS_TO_XHIGH, 'medium')),
 ];
+
+/**
+ * The `model_context_window` sent to the CLI. Without it the CLI stays at each
+ * model's 272k `context_window` even where the model reaches 872k.
+ *
+ * The SDK bakes `config` into the client once, while the model changes per
+ * turn, so this is one value for every model: the largest window in the
+ * catalog. That is sound because the CLI clamps the request to the active
+ * model's `max_context_window` — verified against 0.159.3, where 872k on
+ * `gpt-5.5` reported a 272k window and 2M on `gpt-5.6-luna` reported 872k
+ * (each less the CLI's 5% reserve).
+ */
+export const CODEX_CONTEXT_WINDOW_REQUEST = Math.max(...CODEX_MODELS.map(model => model.limit.input));
 
 /**
  * Resolve the `model_reasoning_effort` to send for a turn: the requested level
@@ -95,19 +123,14 @@ export const CODEX_MODELS: EngineModel[] = [
  * This is the only gate on the value. The picker offers per-model levels, but a
  * stored preference outlives a catalog change, so a level that is no longer
  * valid (`minimal`, or `ultra` on a model that caps at `max`) must not reach
- * the CLI.
- *
- * The return type is deliberately `string`, not the SDK's
- * `ModelReasoningEffort`. That union still stops at `xhigh` in
- * @openai/codex-sdk 0.147 while the CLI it drives accepts
- * `none|minimal|low|medium|high|xhigh|max|ultra`, and the SDK does not validate
- * — it interpolates the value straight into
- * `--config model_reasoning_effort="…"` (`dist/index.js`). Narrowing to the
- * stale union would make `max` and `ultra`, the top levels of GPT-5.6 Sol and
- * Terra, unreachable from Clopen. The caller casts at the SDK boundary.
+ * the CLI — the SDK does not validate, it interpolates the value straight into
+ * `--config model_reasoning_effort="…"`.
  */
-export function resolveCodexEffort(modelId: string | undefined, requested: string | undefined): string {
+export function resolveCodexEffort(modelId: string | undefined, requested: string | undefined): ModelReasoningEffort {
 	const control = CODEX_MODELS.find(m => m.engine.model.id === modelId)?.capabilities.reasoningControl;
-	if (requested && control?.levels.some(level => level.value === requested)) return requested;
-	return control?.default ?? 'medium';
+	const accepts = (value: string | undefined): value is ModelReasoningEffort =>
+		value !== undefined && (control?.levels.some(level => level.value === value) ?? false);
+	if (accepts(requested)) return requested;
+	if (accepts(control?.default)) return control.default;
+	return 'medium';
 }

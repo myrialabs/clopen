@@ -28,6 +28,11 @@
  * one line — the same pattern Claude (`forkSession: true`) and OpenCode
  * (`client.session.fork()`) already use.
  *
+ * The CLI grew `codex exec fork <id>` in 0.148, but the SDK (0.159) still
+ * only spawns `exec` and `exec resume`, so it is not reachable from here.
+ * Copy-and-resume was re-verified on 0.159.3: the forked id resumes with the
+ * source's history intact.
+ *
  * Cross-account note: `~/.codex/sessions/` is shared across ChatGPT
  * accounts. A session forked under account A is readable by account B if
  * accounts swap. That matches running the Codex CLI manually with two

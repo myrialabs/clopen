@@ -19,7 +19,7 @@
  * `backend/ws/chat/stream.ts` to it — same pattern as Claude/OpenCode.
  */
 
-import type { Codex, Thread, ThreadOptions, Input as CodexInput, ModelReasoningEffort } from '@openai/codex-sdk';
+import type { Codex, Thread, ThreadOptions, Input as CodexInput } from '@openai/codex-sdk';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
@@ -34,7 +34,7 @@ import { artifactFilter } from '$backend/profiles';
 import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts, buildArtifactsPromptContext } from '$backend/engine/artifact-sync';
 import { resolveProjectBridge } from '$backend/artifacts/project';
-import { CODEX_MODELS, resolveCodexEffort } from './models';
+import { CODEX_CONTEXT_WINDOW_REQUEST, CODEX_MODELS, resolveCodexEffort } from './models';
 import { debug } from '$shared/utils/logger';
 import { handleStreamError, buildTurnError } from './error-handler';
 import {
@@ -180,8 +180,9 @@ export class CodexEngine implements AIEngine {
 		const mcpConfig = getCodexMcpConfig(mcpProfileFilter, projectId ? { projectId } : undefined);
 
 		// Codex SDK takes config at construction. We pass `show_raw_agent_reasoning`
-		// (so the SDK forwards reasoning text events) and forward the Clopen MCP
-		// HTTP endpoint to the spawned subprocess. Sandbox is disabled at the
+		// (so the SDK forwards reasoning text events), lift the context window to
+		// each model's max (`CODEX_CONTEXT_WINDOW_REQUEST`), and forward the Clopen
+		// MCP HTTP endpoint to the spawned subprocess. Sandbox is disabled at the
 		// thread level (`sandboxMode: 'danger-full-access'`) to match the trust
 		// model of every other engine in this repo — Claude bypasses permissions,
 		// OpenCode auto-approves every permission event, Copilot uses `approveAll`,
@@ -199,6 +200,7 @@ export class CodexEngine implements AIEngine {
 			env: { ...getCleanSpawnEnv(), CODEX_HOME: getCodexHomeDir(), ...this.pendingGitIdentityEnv },
 			config: {
 				show_raw_agent_reasoning: true,
+				model_context_window: CODEX_CONTEXT_WINDOW_REQUEST,
 				...(Object.keys(mcpConfig).length > 0 ? { mcp_servers: mcpConfig } : {}),
 			},
 		});
@@ -230,9 +232,8 @@ export class CodexEngine implements AIEngine {
 		const { projectPath, prompt, resume, modelId, reasoningEffort, abortController, accountId } = options;
 
 		// Per-model reasoning levels live in the catalog, which is derived from the
-		// CLI's own preset table — see `resolveCodexEffort` for the validity rules
-		// and for why the SDK's narrower `ModelReasoningEffort` union is cast past.
-		const modelReasoningEffort = resolveCodexEffort(modelId, reasoningEffort) as ModelReasoningEffort;
+		// CLI's own preset table — see `resolveCodexEffort` for the validity rules.
+		const modelReasoningEffort = resolveCodexEffort(modelId, reasoningEffort);
 
 		// Active Profile for this stream — scopes the materialized artifact set AND
 		// (below) the MCP connector set baked into the Codex client.
