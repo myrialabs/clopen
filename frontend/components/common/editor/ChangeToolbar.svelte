@@ -23,39 +23,33 @@
 {#if state.count > 0 || hasHistory}
 	<div class="flex items-center gap-1 shrink-0" role="group" aria-label="Changes">
 		{#if state.count > 0}
-			<div class="flex items-center">
-				{#if onHide}
-					<button type="button" class={HEADER_BUTTON} onclick={onHide} title="Hide change" aria-label="Hide change">
-						<Icon name="lucide:x" class={HEADER_ICON} />
-					</button>
-				{/if}
-				<button type="button" class={HEADER_BUTTON} onclick={controls.previous} title="Previous change" aria-label="Previous change">
-					<Icon name="lucide:chevron-up" class={HEADER_ICON} />
+			{#if onHide}
+				<button type="button" class={HEADER_BUTTON} onclick={onHide} title="Hide change" aria-label="Hide change">
+					<Icon name="lucide:x" class={HEADER_ICON} />
 				</button>
-				<span class="min-w-9 text-center text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300" aria-live="polite">
-					{state.index + 1}/{state.count}
-				</span>
-				<button type="button" class={HEADER_BUTTON} onclick={controls.next} title="Next change" aria-label="Next change">
-					<Icon name="lucide:chevron-down" class={HEADER_ICON} />
-				</button>
-			</div>
+			{/if}
+			<button type="button" class={HEADER_BUTTON} onclick={controls.previous} title="Previous change" aria-label="Previous change">
+				<Icon name="lucide:chevron-up" class={HEADER_ICON} />
+			</button>
+			<span class="px-0.5 text-center text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300" aria-live="polite">
+				{state.index + 1}/{state.count}
+			</span>
+			<button type="button" class={HEADER_BUTTON} onclick={controls.next} title="Next change" aria-label="Next change">
+				<Icon name="lucide:chevron-down" class={HEADER_ICON} />
+			</button>
 			{#if controls.discard && state.canDiscard}
 				<button
 					type="button"
 					onclick={controls.discard}
 					title="Discard this change"
 					aria-label="Discard this change"
-					class="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-all duration-200"
+					class="flex p-2 rounded-lg text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/30 transition-all duration-200"
 				>
 					<Icon name="lucide:circle-x" class={HEADER_ICON} />
-					<span class="hidden sm:inline">Discard</span>
 				</button>
 			{/if}
 		{/if}
 		{#if hasHistory}
-			{#if state.count > 0}
-				<span class="w-px h-5 mx-0.5 bg-slate-200 dark:bg-slate-700" aria-hidden="true"></span>
-			{/if}
 			<button
 				type="button"
 				class="{HEADER_BUTTON} disabled:opacity-40 disabled:pointer-events-none"

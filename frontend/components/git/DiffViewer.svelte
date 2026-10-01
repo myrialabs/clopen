@@ -4,8 +4,7 @@
 	import type { editor } from 'monaco-editor';
 	import MonacoDiffEditor from '$frontend/components/common/editor/MonacoDiffEditor.svelte';
 	import EditorHeader from '$frontend/components/common/editor/EditorHeader.svelte';
-	import DiffLayoutToggle from '$frontend/components/common/editor/DiffLayoutToggle.svelte';
-	import { HEADER_BUTTON, HEADER_ICON } from '$frontend/components/common/editor/header-styles';
+	import { layoutAction, type HeaderAction } from '$frontend/components/common/editor/header-actions';
 	import { NO_CHANGES, type ChangeControls, type ChangeState } from '$frontend/components/common/editor/editor-changes';
 	import MonacoCodeEditor from '$frontend/components/common/editor/MonacoCodeEditor.svelte';
 	import { detectLanguageFromFilename } from '$frontend/components/common/editor/monaco-languages';
@@ -121,6 +120,17 @@
 		const absolute = absolutePathOf(activeDiff.newPath || activeDiff.oldPath);
 		if (absolute) revealFile(absolute);
 	}
+
+	const headerActions = $derived.by<HeaderAction[]>(() => {
+		const list: HeaderAction[] = [];
+		if (activeDiff && !activeDiff.isBinary && !inlinePreview) {
+			list.push(layoutAction({ sideBySide: renderSideBySide, onToggle: toggleRenderSideBySide }));
+		}
+		if (activeDiff && activeDiff.status !== 'D') {
+			list.push({ id: 'open-in-files', label: 'Open in Files', icon: 'lucide:file-symlink', onclick: openInFilesPanel, priority: 4 });
+		}
+		return list;
+	});
 
 	// ── Discarding a change on disk ──────────────────────────────────────────
 	//
@@ -275,22 +285,13 @@
 			title={getFileName(activePath)}
 			subtitle={activePath}
 			changes={!activeDiff.isBinary && !inlinePreview ? { state: headerState, controls: changeControls } : undefined}
+			actions={headerActions}
 		>
 			{#snippet meta()}
 				{#if activeDiff}
 					<span class="text-3xs font-bold px-1.5 py-0.5 rounded {getGitStatusBadgeColor(activeDiff.status)}">
 						{getGitStatusBadgeLabel(activeDiff.status)}
 					</span>
-				{/if}
-			{/snippet}
-			{#snippet actions()}
-				{#if activeDiff && !activeDiff.isBinary && !inlinePreview}
-					<DiffLayoutToggle sideBySide={renderSideBySide} onToggle={toggleRenderSideBySide} />
-				{/if}
-				{#if activeDiff && activeDiff.status !== 'D'}
-					<button type="button" class={HEADER_BUTTON} onclick={openInFilesPanel} title="Open in Files" aria-label="Open in Files">
-						<Icon name="lucide:file-symlink" class={HEADER_ICON} />
-					</button>
 				{/if}
 			{/snippet}
 		</EditorHeader>
