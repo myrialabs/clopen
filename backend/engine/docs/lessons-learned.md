@@ -1518,7 +1518,8 @@ the string into `--config model_reasoning_effort="…"`. Reading the transport,
 not just the type, is what made GPT-5.6's top levels reachable. Cast at the SDK
 boundary and gate the value in one place (`resolveCodexEffort`), never by a
 second copy of the allow-list next to the call site — that copy is exactly what
-had gone stale.
+had gone stale. (The SDK caught up in 0.149 — the union now runs to `ultra` —
+so the 0.159 bump dropped the cast and typed the catalog's levels against it.)
 
 The mechanical part of an upgrade is cheap; budget the time for the union
 diffs. `/tmp`-installing the old and new versions side by side and diffing the
@@ -1579,6 +1580,37 @@ If it is revisited: it needs a spare registry keyed on that tuple, a
 default-off setting, and a fallback that special-cases `option_not_applied` —
 that rejection means the session is **already running**, so the naive
 "fall back to `query()`" double-sends the prompt.
+
+**The October 2026 Codex pass (0.147 → 0.159.3) hit both catalog traps and
+one quiet regression.** The SDK's `.d.ts` barely moved (`configOverrides`,
+`threadSource`, a wider effort union), and the event union was unchanged — so
+the risk sat entirely in the CLI-internal files the adapter reads.
+
+- **The rollout patch event moved, and nothing failed.** `patch-rollout.ts`
+  recovered Edit/Write contents from a `patch_apply_end` line. The 0.159 CLI no
+  longer writes one; the same `changes` map now rides an `event_msg` →
+  `item_completed` line whose `item.type` is `FileChange`. The adapter degraded
+  exactly as designed — empty `oldString`/`newString` — which is why only a live
+  turn that edits a file catches it. The reader accepts both lines now (older
+  rollouts still carry the legacy one).
+- **The catalog had run ahead of the binary again.** Each preset in the CLI
+  table carries `minimal_client_version`; the GPT-6 models already listed in
+  `models.ts` needed 0.153/0.155 while the pin was 0.147 — the Claude 0.3.229
+  trap above, on a second engine. Read that field on every catalog refresh.
+- **A model has two context windows.** `context_window` (272k) is what the CLI
+  uses by default; `max_context_window` (872k for the 5.6/6 families) is the
+  ceiling for a `model_context_window` override. The SDK bakes `config` once
+  per client while the model changes per turn, so Clopen sends one value — the
+  catalog's largest — and relies on the CLI clamping it per model (verified:
+  2M on `gpt-5.6-luna` → 872k, 872k on `gpt-5.5` → 272k, each less a 5%
+  reserve reported as `model_context_window` in `token_count`).
+- **A paginated rollout store is on the way.** The 0.159 binary carries
+  `paginated_history.jsonl.zst` and a `legacy_to_paginated_v1` migration,
+  behind `background_paginated_rollout_migration` and
+  `local_thread_store_compression` — both "under development", off by default
+  (`codex features list` with a scratch `CODEX_HOME`). When either flips, all
+  three rollout readers (`patch-rollout`, `usage-rollout`, `session-fork`)
+  break together; check that list on every bump.
 
 ---
 

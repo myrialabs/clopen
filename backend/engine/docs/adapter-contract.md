@@ -240,7 +240,7 @@ Where each engine's knob lives:
 | Engine        | SDK knob                                | Levels                                     |
 |---------------|-----------------------------------------|--------------------------------------------|
 | `claude-code` | `thinking` + `effort` on `query()`      | `off, auto, low, medium, high, xhigh, max` (static; `off` → `thinking: { type: 'disabled' }`, `auto` → adaptive with no `effort`) |
-| `codex`       | `modelReasoningEffort` (thread option)  | `minimal, low, medium, high, xhigh` (static; reasoning-capable models only) |
+| `codex`       | `modelReasoningEffort` (thread option)  | per model from the static catalog: `low…xhigh`, `low…max` or `low…ultra` (`resolveCodexEffort` gates the value) |
 | `copilot`     | `SessionConfig.reasoningEffort`         | from `ModelInfo.supportedReasoningEfforts` (dynamic) |
 | `pi`          | agent `thinkingLevel`                   | from `getSupportedThinkingLevels(model)` (dynamic; `clampThinkingLevel` on apply) |
 | `cursor`      | `ModelSelection.params[]`               | from the model's reasoning-ish `ModelParameterDefinition` (dynamic) |

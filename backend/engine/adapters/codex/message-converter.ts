@@ -470,7 +470,7 @@ function buildFileChangePair(item: FileChangeItem, state: CodexStreamState): Eng
 	const isFailed = item.status === 'failed';
 
 	// SDK doesn't carry file content on FileUpdateChange — pull it from the
-	// rollout JSONL's `patch_apply_end` event so Edit blocks render the real
+	// rollout JSONL's patch event so Edit blocks render the real
 	// before/after text and Write blocks the real file body. Falls back to
 	// empty strings if the rollout isn't readable.
 	const changedPaths = item.changes.map(change => change.path);

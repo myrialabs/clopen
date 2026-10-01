@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import type { FileChangeSet } from './patch-rollout';
-import { parseUnifiedDiff, findMatchingFileChangeSet } from './patch-rollout';
+import { parseUnifiedDiff, findMatchingFileChangeSet, parseFileChangeSets } from './patch-rollout';
 
 describe('parseUnifiedDiff', () => {
 	test('splits a single hunk into before/after text', () => {
@@ -84,5 +84,40 @@ describe('findMatchingFileChangeSet', () => {
 		expect(findMatchingFileChangeSet([changeSetFor('/repo/a.ts')], ['/repo/c.ts'])).toBeNull();
 		expect(findMatchingFileChangeSet([changeSetFor('/repo/a.ts')], [])).toBeNull();
 		expect(findMatchingFileChangeSet([], ['/repo/a.ts'])).toBeNull();
+	});
+});
+
+describe('parseFileChangeSets', () => {
+	const changes = {
+		'/repo/style.css': { type: 'update', unified_diff: '@@ -1,2 +1,2 @@\n-color: red;\n+color: blue;\n', move_path: null },
+		'/repo/notes.md': { type: 'add', content: '# Notes\n' }
+	};
+	const expected: FileChangeSet = new Map([
+		['/repo/style.css', { kind: 'update', oldString: 'color: red;\n', newString: 'color: blue;\n', content: '' }],
+		['/repo/notes.md', { kind: 'add', oldString: '', newString: '', content: '# Notes\n' }]
+	]);
+
+	test('reads the completed FileChange item the 0.159 CLI writes', () => {
+		const line = JSON.stringify({
+			type: 'event_msg',
+			payload: { type: 'item_completed', item: { type: 'FileChange', status: 'completed', changes } }
+		});
+		expect(parseFileChangeSets(line)).toEqual([expected]);
+	});
+
+	test('still reads the legacy patch_apply_end event', () => {
+		const line = JSON.stringify({ type: 'event_msg', payload: { type: 'patch_apply_end', success: true, changes } });
+		expect(parseFileChangeSets(line)).toEqual([expected]);
+	});
+
+	test('keeps file order and skips unrelated or malformed lines', () => {
+		const legacy = JSON.stringify({ type: 'event_msg', payload: { type: 'patch_apply_end', changes: { '/repo/a.ts': { type: 'delete' } } } });
+		const other = JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'AgentMessage' } } });
+		const current = JSON.stringify({ type: 'event_msg', payload: { type: 'item_completed', item: { type: 'FileChange', changes } } });
+		const sets = parseFileChangeSets([legacy, other, '{"FileChange": broken', '', current].join('\n'));
+
+		expect(sets).toHaveLength(2);
+		expect(sets[0]?.get('/repo/a.ts')?.kind).toBe('delete');
+		expect(sets[1]).toEqual(expected);
 	});
 });
