@@ -11,7 +11,8 @@ import type { ChatSession } from '$shared/types/database/schema';
 import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
-import { setupEditModeListener, restoreEditMode } from '$frontend/stores/ui/edit-mode.svelte';
+import { setupEditModeListener, resetEditModeQuietly } from '$frontend/stores/ui/edit-mode.svelte';
+import { setupMessageQueueListener } from '$frontend/stores/ui/message-queue.svelte';
 import { markSessionUnread, markSessionRead, clearSessionState, syncGlobalStateFromSession, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
 import { loadAiChanges, clearAiChanges } from '$frontend/stores/features/ai-changes.svelte';
@@ -111,6 +112,10 @@ export function messageCount() {
 export async function setCurrentSession(session: ChatSession | null, skipLoadMessages: boolean = false) {
 	const previousSessionId = sessionState.currentSession?.id;
 	sessionState.currentSession = session;
+
+	// Edit mode is per session: the previous session's edit stays on the server
+	// for when the user comes back, and the composer restores this one's.
+	if (previousSessionId !== session?.id) resetEditModeQuietly();
 
 	// Re-derive the global convenience flags from the session now on screen.
 	// Without this the previous session's state (e.g. isWaitingInput) lingers
@@ -514,6 +519,7 @@ export async function initializeSessions() {
 	// Setup sync listeners first (no await needed)
 	setupCollaborativeListeners();
 	setupEditModeListener();
+	setupMessageQueueListener();
 
 	// Skip loading if no project is active — both calls require WS project context
 	if (!projectState.currentProject) {
@@ -521,11 +527,7 @@ export async function initializeSessions() {
 		return;
 	}
 
-	// Load sessions and restore edit mode in parallel
-	// Both only need WS project context (already set by initializeProjects)
-	await Promise.all([
-		loadSessions(),
-		restoreEditMode()
-	]);
+	// Edit mode and drafts are restored per session by the composer
+	await loadSessions();
 	debug.log('session', 'Sessions initialized');
 }

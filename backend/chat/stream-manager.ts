@@ -1959,6 +1959,10 @@ class StreamManager extends EventEmitter {
 	 * Used when a session is deleted to remove green/amber status indicators.
 	 */
 	async cleanupSessionStreams(chatSessionId: string): Promise<void> {
+		// Session-scoped state held elsewhere (e.g. the composer's drafts and
+		// message queue) is released through this event.
+		this.emit('session:cleanup', chatSessionId);
+
 		const streamsToCancel: string[] = [];
 		const streamsToClean: string[] = [];
 

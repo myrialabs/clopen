@@ -15,6 +15,9 @@ import { onDestroy } from 'svelte';
 export function usePlaceholderAnimation(placeholderTexts: string[]) {
 	let currentPlaceholderIndex = $state(0);
 	let placeholderText = $state('');
+	// The text being typed out, whole. Sizing the box from it (not from each
+	// animation frame) keeps the height still while the placeholder animates.
+	let fullText = $state('');
 	let destroyed = false;
 
 	// Track every active timer so stopPlaceholderAnimation can clear them all
@@ -26,6 +29,7 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 	function typewritePlaceholder(text: string) {
 		if (typewriterInterval) clearInterval(typewriterInterval);
 		typewriterInterval = null;
+		fullText = text;
 
 		let idx = 0;
 		placeholderText = '';
@@ -91,6 +95,7 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 	function setStaticPlaceholder(text: string) {
 		stopPlaceholderAnimation();
 		placeholderText = text;
+		fullText = text;
 	}
 
 	onDestroy(() => {
@@ -100,6 +105,7 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 
 	return {
 		get placeholderText() { return placeholderText; },
+		get fullText() { return fullText; },
 		startAnimation: startPlaceholderAnimation,
 		stopAnimation: stopPlaceholderAnimation,
 		setStaticPlaceholder

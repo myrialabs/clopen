@@ -203,8 +203,8 @@ export async function setCurrentProject(project: Project | null) {
 		);
 		if (!isCurrentSwitch(token)) return;
 
-		const { onProjectLeave, onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
-		onProjectLeave();
+		const { resetEditModeQuietly } = await import('$frontend/stores/ui/edit-mode.svelte');
+		resetEditModeQuietly();
 		await setCurrentSession(null);
 		if (!isCurrentSwitch(token)) return;
 
@@ -281,7 +281,6 @@ async function swapPresenceTracking(projectId: string | undefined): Promise<void
 async function restoreSessionForProject(project: Project, token: number): Promise<void> {
 	const { setCurrentSession, createSession, getSessionsForProject, reloadSessionsForProject } =
 		await import('./sessions.svelte');
-	const { onProjectEnter } = await import('$frontend/stores/ui/edit-mode.svelte');
 
 	try {
 		// Reload all sessions for this project from server
@@ -310,11 +309,6 @@ async function restoreSessionForProject(project: Project, token: number): Promis
 				await setCurrentSession(newSession);
 			}
 		}
-		if (!isCurrentSwitch(token)) return;
-
-		// Restore edit mode from server for the new project
-		// (ws.setProject already completed, so server returns correct project's state)
-		await onProjectEnter();
 	} catch (error) {
 		debug.error('project', 'Error restoring session for project:', error);
 	}

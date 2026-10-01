@@ -1,30 +1,27 @@
 <!--
-  Modern SDK-Based Input Area with File Upload Support
+  Chat composer: text, attachments, slash commands, and the send / queue /
+  edit / stop actions for the chat session on screen.
 
-  Features:
-  - Server-Sent Events streaming
-  - Real-time message display
-  - Enhanced error handling
-  - Modern AI-first UI design
-  - Proper cancellation support
-  - File upload support (images, PDFs, documents)
+  - Typing stays possible while a response runs; what is sent then is queued
+    and the server sends it when the response finishes.
+  - Drafts are per user and saved to the server (see use-input-state).
+  - On touch keyboards Enter inserts a new line; the button sends.
 -->
 
 <script lang="ts">
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
-	import { settings } from '$frontend/stores/features/settings.svelte';
-	import { onDestroy, untrack } from 'svelte';
+	import { onDestroy } from 'svelte';
 	import { ChatService } from '$frontend/services/chat';
 	import { chatService } from '$frontend/services/chat/chat.service';
-	import { getEngineInfo } from '$shared/constants/engines';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { chatModelState } from '$frontend/stores/ui/chat-model.svelte';
 	import { presenceState } from '$frontend/stores/core/presence.svelte';
 	import { editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
-	import type { IconName } from '$shared/types/ui/icons';
+	import { takeQueued, type QueuedMessage } from '$frontend/stores/ui/message-queue.svelte';
+	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
@@ -32,15 +29,22 @@
 	import AiChangesSummary from './components/AiChangesSummary.svelte';
 	import FileAttachmentPreview from './components/FileAttachmentPreview.svelte';
 	import EditModeIndicator from './components/EditModeIndicator.svelte';
+	import QueuedMessages from './components/QueuedMessages.svelte';
 	import ChatInputActions from './components/ChatInputActions.svelte';
 	import LoadingIndicator from './components/LoadingIndicator.svelte';
 	import DragDropOverlay from './components/DragDropOverlay.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
 	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
+	import ConflictResolutionModal from '$frontend/components/checkpoint/ConflictResolutionModal.svelte';
 	import { skillsStore, type AvailableSkill } from '$frontend/stores/features/skills.svelte';
 
 	// Composables
-	import { useFileHandling, buildAcceptedMimeTypes } from './composables/use-file-handling.svelte';
+	import {
+		useFileHandling,
+		buildAcceptedMimeTypes,
+		attachmentFromBase64,
+		type FileAttachment
+	} from './composables/use-file-handling.svelte';
 	import { usePlaceholderAnimation, useLoadingTextAnimation } from './composables/use-animations.svelte';
 	import { useTextareaResize } from './composables/use-textarea-resize.svelte';
 	import { useChatActions } from './composables/use-chat-actions.svelte';
@@ -48,24 +52,124 @@
 
 	let messageText = $state('');
 	let textareaElement: HTMLTextAreaElement;
+	// Hidden twin of the textarea that measures the placeholder (see use-textarea-resize)
+	let sizingMirror: HTMLTextAreaElement;
+	// Shared by the textarea and its sizing mirror: identical classes mean
+	// identical width, font and padding, so the measurement can't drift.
+	const textareaClass =
+		'w-full px-4 pt-2 pb-4 border-0 bg-transparent resize-none focus:outline-none text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 text-base leading-relaxed';
 	let fileInputElement: HTMLInputElement;
 
 	// Initialize composables
 	const fileHandling = useFileHandling();
-	const placeholderTexts = ChatService.placeholderTexts;
-	const loadingTexts = ChatService.loadingTexts;
-	const placeholderAnimation = usePlaceholderAnimation(placeholderTexts);
-	const loadingTextAnimation = useLoadingTextAnimation(loadingTexts);
+	const placeholderAnimation = usePlaceholderAnimation(ChatService.placeholderTexts);
+	const loadingTextAnimation = useLoadingTextAnimation(ChatService.loadingTexts);
 	const textareaResize = useTextareaResize();
+
+	// Touch keyboards have no Shift+Enter, so Enter is a new line there and the
+	// on-screen key is labelled accordingly.
+	const isTouchKeyboard =
+		typeof window !== 'undefined' && window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+
+	// --- Blocking state ---
+
+	const hasActiveProject = $derived(projectState.currentProject !== null);
+	const isWelcomeState = $derived(sessionState.messages.length === 0);
+
+	// What stops the selected engine from taking a message at all.
+	const chatBlockedReason = $derived.by(() => {
+		const engine = chatModelState.engine;
+		if (engine === 'claude-code' && claudeAccountsStore.loaded && claudeAccountsStore.accounts.length === 0) {
+			return 'no-claude-account' as const;
+		}
+		if (engine !== 'claude-code' && !chatModelState.modelId) {
+			return 'no-model' as const;
+		}
+		// A model that was selected once but is gone from the catalog (engine
+		// reinstalled, account changed) would be sent as-is and fail mid-turn.
+		if (
+			chatModelState.modelId &&
+			modelStore.isFetched(engine) &&
+			!modelStore.isLoading(engine) &&
+			!modelStore.getForEngine(engine, chatModelState.modelId)
+		) {
+			return 'model-missing' as const;
+		}
+		return null;
+	});
+
+	const blockedPlaceholder = $derived.by(() => {
+		switch (chatBlockedReason) {
+			case 'no-claude-account':
+				return 'No Claude Code account connected. Configure it in Settings → Engines → Claude Code → Accounts.';
+			case 'no-model':
+				return 'No model selected. Please select a model to start chatting.';
+			case 'model-missing':
+				return 'The selected model is no longer available. Please select another model.';
+			default:
+				return null;
+		}
+	});
+
+	// The placeholder in two forms: as displayed (animated) and as sized (whole),
+	// so the box doesn't change height on every animation frame.
+	const placeholderFor = (animated: string) => {
+		if (blockedPlaceholder) return blockedPlaceholder;
+		if (appState.isWaitingInput) return 'Answer the question above to continue...';
+		if (appState.isLoading && !editModeState.isEditing) return 'Queue a follow-up...';
+		return animated;
+	};
+	const chatPlaceholder = $derived(placeholderFor(placeholderAnimation.placeholderText));
+	const sizingPlaceholder = $derived(placeholderFor(placeholderAnimation.fullText));
 
 	// Helper functions for composables
 	const setMessageText = (text: string) => {
 		messageText = text;
 	};
-	const getTextareaElement = () => textareaElement;
 	const adjustTextareaHeight = () =>
-		textareaResize.adjustTextareaHeight(textareaElement, messageText);
-	const focusTextarea = () => textareaElement?.focus();
+		textareaResize.adjustTextareaHeight(textareaElement, sizingMirror, messageText, sizingPlaceholder);
+	const focusTextarea = () => {
+		// Re-focusing after a send would pop the on-screen keyboard back up.
+		if (!isTouchKeyboard) textareaElement?.focus();
+	};
+
+	// Restoration and saving of this user's draft, edit mode and the queue
+	const inputState = useInputState({
+		getMessageText: () => messageText,
+		setMessageText,
+		getTextareaElement: () => textareaElement,
+		adjustTextareaHeight,
+		getAttachedFiles: () => fileHandling.attachedFiles,
+		replaceAttachments: fileHandling.replaceAttachments
+	});
+
+	const chatActions = useChatActions({
+		getAttachedFiles: () => fileHandling.attachedFiles,
+		isProcessingFiles: () => fileHandling.isProcessingFiles,
+		clearAllAttachments: fileHandling.clearAllAttachments,
+		setMessageText,
+		adjustTextareaHeight,
+		focusTextarea,
+		clearDraft: inputState.clearDraft
+	});
+
+	const submitMode = $derived<'send' | 'queue' | 'edit'>(
+		editModeState.isEditing ? 'edit' : appState.isLoading ? 'queue' : 'send'
+	);
+	const hasContent = $derived(!!messageText.trim() || fileHandling.attachedFiles.length > 0);
+
+	// Why the submit button can't be used right now — also its tooltip.
+	const submitBlockedReason = $derived.by(() => {
+		if (!hasActiveProject) return 'Select a project first';
+		if (blockedPlaceholder) return blockedPlaceholder;
+		if (modelStore.isLoading(chatModelState.engine)) return 'Loading models…';
+		if (fileHandling.isProcessingFiles) return 'Attachments are still loading…';
+		if (appState.isWaitingInput) return 'Answer the question above first';
+		if (appState.isCancelling) return 'Stopping…';
+		if (editModeState.isEditing && appState.isLoading) return 'Stop the response before sending an edit';
+		if (chatActions.isSubmitting) return 'Sending…';
+		return null;
+	});
 
 	// --- Slash command menu (typing "/" surfaces slash-invocable Skills) ---
 	let slashActiveIndex = $state(0);
@@ -81,8 +185,6 @@
 		const q = slashQuery;
 		return skillsStore.available.filter(c => !q || `${c.slug} ${c.name}`.toLowerCase().includes(q));
 	});
-	// (No isInputDisabled guard: a disabled textarea can't receive the "/" input
-	// that opens the menu, and referencing it here would precede its declaration.)
 	const slashOpen = $derived(
 		slashQuery !== null && !slashDismissed && slashMatches.length > 0
 	);
@@ -107,55 +209,18 @@
 	function selectSlashCommand(command: AvailableSkill) {
 		setMessageText(`/${command.slug} `);
 		slashDismissed = true;
-		focusTextarea();
+		textareaElement?.focus();
 		adjustTextareaHeight();
+		inputState.saveText();
 	}
 
-	// Chat actions params
-	const chatActionsParams = {
-		get attachedFiles() {
-			return fileHandling.attachedFiles;
-		},
-		clearAllAttachments: fileHandling.clearAllAttachments,
-		adjustTextareaHeight,
-		focusTextarea,
-		startLoadingAnimation: loadingTextAnimation.startAnimation,
-		stopLoadingAnimation: loadingTextAnimation.stopAnimation,
-		clearDraft: () => inputState.clearDraft()
-	};
+	// --- Attachments ---
 
-	// Initialize input state management (restoration, template loading, sync)
-	// Declared before chatActions so clearDraft is available
-	const inputState = useInputState({
-		setMessageText,
-		getTextareaElement,
-		adjustTextareaHeight,
-		focusTextarea,
-		setAttachedFiles: (files) => {
-			fileHandling.attachedFiles = files;
-		}
-	});
-
-	const chatActions = useChatActions(chatActionsParams);
-
-	// Enhanced model info based on user settings
-	const modelInfo = $derived.by(() => {
-		const selectedModelId = settings.selectedModelId;
-		const model = modelStore.getById(selectedModelId);
-		const modelName = model?.engine.model.name || 'AI Assistant';
-		const engineInfo = getEngineInfo(settings.selectedEngine);
-
-		return {
-			name: modelName,
-			description: engineInfo?.description || 'AI-powered development assistant',
-			icon: 'lucide:brain-circuit' as IconName,
-			modelId: selectedModelId
-		};
-	});
-
-	// Accepted MIME types based on model's input modalities
+	// Accepted MIME types based on the selected model's input modalities
 	const acceptedMimeTypes = $derived.by(() => {
-		const model = modelStore.getById(chatModelState.modelId);
+		const model = chatModelState.modelId
+			? modelStore.getForEngine(chatModelState.engine, chatModelState.modelId)
+			: undefined;
 		if (!model) return buildAcceptedMimeTypes({ image: true, pdf: true, audio: false, video: false });
 		return buildAcceptedMimeTypes(model.modalities.input);
 	});
@@ -167,47 +232,21 @@
 		fileHandling.allowedTypes = acceptedMimeTypes;
 	});
 
-	// Check if we're in welcome state (no messages)
-	const isWelcomeState = $derived(sessionState.messages.length === 0);
+	// Every change to the attachments is saved to the draft right after it.
+	async function afterAttachmentChange(change: Promise<void> | void) {
+		await change;
+		inputState.saveAttachments(fileHandling.attachedFiles);
+	}
+	const handleFileInputChange = (event: Event) => afterAttachmentChange(fileHandling.handleFileInputChange(event));
+	const handleDrop = (event: DragEvent) => afterAttachmentChange(fileHandling.handleDrop(event));
+	const handlePaste = (event: ClipboardEvent) => afterAttachmentChange(fileHandling.handlePaste(event));
+	const handleRemoveAttachment = (id: string) => afterAttachmentChange(fileHandling.removeAttachment(id));
 
-	// Project-aware state
-	const hasActiveProject = $derived(projectState.currentProject !== null);
+	// --- Event handlers ---
 
-	// Reason why chat input is blocked (aside from isLoading / no project)
-	const chatBlockedReason = $derived.by(() => {
-		const engine = chatModelState.engine;
-		if (engine === 'claude-code') {
-			if (claudeAccountsStore.loaded && claudeAccountsStore.accounts.length === 0) {
-				return 'no-claude-account' as const;
-			}
-		} else {
-			if (!chatModelState.modelId) {
-				return 'no-model' as const;
-			}
-		}
-		return null;
-	});
-
-	const isInputDisabled = $derived(appState.isLoading || modelStore.loading || !hasActiveProject || !!chatBlockedReason);
-
-	const chatPlaceholder = $derived.by(() => {
-		if (chatBlockedReason === 'no-claude-account') {
-			return 'No Claude Code account connected. Configure it in Settings → Engines → Claude Code → Accounts.';
-		}
-		if (chatBlockedReason === 'no-model') {
-			return 'No model selected. Please select a model to start chatting.';
-		}
-		if (appState.isWaitingInput) {
-			return 'Answer the question above to continue...';
-		}
-		return placeholderAnimation.placeholderText;
-	});
-
-	// Wrapper functions for event handlers
 	const handleTextareaInput = () => {
-		textareaResize.handleTextareaInput(textareaElement, messageText);
-		// Sync input text to other collaborators (includes draft save)
-		inputState.emitInputSync(messageText, fileHandling.attachedFiles);
+		adjustTextareaHeight();
+		inputState.saveText();
 	};
 	const handleKeyDown = (event: KeyboardEvent) => {
 		// Slash menu owns navigation keys while it's open.
@@ -233,25 +272,48 @@
 				return;
 			}
 		}
-		textareaResize.handleKeyDown(event, textareaElement, messageText);
-	};
-	const handleKeyPress = (event: KeyboardEvent) => {
-		// Enter is consumed by the slash menu (selection), never sends the message.
-		if (slashOpen && event.key === 'Enter') {
-			event.preventDefault();
+		if (event.key === 'Enter' && !event.shiftKey && submitBlockedReason) {
+			// Enter can't send right now: keep it from inserting a line the user
+			// didn't ask for (desktop) — the button's tooltip says why.
+			if (!isTouchKeyboard) event.preventDefault();
 			return;
 		}
-		chatActions.handleKeyPress(event, messageText, setMessageText);
+		chatActions.handleKeyDown(event, messageText);
 	};
-	const handleSendMessage = () => {
-		chatActions.sendMessage(messageText, setMessageText);
+	const handleSubmit = () => {
+		if (submitBlockedReason) return;
+		void chatActions.submit(messageText);
 	};
 	const handleCancelEdit = () => {
 		chatActions.handleCancelEdit();
-		messageText = '';
-		fileHandling.clearAllAttachments();
-		adjustTextareaHeight();
 	};
+
+	// Take a queued message back into the box to change it.
+	async function handleEditQueued(item: QueuedMessage) {
+		try {
+			const taken = await takeQueued(item.id);
+			if (!taken) return;
+			setMessageText(messageText.trim() ? `${messageText.trimEnd()}\n\n${taken.text}` : taken.text);
+			const restored = taken.attachments
+				.map((a) => attachmentFromBase64({ fileName: a.fileName, mediaType: a.mediaType, base64: a.data }))
+				.filter((a): a is FileAttachment => a !== null);
+			if (restored.length > 0) {
+				fileHandling.replaceAttachments([...fileHandling.attachedFiles, ...restored]);
+				inputState.saveAttachments(fileHandling.attachedFiles);
+			}
+			inputState.saveText();
+			textareaElement?.focus();
+			setTimeout(() => adjustTextareaHeight(), 0);
+		} catch (error) {
+			debug.error('chat', 'Failed to take queued message back:', error);
+			addNotification({
+				type: 'error',
+				title: 'Could not edit queued message',
+				message: error instanceof Error ? error.message : 'Unknown error',
+				duration: 4000
+			});
+		}
+	}
 
 	// Reactive effect for placeholder animation
 	$effect(() => {
@@ -262,12 +324,15 @@
 		}
 	});
 
-	// Resize textarea when placeholder text changes (typewriter animation) while empty
+	// Re-fit when the box's width changes or fonts finish loading
 	$effect(() => {
-		chatPlaceholder; // track placeholder changes
-		if (!messageText || !messageText.trim()) {
-			adjustTextareaHeight();
-		}
+		if (textareaElement) textareaResize.observe(textareaElement, adjustTextareaHeight);
+	});
+
+	// An empty box is as tall as its placeholder: re-fit when that changes
+	$effect(() => {
+		void sizingPlaceholder;
+		if (!messageText.trim()) adjustTextareaHeight();
 	});
 
 	// Sync appState.isLoading from presence data (single source of truth for all users)
@@ -284,7 +349,7 @@
 	// EventEmitter subscription. Without resetting, catchup won't fire again
 	// (guarded by lastCatchupKey) and the stream subscription is never
 	// re-established — causing stream output to silently stop in the UI.
-	onWsReconnect(() => {
+	const stopReconnectListener = onWsReconnect(() => {
 		if (lastCatchupKey) {
 			debug.log('chat', 'WS reconnected — resetting stream catchup tracking');
 			lastCatchupKey = undefined;
@@ -321,9 +386,9 @@
 		) ?? false;
 		if (hasActiveForSession && !appState.isLoading) {
 			// Don't re-enable loading if user just cancelled locally
-			if (appState.isCancelling) return;
+			if (appState.isCancelling || !sessionId) return;
 
-			appState.isLoading = true;
+			chatService.syncLoadingFromPresence(sessionId, true);
 
 			// Catch up on active stream's partial text for late-joining users
 			// Only do this once per project+session switch to avoid repeated fetches
@@ -339,8 +404,10 @@
 			lastCatchupKey = catchupKey;
 			catchupActiveStream(status);
 		} else if (!hasActiveForSession && appState.isLoading && !appState.isCancelling) {
-			// Only clear loading if not in the middle of a cancel operation
-			appState.isLoading = false;
+			// A send this client just made is not in presence yet — that is not
+			// the end of the stream. Only clear once the server has confirmed it.
+			if (sessionId && chatService.isStartPending(sessionId)) return;
+			if (sessionId) chatService.syncLoadingFromPresence(sessionId, false);
 			lastCatchupKey = undefined;
 		} else if (!hasActiveForSession && !appState.isLoading) {
 			// No active streams for this session — clear cancelling state and reset catchup tracking.
@@ -461,37 +528,8 @@
 		}
 	});
 
-	// When edit mode exits (remote cancel, user cancel), reset input and attachments
-	// Skip during project transition (isRestoring) - server restore will handle it
-	// Use untrack for isRestoring to avoid this effect re-running when isRestoring changes
-	let wasEditing = false;
-	$effect(() => {
-		const isEditing = editModeState.isEditing;
-		if (wasEditing && !isEditing) {
-			const restoring = untrack(() => appState.isRestoring);
-			if (!restoring) {
-				messageText = '';
-				fileHandling.clearAllAttachments();
-				setTimeout(() => adjustTextareaHeight(), 0);
-			}
-		}
-		wasEditing = isEditing;
-	});
-
-	// Sync file attachments to other collaborators when they change
-	// Use untrack for isRestoring so this effect ONLY re-runs when files change,
-	// not when isRestoring transitions (which would emit stale data to new project)
-	$effect(() => {
-		// Access attachedFiles to create reactive dependency
-		const files = fileHandling.attachedFiles;
-		const restoring = untrack(() => appState.isRestoring);
-		if (!restoring) {
-			// Emit attachment sync with current text
-			inputState.emitAttachmentSync(messageText, files);
-		}
-	});
-
 	onDestroy(() => {
+		stopReconnectListener();
 		fileHandling.clearAllAttachments();
 	});
 </script>
@@ -503,7 +541,7 @@
 		type="file"
 		multiple
 		accept={acceptedMimeTypes.join(',')}
-		onchange={fileHandling.handleFileInputChange}
+		onchange={handleFileInputChange}
 		class="hidden"
 	/>
 
@@ -512,7 +550,7 @@
 		<!-- File attachments preview -->
 		<FileAttachmentPreview
 			attachedFiles={fileHandling.attachedFiles}
-			onRemove={fileHandling.removeAttachment}
+			onRemove={handleRemoveAttachment}
 		/>
 
 		<!-- Slash command autocomplete (typing "/" surfaces slash-invocable Skills) -->
@@ -535,45 +573,61 @@
 			aria-label="Message input with file drop zone"
 			ondragover={fileHandling.handleDragOver}
 			ondragleave={fileHandling.handleDragLeave}
-			ondrop={fileHandling.handleDrop}
+			ondrop={handleDrop}
 		>
-			<div class="flex-1">
+			<div class="flex-1 min-w-0">
 				<!-- What this chat has changed so far, and the way into the detail -->
 				<AiChangesSummary />
 
-				<!-- Edit Mode Indicator -->
+				<!-- Messages waiting for the current response -->
+				<QueuedMessages isLoading={appState.isLoading} onEdit={handleEditQueued} />
+
+				<!-- Edit Mode Indicator (own edit, or who else is editing) -->
 				<EditModeIndicator onCancel={handleCancelEdit} />
 
 				<!-- Engine/Model Picker -->
 				<EngineModelPicker />
 
 				<div class="flex items-end">
-					<textarea
-						bind:this={textareaElement}
-						bind:value={messageText}
-						placeholder={chatPlaceholder}
-						class="flex-1 w-full px-4 pt-2 pb-4 border-0 bg-transparent resize-none focus:outline-none text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 text-base leading-relaxed disabled:opacity-50 disabled:cursor-not-allowed"
-						rows="1"
-						disabled={isInputDisabled}
-						oninput={handleTextareaInput}
-						onkeydown={handleKeyDown}
-						onkeypress={handleKeyPress}
-						onpaste={fileHandling.handlePaste}
-						oncompositionstart={chatActions.handleCompositionStart}
-						oncompositionend={chatActions.handleCompositionEnd}
-						autocomplete="off"
-					></textarea>
+					<div class="relative flex-1 min-w-0 flex">
+						<textarea
+							bind:this={sizingMirror}
+							class="{textareaClass} absolute inset-x-0 top-0 invisible pointer-events-none overflow-hidden"
+							rows="1"
+							tabindex="-1"
+							aria-hidden="true"
+							readonly
+						></textarea>
+						<textarea
+							bind:this={textareaElement}
+							bind:value={messageText}
+							placeholder={chatPlaceholder}
+							class="{textareaClass} disabled:opacity-50 disabled:cursor-not-allowed"
+							rows="1"
+							disabled={!hasActiveProject}
+							enterkeyhint={isTouchKeyboard ? 'enter' : 'send'}
+							aria-label="Message"
+							oninput={handleTextareaInput}
+							onkeydown={handleKeyDown}
+							onpaste={handlePaste}
+							oncompositionstart={chatActions.handleCompositionStart}
+							oncompositionend={chatActions.handleCompositionEnd}
+							autocomplete="off"
+						></textarea>
+					</div>
 
 					<!-- Action buttons -->
 					<ChatInputActions
 						isLoading={appState.isLoading}
 						isCancelling={appState.isCancelling}
-						hasActiveProject={hasActiveProject}
-						messageText={messageText}
-						attachedFiles={fileHandling.attachedFiles}
+						{hasActiveProject}
+						attachmentCount={fileHandling.attachedFiles.length}
 						isProcessingFiles={fileHandling.isProcessingFiles}
 						{modelSupportsAttachments}
-						onSend={handleSendMessage}
+						{submitMode}
+						{hasContent}
+						{submitBlockedReason}
+						onSubmit={handleSubmit}
 						onCancel={chatActions.cancelRequest}
 						onAttachFile={() => fileHandling.handleFileSelect(fileInputElement)}
 					/>
@@ -594,3 +648,11 @@
 		/>
 	</div>
 </div>
+
+<!-- Files another chat changed since the edited message: ask before overwriting -->
+<ConflictResolutionModal
+	isOpen={chatActions.conflicts.length > 0}
+	conflicts={chatActions.conflicts}
+	onConfirm={chatActions.resolveConflicts}
+	onClose={chatActions.dismissConflicts}
+/>

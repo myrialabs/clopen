@@ -102,9 +102,9 @@
 				if (contentItem.type === 'text') {
 					elements.push({ type: 'text', content: (contentItem as any).text });
 				} else if (contentItem.type === 'image') {
-					elements.push({ type: 'image', content: contentItem });
+					elements.push({ type: 'image', content: contentItem, fileName: contentItem.title || undefined });
 				} else if (contentItem.type === 'document') {
-					elements.push({ type: 'document', content: contentItem });
+					elements.push({ type: 'document', content: contentItem, fileName: contentItem.title || undefined });
 				}
 			}
 

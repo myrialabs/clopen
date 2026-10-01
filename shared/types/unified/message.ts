@@ -75,6 +75,8 @@ export interface ImageBlock {
 	type: 'image';
 	mediaType: string;
 	data: string;
+	/** Original file name, so the message (and editing it) shows what was attached. */
+	title?: string | null;
 }
 
 export interface DocumentBlock {
