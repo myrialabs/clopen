@@ -182,7 +182,7 @@ describe('on-demand engine CLIs', () => {
 		const dir = mkdtempSync(join(tmpdir(), 'clopen-stack-'));
 		writeFileSync(
 			join(dir, 'package.json'),
-			JSON.stringify({ name: 'clopen-stack-engines', private: true, version: '0.0.0', dependencies: { '@opencode-ai/sdk': '1.18.18' } })
+			JSON.stringify({ name: 'clopen-stack-engines', private: true, version: '0.0.0', dependencies: { '@opencode-ai/sdk': '1.18.34' } })
 		);
 
 		ensureStackProject(dir);
@@ -191,7 +191,7 @@ describe('on-demand engine CLIs', () => {
 			dependencies?: Record<string, string>;
 			trustedDependencies?: string[];
 		};
-		expect(merged.dependencies).toEqual({ '@opencode-ai/sdk': '1.18.18' });
+		expect(merged.dependencies).toEqual({ '@opencode-ai/sdk': '1.18.34' });
 		for (const pkg of engineCliTrustedPackages()) {
 			expect(merged.trustedDependencies).toContain(pkg);
 		}
