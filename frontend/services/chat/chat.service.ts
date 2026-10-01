@@ -59,7 +59,17 @@ interface SessionStreamState {
   cancelledProcessIds: Set<string>;
   /** Fallback timer that clears a stuck `isCancelling` for this session. */
   cancelSafetyTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Set from the moment this client sends until the server confirms the stream
+   * (its first event). Presence lags a send by a round trip, and without this
+   * window marked, "no active stream in presence" read as "finished" and
+   * switched the composer back to idle right after every send.
+   */
+  startPendingTimer: ReturnType<typeof setTimeout> | null;
 }
+
+/** How long a send may go unconfirmed before the composer gives up waiting. */
+const START_CONFIRM_TIMEOUT_MS = 60_000;
 
 class ChatService {
   private streams = new Map<string, SessionStreamState>();
@@ -143,7 +153,8 @@ class ChatService {
         processId: null,
         streamCompleted: false,
         cancelledProcessIds: new Set<string>(),
-        cancelSafetyTimer: null
+        cancelSafetyTimer: null,
+        startPendingTimer: null
       };
       this.streams.set(sessionId, state);
     }
@@ -241,6 +252,7 @@ class ChatService {
     ws.on('chat:connection', (data) => {
       const ctx = this.ownerOf(data);
       if (!ctx) return;
+      this.clearStartPending(ctx.sessionId);
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore events from a locally cancelled stream
       if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
@@ -253,6 +265,7 @@ class ChatService {
     ws.on('chat:message', (data) => {
       const ctx = this.ownerOf(data);
       if (!ctx) return;
+      this.clearStartPending(ctx.sessionId);
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore events from a locally cancelled stream
       if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
@@ -312,6 +325,7 @@ class ChatService {
     ws.on('chat:complete', async (data) => {
       const ctx = this.ownerOf(data);
       if (!ctx) return;
+      this.clearStartPending(ctx.sessionId);
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       // Ignore late events from a locally cancelled stream
       if (data.processId && ctx.state.cancelledProcessIds.has(data.processId)) return;
@@ -339,6 +353,7 @@ class ChatService {
     ws.on('chat:cancelled', async (data) => {
       const ctx = this.ownerOf(data);
       if (!ctx) return;
+      this.clearStartPending(ctx.sessionId);
       // Track the cancelled processId so late-arriving events are blocked.
       // This handles the case where a collaborator initiated the cancel
       // (so our local cancelRequest was not called).
@@ -365,6 +380,7 @@ class ChatService {
     ws.on('chat:error', async (data) => {
       const ctx = this.ownerOf(data);
       if (!ctx) return;
+      this.clearStartPending(ctx.sessionId);
       if (this.shouldSkipEvent(data.processId, data.seq)) return;
       if (ctx.state.streamCompleted) return;
       // Ignore late error events from a locally cancelled stream
@@ -404,6 +420,45 @@ class ChatService {
   }
 
   /**
+   * Whether this client sent to the session and the server has not confirmed
+   * the stream yet. Presence is not authoritative during this window.
+   */
+  isStartPending(sessionId: string): boolean {
+    return this.streams.get(sessionId)?.startPendingTimer != null;
+  }
+
+  /**
+   * Mirror presence (the shared truth about which sessions are streaming) into
+   * a session's process state. Goes through setProcessState so the per-session
+   * map and the global flags can never disagree.
+   */
+  syncLoadingFromPresence(sessionId: string, isLoading: boolean): void {
+    this.setProcessState({ isLoading }, sessionId);
+  }
+
+  private markStartPending(sessionId: string): void {
+    const state = this.streamFor(sessionId);
+    if (state.startPendingTimer) clearTimeout(state.startPendingTimer);
+    state.startPendingTimer = setTimeout(() => {
+      state.startPendingTimer = null;
+      // Never confirmed: the send was lost. Stop spinning; if the stream did
+      // start after all, presence turns loading back on.
+      if (getSessionProcessState(sessionId).isLoading && !state.processId) {
+        debug.warn('chat', 'Send was never confirmed by the server; clearing loading state');
+        this.setProcessState({ isLoading: false }, sessionId);
+      }
+    }, START_CONFIRM_TIMEOUT_MS);
+  }
+
+  private clearStartPending(sessionId: string): void {
+    const state = this.streams.get(sessionId);
+    if (state?.startPendingTimer) {
+      clearTimeout(state.startPendingTimer);
+      state.startPendingTimer = null;
+    }
+  }
+
+  /**
    * Reconnect to an active stream after browser refresh or project switch.
    * This re-subscribes the connection to receive live stream events.
    * Called from catchupActiveStream in ChatInput.
@@ -423,6 +478,95 @@ class ChatService {
     ws.emit('chat:reconnect', {
       chatSessionId
     });
+  }
+
+  /**
+   * Everything a turn needs, built from the composer's current selection.
+   * Shared by sending now and queueing, so a queued message carries exactly
+   * what an immediate send would have.
+   */
+  private buildStreamRequest(
+    chatSessionId: string,
+    userMessage: string,
+    attachedFiles: ChatServiceOptions['attachedFiles'],
+    parentSessionId: string | null
+  ) {
+    // Build message content (text + optional file attachments)
+    const contentBlocks: any[] = [];
+    for (const file of attachedFiles ?? []) {
+      if (file.type === 'image') {
+        contentBlocks.push({
+          type: 'image',
+          mediaType: file.mediaType,
+          data: file.data,
+          title: file.fileName,
+        });
+      } else {
+        contentBlocks.push({
+          type: 'document',
+          mediaType: file.mediaType,
+          data: file.data,
+          title: file.fileName,
+        });
+      }
+    }
+    if (userMessage) {
+      contentBlocks.push({ type: 'text', text: userMessage });
+    }
+    const messageContent = contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: userMessage }];
+
+    const engine = {
+      type: chatModelState.engine,
+      provider: chatModelState.provider,
+      model: { id: chatModelState.modelId, name: chatModelState.modelName },
+      account: { id: chatModelState.accountId ?? 0, name: chatModelState.accountName ?? '' },
+    };
+    const sender = {
+      id: userStore.currentUser?.id || '',
+      name: userStore.currentUser?.name || '',
+    };
+
+    const prompt = {
+      type: 'user' as const,
+      createdAt: new Date().toISOString(),
+      messageId: crypto.randomUUID(),
+      sessionId: chatSessionId,
+      parent: { messageId: null, sessionId: parentSessionId, toolUseId: null },
+      engine,
+      sender,
+      content: messageContent,
+      synthetic: false,
+    };
+
+    return {
+      chatSessionId,
+      projectPath: projectState.currentProject?.path || '',
+      prompt,
+      engine,
+      sender,
+      // Active Profile for this session (null = use project default). Persisted
+      // to chat_sessions.profile_id server-side like engine/model.
+      profileId: chatModelState.profileId,
+      // Reasoning/thinking level (native per engine; null = engine default).
+      // Persisted to chat_sessions.reasoning_effort server-side.
+      reasoningEffort: chatModelState.reasoningEffort,
+    };
+  }
+
+  /**
+   * Queue a message behind the turn that is running. The server holds the
+   * queue and starts it when the turn completes (or right away if the turn
+   * finished in the meantime). The resume target is left to the server: by the
+   * time the message runs, the branch has moved on.
+   */
+  queueMessage(message: string, attachedFiles?: ChatServiceOptions['attachedFiles']): boolean {
+    const chatSessionId = sessionState.currentSession?.id;
+    const userMessage = message.trim();
+    if (!chatSessionId || !projectState.currentProject) return false;
+    if (!userMessage && !attachedFiles?.length) return false;
+
+    ws.emit('chat:queue-add', this.buildStreamRequest(chatSessionId, userMessage, attachedFiles, null));
+    return true;
   }
 
   /**
@@ -482,6 +626,7 @@ class ChatService {
     const targetStream = this.streamFor(targetSessionId);
     targetStream.streamCompleted = false;
     this.setProcessState({ isLoading: true, isWaitingInput: false, isCancelling: false }, targetSessionId);
+    this.markStartPending(targetSessionId);
     // DON'T clear this session's cancelledProcessIds — late events from its
     // previously cancelled streams must still be blocked. The set is cleared
     // when one of its streams completes.
@@ -496,39 +641,6 @@ class ChatService {
     this.cleanupStreamEvents();
 
     try {
-      // Build message content (text + optional file attachments)
-      const contentBlocks: any[] = [];
-      if (options.attachedFiles && options.attachedFiles.length > 0) {
-        // Add file attachments first
-        for (const file of options.attachedFiles) {
-          if (file.type === 'image') {
-            contentBlocks.push({
-              type: 'image',
-              mediaType: file.mediaType,
-              data: file.data,
-            });
-          } else {
-            contentBlocks.push({
-              type: 'document',
-              mediaType: file.mediaType,
-              data: file.data,
-              title: file.fileName,
-            });
-          }
-        }
-      }
-      // Add text block
-      if (userMessage) {
-        contentBlocks.push({ type: 'text', text: userMessage });
-      }
-      const messageContent = contentBlocks.length > 0 ? contentBlocks : [{ type: 'text', text: userMessage }];
-
-      // Capture selected engine/model/account before sending
-      const selectedEngine = chatModelState.engine;
-      const selectedProvider = chatModelState.provider;
-      const selectedModelId = chatModelState.modelId;
-      const selectedModelName = chatModelState.modelName;
-
       // Determine the SDK session ID for the current branch HEAD.
       // After non-linear operations (edit/undo/restore), sessionState.messages
       // reflects the correct branch — find the last assistant/reasoning message
@@ -544,7 +656,7 @@ class ChatService {
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const m = sessionState.messages[i];
         if ((m.type === 'assistant' || m.type === 'reasoning') && 'sessionId' in m) {
-          if ((m as any).engine?.type && (m as any).engine.type !== selectedEngine) break;
+          if ((m as any).engine?.type && (m as any).engine.type !== chatModelState.engine) break;
           const sid = (m as any).sessionId as string;
           if (sid && sid !== currentSessionId) {
             parentSessionId = sid;
@@ -553,27 +665,14 @@ class ChatService {
         }
       }
 
-      // Create UserMessage format for prompt
-      const userMsgId = crypto.randomUUID();
-      const userMsg = {
-        type: 'user' as const,
-        createdAt: new Date().toISOString(),
-        messageId: userMsgId,
-        sessionId: currentSessionId,
-        parent: { messageId: null, sessionId: parentSessionId, toolUseId: null },
-        engine: {
-          type: selectedEngine,
-          provider: selectedProvider,
-          model: { id: selectedModelId, name: selectedModelName },
-          account: { id: chatModelState.accountId ?? 0, name: chatModelState.accountName ?? '' },
-        },
-        sender: {
-          id: userStore.currentUser?.id || '',
-          name: userStore.currentUser?.name || '',
-        },
-        content: messageContent,
-        synthetic: false,
-      };
+      const request = this.buildStreamRequest(currentSessionId, userMessage, options.attachedFiles, parentSessionId);
+      const userMsg = request.prompt;
+      const userMsgId = userMsg.messageId;
+      const {
+        type: selectedEngine,
+        provider: selectedProvider,
+        model: { id: selectedModelId, name: selectedModelName }
+      } = request.engine;
 
       // Optimistic UI: show user message immediately (before server confirms)
       const optimisticMessage: OptimisticUserMessage = {
@@ -588,25 +687,7 @@ class ChatService {
       // Send WebSocket message to start streaming
       ws.emit('chat:stream', {
         sessionId: crypto.randomUUID(), // ephemeral session ID for this stream
-        chatSessionId: sessionState.currentSession.id,
-        projectPath: projectState.currentProject?.path || '',
-        prompt: userMsg,
-        engine: {
-          type: selectedEngine,
-          provider: selectedProvider,
-          model: { id: selectedModelId, name: selectedModelName },
-          account: { id: selectedAccountId ?? 0, name: selectedAccountName ?? '' },
-        },
-        sender: {
-          id: userStore.currentUser?.id || '',
-          name: userStore.currentUser?.name || '',
-        },
-        // Active Profile for this session (null = use project default). Persisted
-        // to chat_sessions.profile_id server-side like engine/model.
-        profileId: chatModelState.profileId,
-        // Reasoning/thinking level (native per engine; null = engine default).
-        // Persisted to chat_sessions.reasoning_effort server-side.
-        reasoningEffort: chatModelState.reasoningEffort,
+        ...request
       });
 
       // Persist engine/model/account to frontend session state immediately.

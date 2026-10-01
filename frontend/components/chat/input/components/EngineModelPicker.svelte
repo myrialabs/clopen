@@ -7,7 +7,14 @@
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { userStore } from '$frontend/stores/features/user.svelte';
-	import { chatModelState, initChatModel, restoreChatModelFromSession } from '$frontend/stores/ui/chat-model.svelte';
+	import {
+		chatModelState,
+		initChatModel,
+		restoreChatModelFromSession,
+		selectionInitKey,
+		claimSelectionInit,
+		patchCurrentSessionSelection
+	} from '$frontend/stores/ui/chat-model.svelte';
 	import { ENGINES, getModelTags, pickDefaultModel, reasoningLevelLabel } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
@@ -25,6 +32,79 @@
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
+	import { CLIENT_ID } from '$frontend/utils/client-id';
+	import { anchoredPopover } from '$frontend/utils/anchored-popover';
+
+	// ════════════════════════════════════════════
+	// Collaborative sync
+	//
+	// `chat:model-sync` / `chat:account-sync` / `chat:reasoning-sync` are emitted
+	// ONLY from explicit user actions (selectModel, selectEngine, selectAccount,
+	// selectOCAccount, selectReasoning). Restores, init and auto-selection are
+	// local: emitting from them made every client that opened a session
+	// broadcast its own restored/defaulted state over its collaborators'.
+	// ════════════════════════════════════════════
+
+	interface SyncEnvelope {
+		senderId: string;
+		clientId?: string;
+		chatSessionId?: string;
+	}
+
+	/** Session + sender for an outgoing sync, or null when there is nothing to sync to. */
+	function syncTarget(): { chatSessionId: string; senderId: string } | null {
+		const chatSessionId = sessionState.currentSession?.id;
+		const senderId = userStore.currentUser?.id;
+		if (!chatSessionId || !senderId) return null;
+		return { chatSessionId, senderId };
+	}
+
+	/**
+	 * Whether an incoming sync must be ignored: it is this tab's own echo (by
+	 * per-tab clientId, so the same user's other tabs/devices still apply it;
+	 * user-id fallback for payloads without one), or it belongs to a session
+	 * this tab has already switched away from.
+	 */
+	function ignoreSync(data: SyncEnvelope): boolean {
+		const own = data.clientId ? data.clientId === CLIENT_ID : data.senderId === userStore.currentUser?.id;
+		if (own) return true;
+		return data.chatSessionId !== sessionState.currentSession?.id;
+	}
+
+	function emitModelSync() {
+		const target = syncTarget();
+		if (!target || !chatModelState.modelId) return;
+		ws.emit('chat:model-sync', {
+			...target,
+			clientId: CLIENT_ID,
+			engine: chatModelState.engine,
+			provider: chatModelState.provider,
+			modelId: chatModelState.modelId,
+			modelName: chatModelState.modelName,
+			reasoningEffort: chatModelState.reasoningEffort
+		});
+	}
+
+	function emitAccountSync() {
+		const target = syncTarget();
+		if (!target) return;
+		ws.emit('chat:account-sync', {
+			...target,
+			clientId: CLIENT_ID,
+			accountId: chatModelState.accountId,
+			accountName: chatModelState.accountName
+		});
+	}
+
+	function emitReasoningSync() {
+		const target = syncTarget();
+		if (!target) return;
+		ws.emit('chat:reasoning-sync', {
+			...target,
+			clientId: CLIENT_ID,
+			reasoningEffort: chatModelState.reasoningEffort
+		});
+	}
 
 	// ════════════════════════════════════════════
 	// Single-account-list engines: Claude Code + Copilot
@@ -126,47 +206,18 @@
 		}
 	});
 
-	// Emit account changes to other users in the same chat session
-	let lastSyncedAccountId: number | null = null;
-	let ignoringRemoteAccountSync = false;
-
+	// Listen for remote account changes from collaborators (and this user's
+	// other tabs/devices)
 	$effect(() => {
-		const accountId = chatModelState.accountId;
-		const accountName = chatModelState.accountName;
-		const chatSessionId = sessionState.currentSession?.id;
-		const senderId = userStore.currentUser?.id;
-		if (!chatSessionId || !senderId || ignoringRemoteAccountSync) return;
-		if (accountId !== null && accountId !== lastSyncedAccountId) {
-			lastSyncedAccountId = accountId;
-			ws.emit('chat:account-sync', {
-				senderId,
-				chatSessionId,
-				accountId,
-				accountName: accountName ?? null
-			});
-		}
-	});
-
-	// Listen for remote account changes from other users
-	$effect(() => {
-		const unsub = ws.on('chat:account-sync', (data: { senderId: string; accountId: number | null; accountName: string | null }) => {
-			const currentUserId = userStore.currentUser?.id;
-			if (data.senderId === currentUserId) return;
+		const unsub = ws.on('chat:account-sync', (data: SyncEnvelope & { accountId: number | null; accountName: string | null }) => {
+			if (ignoreSync(data)) return;
 			debug.log('chat', 'Remote account sync:', data);
-			ignoringRemoteAccountSync = true;
 			chatModelState.accountId = data.accountId;
 			chatModelState.accountName = data.accountName;
-			lastSyncedAccountId = data.accountId;
-			ignoringRemoteAccountSync = false;
-
-			// Also update session state so init $effect won't overwrite on re-render
-			if (sessionState.currentSession) {
-				sessionState.currentSession = {
-					...sessionState.currentSession,
-					account_id: data.accountId ?? undefined,
-					account_name: data.accountName ?? undefined
-				};
-			}
+			patchCurrentSessionSelection({
+				account_id: data.accountId ?? undefined,
+				account_name: data.accountName ?? undefined
+			});
 		});
 		return unsub;
 	});
@@ -174,14 +225,11 @@
 	// Account dropdown state
 	let showAccountDropdown = $state(false);
 	let accountTriggerButton = $state<HTMLButtonElement>();
-	let accountDropdownStyle = $state('');
+	// A server-side account switch in flight — blocks a second pick until it settles.
+	let accountSwitching = $state(false);
 
 	function toggleAccountDropdown() {
-		if (!showAccountDropdown && accountTriggerButton) {
-			const rect = accountTriggerButton.getBoundingClientRect();
-			accountDropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
-			accountSearchQuery = '';
-		}
+		if (!showAccountDropdown) accountSearchQuery = '';
 		showAccountDropdown = !showAccountDropdown;
 	}
 
@@ -189,74 +237,75 @@
 		showAccountDropdown = false;
 	}
 
-	async function selectAccount(account: SimpleAccount) {
-		chatModelState.accountId = account.id;
-		chatModelState.accountName = account.name;
-
-		// For Codex, switching the account also swaps `~/.codex/auth.json`
-		// (server-side) so the next subprocess picks up the right blob. We
-		// fire-and-forget — the per-stream `accountId` override would still
-		// apply this if the user sends immediately after switching, but
-		// touching the file early matters for the model-listing path.
-		if (chatModelState.engine === 'codex') {
-			try {
-				await ws.http('engine:codex-accounts-switch', { id: account.id });
+	/**
+	 * Promote the picked account to DB-active where the engine needs it.
+	 * Throws when the server refuses, so the caller keeps the previous account.
+	 *
+	 * - Codex: switching swaps `~/.codex/auth.json` server-side so the next
+	 *   subprocess (and the model-listing path) picks up the right blob.
+	 * - Qwen / Cursor: models are discovered against the active account's
+	 *   endpoint / API key, so the catalog is refreshed too.
+	 * - Pi / Cline: multi-provider — the (union) catalog follows the account.
+	 * - Claude Code / Copilot: nothing server-side; the per-stream `accountId`
+	 *   override applies the pick.
+	 */
+	async function promoteAccountOnServer(engine: EngineType, id: number): Promise<void> {
+		switch (engine) {
+			case 'codex':
+				await ws.http('engine:codex-accounts-switch', { id });
 				await codexAccountsStore.refresh();
-			} catch (err) {
-				debug.warn('chat', 'Codex account switch failed:', err);
-			}
-		}
-
-		// Qwen models are discovered dynamically against the active account's
-		// `/models` endpoint, so promoting the chat-picked account to DB-active
-		// and refreshing the model list keeps the picker in sync with the
-		// preset's actual catalog.
-		if (chatModelState.engine === 'qwen') {
-			try {
-				await ws.http('engine:qwen-accounts-switch', { id: account.id });
+				return;
+			case 'qwen':
+				await ws.http('engine:qwen-accounts-switch', { id });
 				await qwenAccountsStore.refresh();
 				await modelStore.refreshModels('qwen');
-			} catch (err) {
-				debug.warn('chat', 'Qwen account switch failed:', err);
-			}
-		}
-
-		// Pi is multi-provider — promoting the picked account to DB-active and
-		// refreshing the (union) model catalog keeps the picker in sync.
-		if (chatModelState.engine === 'pi') {
-			try {
-				await ws.http('engine:pi-accounts-switch', { id: account.id });
+				return;
+			case 'pi':
+				await ws.http('engine:pi-accounts-switch', { id });
 				await piAccountsStore.refresh();
 				await modelStore.refreshModels('pi');
-			} catch (err) {
-				debug.warn('chat', 'Pi account switch failed:', err);
-			}
-		}
-
-		// Cline is multi-provider — same promote-to-active + refresh as Pi.
-		if (chatModelState.engine === 'cline') {
-			try {
-				await ws.http('engine:cline-accounts-switch', { id: account.id });
+				return;
+			case 'cline':
+				await ws.http('engine:cline-accounts-switch', { id });
 				await clineAccountsStore.refresh();
 				await modelStore.refreshModels('cline');
-			} catch (err) {
-				debug.warn('chat', 'Cline account switch failed:', err);
-			}
-		}
-
-		// Cursor models are discovered against the active account's API key, so
-		// promote-to-active + refresh keeps the picker's catalog in sync.
-		if (chatModelState.engine === 'cursor') {
-			try {
-				await ws.http('engine:cursor-accounts-switch', { id: account.id });
+				return;
+			case 'cursor':
+				await ws.http('engine:cursor-accounts-switch', { id });
 				await cursorAccountsStore.refresh();
 				await modelStore.refreshModels('cursor');
-			} catch (err) {
-				debug.warn('chat', 'Cursor account switch failed:', err);
-			}
+				return;
+			default:
+				return;
+		}
+	}
+
+	async function selectAccount(account: SimpleAccount) {
+		if (accountSwitching) return;
+		closeAccountDropdown();
+		if (account.id === chatModelState.accountId) return;
+
+		const engine = chatModelState.engine;
+		const sessionId = sessionState.currentSession?.id;
+		accountSwitching = true;
+		try {
+			await promoteAccountOnServer(engine, account.id);
+		} catch (err) {
+			// Local state is only committed after the server agrees, so a failed
+			// switch leaves the picker on the account that is actually active.
+			debug.warn('chat', `${engine} account switch failed — keeping the current account:`, err);
+			return;
+		} finally {
+			accountSwitching = false;
 		}
 
-		closeAccountDropdown();
+		// The user moved on (other engine / other session) while we waited.
+		if (chatModelState.engine !== engine || sessionState.currentSession?.id !== sessionId) return;
+
+		chatModelState.accountId = account.id;
+		chatModelState.accountName = account.name;
+		patchCurrentSessionSelection({ account_id: account.id, account_name: account.name });
+		emitAccountSync();
 	}
 
 	// ════════════════════════════════════════════
@@ -314,13 +363,8 @@
 	// OpenCode account dropdown state
 	let showOCAccountDropdown = $state(false);
 	let ocAccountTriggerButton = $state<HTMLButtonElement>();
-	let ocAccountDropdownStyle = $state('');
 
 	function toggleOCAccountDropdown() {
-		if (!showOCAccountDropdown && ocAccountTriggerButton) {
-			const rect = ocAccountTriggerButton.getBoundingClientRect();
-			ocAccountDropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
-		}
 		showOCAccountDropdown = !showOCAccountDropdown;
 	}
 
@@ -329,23 +373,31 @@
 	}
 
 	async function selectOCAccount(account: OpenCodeAccountItem) {
-		// The switch is all there is to do: the backend notices the account change
-		// and has the next turn talk to a server built with the new credential,
-		// while any turn already running finishes on the old one.
-		await opencodeProvidersStore.switchAccount(account.id);
+		if (accountSwitching) return;
+		closeOCAccountDropdown();
+		const sessionId = sessionState.currentSession?.id;
+		accountSwitching = true;
+		try {
+			// The switch is all there is to do: the backend notices the account change
+			// and has the next turn talk to a server built with the new credential,
+			// while any turn already running finishes on the old one.
+			await opencodeProvidersStore.switchAccount(account.id);
+		} catch (err) {
+			debug.warn('chat', 'OpenCode account switch failed — keeping the current account:', err);
+			return;
+		} finally {
+			accountSwitching = false;
+		}
+		if (chatModelState.engine !== 'opencode' || sessionState.currentSession?.id !== sessionId) return;
 		chatModelState.accountId = account.id;
 		chatModelState.accountName = account.name;
-		closeOCAccountDropdown();
+		patchCurrentSessionSelection({ account_id: account.id, account_name: account.name });
+		emitAccountSync();
 	}
 
 	// ════════════════════════════════════════════
 	// Model Picker (existing logic)
 	// ════════════════════════════════════════════
-
-	// Track whether a chat has started (any user message in current session, or session has history e.g. restored to initial)
-	const hasStartedChat = $derived(
-		sessionState.messages.some(m => m.type === 'user') || sessionState.hasMessageHistory
-	);
 
 	// The engine is switchable at any point in a session. When it changes
 	// mid-conversation the backend replays the branch to the new engine as
@@ -354,7 +406,10 @@
 
 	// Read from local chat model state (isolated from Settings)
 	const currentEngine = $derived(ENGINES.find(e => e.type === chatModelState.engine));
-	const currentModel = $derived(modelStore.getById(chatModelState.modelId));
+	// Engine-scoped: model ids collide across engines (the same OpenAI id is
+	// served by several), so a global lookup could resolve another engine's model.
+	const currentModel = $derived(modelStore.getForEngine(chatModelState.engine, chatModelState.modelId));
+	const engineModelsLoading = $derived(modelStore.isLoading(chatModelState.engine));
 
 	// ── Reasoning / thinking level (only when the selected model exposes one) ──
 	const currentReasoningControl = $derived(currentModel?.capabilities.reasoningControl ?? null);
@@ -374,10 +429,16 @@
 	// with the turn (and surfaces in the Raw Message). Reasoning-capable model →
 	// per-model default (Settings) or the model's own default; a value invalid for
 	// the current model is re-seeded. No knob → cleared to null.
+	//
+	// Only once the model is resolved: before the catalog loads (e.g. right after
+	// a reload) `control` is null merely because the model is unknown, and
+	// clearing then wiped the level restored from the session.
 	$effect(() => {
 		const control = currentReasoningControl;
+		const resolved = !!currentModel && !engineModelsLoading;
 		const modelId = chatModelState.modelId;
 		const defaults = settings.reasoningDefaults;
+		if (!resolved) return;
 		untrack(() => {
 			const current = chatModelState.reasoningEffort;
 			if (!control) {
@@ -407,57 +468,52 @@
 		return all;
 	});
 
+	// The catalog for the active engine is not in yet (loading, or never fetched
+	// and not failed). The trigger and reasoning pill keep their last value
+	// meanwhile instead of collapsing — no layout shift on reload/engine switch.
+	const modelsPending = $derived(
+		engineModelsLoading || (!modelStore.isFetched(chatModelState.engine) && !engineError)
+	);
+
 	// Label shown in the trigger button
 	const triggerLabel = $derived.by(() => {
-		if (modelStore.loading) return 'Loading...';
-		if (!currentModel) return 'No model selected';
-		return currentModel.engine.model.name;
+		if (currentModel) return currentModel.engine.model.name;
+		if (modelsPending) return chatModelState.modelName || 'Loading...';
+		return 'No model selected';
 	});
 
+	// Show the restored reasoning level (disabled) until the model resolves.
+	const reasoningPending = $derived(!currentModel && modelsPending && !!chatModelState.reasoningEffort);
+
 	// Initialize model picker based on session state:
-	// - Session with persisted engine/model: restore from session (highest priority)
-	// - New session (no messages, no persisted engine/model): apply Settings defaults
-	// - Legacy session without engine/model: fall back to Settings defaults
+	// - Session with persisted engine/model: restore from session
+	// - Otherwise (new session, or legacy session without engine/model): apply
+	//   Settings defaults
 	//
-	// IMPORTANT: Session engine/model is checked BEFORE hasStartedChat because
-	// when switching sessions, messages load asynchronously AFTER the session is set.
-	// If we checked hasStartedChat first, there's a window where messages haven't
-	// loaded yet (hasStartedChat=false) → defaults would be applied, overriding the
-	// session's actual engine/model selection.
+	// Runs only when `selectionInitKey` changes — a different session, a
+	// server-fresh copy whose persisted selection really differs, or (fresh
+	// session only) different Settings defaults. NOT on every replacement of
+	// the `currentSession` object: that re-ran init and reset the account,
+	// profile and reasoning picks of fresh sessions. Local picks and remote
+	// syncs mirror onto the session via patchCurrentSessionSelection, which
+	// records the key so the mirror itself never re-triggers init.
 	$effect(() => {
 		const session = sessionState.currentSession;
-		const _sessionId = session?.id;
-		const started = hasStartedChat;
 		const sEngine = settings.selectedEngine;
 		const sProvider = settings.selectedProvider;
 		const sModelId = settings.selectedModelId;
 		const sModelName = settings.selectedModelName;
-		const sMemory = settings.engineModelMemory;
-		const sessionEngine = session?.engine;
-		const sessionProvider = session?.provider;
-		const sessionModelId = session?.model_id;
-		const sessionModelName = session?.model_name;
-		const sessionAccountId = session?.account_id;
-		const sessionAccountName = session?.account_name;
-		const sessionProfileId = session?.profile_id;
-		const sessionReasoning = session?.reasoning_effort;
+		const key = selectionInitKey(session, JSON.stringify([sEngine, sProvider, sModelId, sModelName]));
 
 		untrack(() => {
+			if (!claimSelectionInit(key)) return;
 			// Read per-model reasoning defaults untracked: editing a default (here or
 			// via the pill) must not re-trigger this init and clobber the live choice.
 			const reasoningDefaults = settings.reasoningDefaults;
-			if (sessionEngine && sessionModelId) {
-				// Session has persisted engine/model: always restore from session.
-				// This works for both existing sessions (has messages) and sessions
-				// where messages are still loading asynchronously.
-				restoreChatModelFromSession(sessionEngine, sessionProvider || sProvider, sessionModelId, sessionModelName || '', sessionAccountId, sessionAccountName, sessionProfileId, sessionReasoning ?? null);
-			} else if (!started) {
-				// New session (no messages, no persisted engine/model): apply Settings defaults
-				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {}, reasoningDefaults[sModelId] ?? null);
+			if (session?.engine && session.model_id) {
+				restoreChatModelFromSession(session.engine, session.provider || sProvider, session.model_id, session.model_name || '', session.account_id, session.account_name, session.profile_id, session.reasoning_effort ?? null);
 			} else {
-				// Existing session without engine/model (pre-migration or not yet set):
-				// fall back to Settings defaults
-				initChatModel(sEngine, sProvider, sModelId, sModelName, sMemory || {}, reasoningDefaults[sModelId] ?? null);
+				initChatModel(sEngine, sProvider, sModelId, sModelName, settings.engineModelMemory || {}, reasoningDefaults[sModelId] ?? null);
 			}
 		});
 	});
@@ -472,9 +528,10 @@
 	// Auto-select a model if no valid model is set for the current engine.
 	// Reads (engine, currentModel, availableModels) are tracked; writes use untrack
 	// to prevent circular chatModelState read-write (UpdatedAtError).
+	// Local only — not broadcast (see "Collaborative sync" above).
 	$effect(() => {
 		const engine = chatModelState.engine;
-		const modelValid = currentModel?.engine.type === engine;
+		const modelValid = !!currentModel;
 		const models = availableModels;
 		if (!modelValid && models.length > 0) {
 			untrack(() => {
@@ -494,59 +551,37 @@
 		}
 	});
 
-	// Emit model changes to other users in the same chat session
-	let lastSyncedModelId = '';
-	let lastSyncedEngine = '';
-	let ignoringRemoteSync = false;
-
+	// Listen for remote model changes from collaborators (and this user's other
+	// tabs/devices)
 	$effect(() => {
-		const engine = chatModelState.engine;
-		const provider = chatModelState.provider;
-		const modelId = chatModelState.modelId;
-		const modelName = chatModelState.modelName;
-		const chatSessionId = sessionState.currentSession?.id;
-		const senderId = userStore.currentUser?.id;
-		if (!chatSessionId || !senderId || ignoringRemoteSync) return;
-		// Only emit if model actually changed (not on init)
-		if (modelId && (modelId !== lastSyncedModelId || engine !== lastSyncedEngine)) {
-			lastSyncedModelId = modelId;
-			lastSyncedEngine = engine;
-			ws.emit('chat:model-sync', {
-				senderId,
-				chatSessionId,
-				engine,
-				provider,
-				modelId,
-				modelName
-			});
-		}
-	});
-
-	// Listen for remote model changes from other users
-	$effect(() => {
-		const unsub = ws.on('chat:model-sync', (data: { senderId: string; engine: string; provider: string; modelId: string; modelName: string }) => {
-			const currentUserId = userStore.currentUser?.id;
-			if (data.senderId === currentUserId) return; // Ignore own events
+		const unsub = ws.on('chat:model-sync', (data: SyncEnvelope & { engine: string; provider: string; modelId: string; modelName: string; reasoningEffort?: string | null }) => {
+			if (ignoreSync(data)) return;
 			debug.log('chat', 'Remote model sync:', data);
-			ignoringRemoteSync = true;
-			chatModelState.engine = data.engine as EngineType;
+			const engine = data.engine as EngineType;
+			const engineChanged = engine !== chatModelState.engine;
+			chatModelState.engine = engine;
 			chatModelState.provider = data.provider;
 			chatModelState.modelId = data.modelId;
 			chatModelState.modelName = data.modelName;
-			lastSyncedModelId = data.modelId;
-			lastSyncedEngine = data.engine;
-			ignoringRemoteSync = false;
-
-			// Also update session state so init $effect won't overwrite on re-render
-			if (sessionState.currentSession) {
-				sessionState.currentSession = {
-					...sessionState.currentSession,
-					engine: data.engine as EngineType,
-					provider: data.provider,
-					model_id: data.modelId,
-					model_name: data.modelName
-				};
+			chatModelState.engineModelMemory = {
+				...chatModelState.engineModelMemory,
+				[engine]: { provider: data.provider, id: data.modelId, name: data.modelName }
+			};
+			if (data.reasoningEffort !== undefined) chatModelState.reasoningEffort = data.reasoningEffort;
+			// Accounts are per engine — the old engine's account is meaningless now;
+			// the auto-select effect picks this engine's active account.
+			if (engineChanged) {
+				chatModelState.accountId = null;
+				chatModelState.accountName = null;
 			}
+			patchCurrentSessionSelection({
+				engine,
+				provider: data.provider,
+				model_id: data.modelId,
+				model_name: data.modelName,
+				...(data.reasoningEffort !== undefined ? { reasoning_effort: data.reasoningEffort } : {}),
+				...(engineChanged ? { account_id: undefined, account_name: undefined } : {})
+			});
 		});
 		return unsub;
 	});
@@ -619,14 +654,9 @@
 
 	// Dropdown state
 	let showDropdown = $state(false);
-	let triggerButton: HTMLButtonElement;
-	let dropdownStyle = $state('');
+	let triggerButton = $state<HTMLButtonElement>();
 
 	function toggleDropdown() {
-		if (!showDropdown && triggerButton) {
-			const rect = triggerButton.getBoundingClientRect();
-			dropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
-		}
 		showDropdown = !showDropdown;
 		if (!showDropdown) searchQuery = '';
 	}
@@ -639,13 +669,8 @@
 	// ── Reasoning-level dropdown ──
 	let showReasoningDropdown = $state(false);
 	let reasoningTriggerButton = $state<HTMLButtonElement>();
-	let reasoningDropdownStyle = $state('');
 
 	function toggleReasoningDropdown() {
-		if (!showReasoningDropdown && reasoningTriggerButton) {
-			const rect = reasoningTriggerButton.getBoundingClientRect();
-			reasoningDropdownStyle = `position: fixed; bottom: ${window.innerHeight - rect.top + 4}px; left: ${rect.left}px; z-index: 9999;`;
-		}
 		showReasoningDropdown = !showReasoningDropdown;
 	}
 
@@ -657,62 +682,60 @@
 		chatModelState.reasoningEffort = value;
 		// Remember per-model + surface as the Settings → Models default.
 		setReasoningDefault(chatModelState.modelId, value);
-		// Sync to collaborators in the same chat session.
-		const chatSessionId = sessionState.currentSession?.id;
-		const senderId = userStore.currentUser?.id;
-		if (chatSessionId && senderId) {
-			ws.emit('chat:reasoning-sync', { senderId, chatSessionId, reasoningEffort: value });
-		}
+		patchCurrentSessionSelection({ reasoning_effort: value });
+		emitReasoningSync();
 		closeReasoningDropdown();
 	}
 
-	// Listen for remote reasoning-level changes from other users
+	// Listen for remote reasoning-level changes from collaborators (and this
+	// user's other tabs/devices)
 	$effect(() => {
-		const unsub = ws.on('chat:reasoning-sync', (data: { senderId: string; reasoningEffort: string | null }) => {
-			if (data.senderId === userStore.currentUser?.id) return;
+		const unsub = ws.on('chat:reasoning-sync', (data: SyncEnvelope & { reasoningEffort: string | null }) => {
+			if (ignoreSync(data)) return;
 			debug.log('chat', 'Remote reasoning sync:', data);
 			chatModelState.reasoningEffort = data.reasoningEffort;
-			if (sessionState.currentSession) {
-				sessionState.currentSession = {
-					...sessionState.currentSession,
-					reasoning_effort: data.reasoningEffort,
-				};
-			}
+			patchCurrentSessionSelection({ reasoning_effort: data.reasoningEffort });
 		});
 		return unsub;
 	});
 
 	/**
-	 * Mirror a local engine/model pick onto `sessionState.currentSession`.
-	 *
-	 * The remote `chat:model-sync` listener already does this (see its comment:
-	 * "so init $effect won't overwrite on re-render") but the LOCAL path never
-	 * did, because the sender ignores its own broadcast echo. That left
-	 * `currentSession.engine/model_id` stale after every local pick, so the next
-	 * time anything replaced the session object — a reasoning/account/profile
-	 * sync from a collaborator, a session list refresh — the init $effect read
-	 * the stale values back and silently reverted the user's choice.
+	 * The concrete level a fresh model pick starts on: this user's per-model
+	 * default, else the model's own default. Resolved here (not left null for
+	 * the re-seed effect) because it is broadcast with the pick — a null would
+	 * make every collaborator re-seed from THEIR per-model defaults and disagree.
 	 */
-	function mirrorSelectionToSession(engine: EngineType, provider: string, modelId: string, modelName: string) {
-		if (!sessionState.currentSession) return;
-		sessionState.currentSession = {
-			...sessionState.currentSession,
-			engine,
-			provider,
-			model_id: modelId,
-			model_name: modelName
-		};
+	function effectiveReasoningFor(model: EngineModel): string | null {
+		const control = model.capabilities.reasoningControl;
+		if (!control) return null;
+		return settings.reasoningDefaults[model.engine.model.id] ?? control.default ?? null;
 	}
 
+	// Local picks are mirrored onto `sessionState.currentSession` (via
+	// patchCurrentSessionSelection) because the sender ignores its own echo:
+	// without it `currentSession` stayed stale after every local pick, and code
+	// reading engine/model from it saw the old values.
+
 	async function selectEngine(engineType: EngineType) {
+		if (engineType === chatModelState.engine) return;
+		// Captured before any await: a reply that lands after the user picked
+		// another engine or switched session must not be applied.
+		const sessionId = sessionState.currentSession?.id;
+
 		// Switch engine immediately so the active tab updates before model fetch
 		chatModelState.engine = engineType;
 		searchQuery = '';
 
-		// Clear model immediately so it shows null during loading, then fetch
+		// Clear model immediately so it shows null during loading, then fetch.
+		// Accounts are per engine, so the previous engine's one goes too (the
+		// auto-select effect picks this engine's active account).
 		chatModelState.modelId = '';
 		chatModelState.modelName = '';
+		chatModelState.accountId = null;
+		chatModelState.accountName = null;
 		await modelStore.fetchModels(engineType);
+
+		if (chatModelState.engine !== engineType || sessionState.currentSession?.id !== sessionId) return;
 
 		// After models are loaded, pick a model for this engine
 		const memory = chatModelState.engineModelMemory;
@@ -727,8 +750,21 @@
 			chatModelState.modelId = target.engine.model.id;
 			chatModelState.modelName = target.engine.model.name;
 			chatModelState.engineModelMemory = { ...memory, [engineType]: { provider: target.engine.provider, id: target.engine.model.id, name: target.engine.model.name } };
-			chatModelState.reasoningEffort = settings.reasoningDefaults[target.engine.model.id] ?? null;
-			mirrorSelectionToSession(engineType, target.engine.provider, target.engine.model.id, target.engine.model.name);
+			chatModelState.reasoningEffort = effectiveReasoningFor(target);
+			patchCurrentSessionSelection({
+				engine: engineType,
+				provider: target.engine.provider,
+				model_id: target.engine.model.id,
+				model_name: target.engine.model.name,
+				reasoning_effort: chatModelState.reasoningEffort,
+				account_id: chatModelState.accountId ?? undefined,
+				account_name: chatModelState.accountName ?? undefined
+			});
+			emitModelSync();
+			// Persist + broadcast this engine's account (still cleared, or already
+			// auto-selected by now) so the session record never keeps the previous
+			// engine's account.
+			emitAccountSync();
 		}
 	}
 
@@ -740,11 +776,41 @@
 			...chatModelState.engineModelMemory,
 			[chatModelState.engine]: { provider: model.engine.provider, id: model.engine.model.id, name: model.engine.model.name }
 		};
-		// Restore the per-model reasoning default (null → engine/model default).
-		chatModelState.reasoningEffort = settings.reasoningDefaults[model.engine.model.id] ?? null;
-		mirrorSelectionToSession(chatModelState.engine, model.engine.provider, model.engine.model.id, model.engine.model.name);
+		// Restore the per-model reasoning default (or the model's own default).
+		chatModelState.reasoningEffort = effectiveReasoningFor(model);
+		patchCurrentSessionSelection({
+			engine: chatModelState.engine,
+			provider: model.engine.provider,
+			model_id: model.engine.model.id,
+			model_name: model.engine.model.name,
+			reasoning_effort: chatModelState.reasoningEffort
+		});
+		emitModelSync();
 		closeDropdown();
 	}
+
+	function retryModels() {
+		void modelStore.refreshModels(chatModelState.engine);
+	}
+
+	// No accounts connected → Settings → Engines for this engine.
+	function connectAccount() {
+		closeAllDropdowns();
+		openSettingsModal('engines');
+		focusEngineSection(chatModelState.engine);
+	}
+
+	function closeAllDropdowns() {
+		closeDropdown();
+		closeAccountDropdown();
+		closeOCAccountDropdown();
+		closeReasoningDropdown();
+	}
+
+	// A stream starting closes every dropdown — selections can't be made mid-turn.
+	$effect(() => {
+		if (appState.isLoading) untrack(() => closeAllDropdowns());
+	});
 
 	// Not-ready shortcuts from the model dropdown: install via Settings → Stack,
 	// or configure the engine's account. Both close the dropdown first so the
@@ -766,12 +832,14 @@
 	<button
 		bind:this={triggerButton}
 		type="button"
-		class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150 min-w-0
+		class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150 min-w-0
 			bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
 			text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
 			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 		onclick={toggleDropdown}
 		disabled={appState.isLoading}
+		aria-haspopup="listbox"
+		aria-expanded={showDropdown}
 	>
 		{#if currentEngine}
 			<div class="flex dark:hidden items-center justify-center w-3.5 h-3.5 [&>svg]:w-full [&>svg]:h-full">{@html currentEngine.icon.light}</div>
@@ -787,19 +855,39 @@
 			<button
 				bind:this={accountTriggerButton}
 				type="button"
-				class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
+				class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
 					bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
 					text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
 					disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 				onclick={toggleAccountDropdown}
-				disabled={appState.isLoading}
+				disabled={appState.isLoading || accountSwitching}
+				aria-haspopup="listbox"
+				aria-expanded={showAccountDropdown}
+				aria-busy={accountSwitching}
 			>
-				<Icon name="lucide:user" class="w-3.5 h-3.5" />
+				{#if accountSwitching}
+					<div class="w-3.5 h-3.5 border-2 border-slate-300 border-t-violet-500 rounded-full animate-spin"></div>
+				{:else}
+					<Icon name="lucide:user" class="w-3.5 h-3.5" />
+				{/if}
 				<span class="font-medium max-w-24 truncate">{currentAccount?.name || 'Account'}</span>
 				<Icon name="lucide:chevron-down" class="w-3 h-3" />
 			</button>
+		{:else if isAdmin}
+			<button
+				type="button"
+				class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-colors
+					bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40
+					border border-amber-200 dark:border-amber-700/50 cursor-pointer"
+				onclick={connectAccount}
+				title="Connect an account in Settings → Engines"
+			>
+				<Icon name="lucide:triangle-alert" class="w-3.5 h-3.5 flex-shrink-0" />
+				<span class="font-medium">No accounts connected</span>
+				<span class="underline underline-offset-2">Connect</span>
+			</button>
 		{:else}
-			<div class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg
+			<div class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg
 				bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400
 				border border-amber-200 dark:border-amber-700/50">
 				<Icon name="lucide:triangle-alert" class="w-3.5 h-3.5 flex-shrink-0" />
@@ -813,31 +901,42 @@
 		<button
 			bind:this={ocAccountTriggerButton}
 			type="button"
-			class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
+			class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
 				bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
 				text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
 				disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 			onclick={toggleOCAccountDropdown}
-			disabled={appState.isLoading}
+			disabled={appState.isLoading || accountSwitching}
+			aria-haspopup="listbox"
+			aria-expanded={showOCAccountDropdown}
+			aria-busy={accountSwitching}
 		>
-			<Icon name="lucide:key" class="w-3.5 h-3.5" />
+			{#if accountSwitching}
+				<div class="w-3.5 h-3.5 border-2 border-slate-300 border-t-violet-500 rounded-full animate-spin"></div>
+			{:else}
+				<Icon name="lucide:key" class="w-3.5 h-3.5" />
+			{/if}
 			<span class="font-medium max-w-24 truncate">{currentOCAccount?.name || 'Account'}</span>
 			<Icon name="lucide:chevron-down" class="w-3 h-3" />
 		</button>
 	{/if}
 
-	<!-- Reasoning / thinking level (only when the selected model exposes one) -->
-	{#if currentReasoningControl && currentReasoningControl.levels.length > 0}
+	<!-- Reasoning / thinking level (only when the selected model exposes one).
+	     While the model is still resolving, the restored level stays visible
+	     (disabled) so the row doesn't jump. -->
+	{#if (currentReasoningControl && currentReasoningControl.levels.length > 0) || reasoningPending}
 		<button
 			bind:this={reasoningTriggerButton}
 			type="button"
-			class="flex items-center gap-1.5 px-2 py-1 text-xs rounded-lg transition-all duration-150
+			class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
 				bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
 				text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
 				disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 			onclick={toggleReasoningDropdown}
-			disabled={appState.isLoading}
+			disabled={appState.isLoading || !currentReasoningControl}
 			title="Reasoning effort"
+			aria-haspopup="listbox"
+			aria-expanded={showReasoningDropdown}
 		>
 			<Icon name="lucide:gauge" class="w-3.5 h-3.5" />
 			<span class="font-medium max-w-24 truncate">{currentReasoningLabel || 'Reasoning'}</span>
@@ -854,8 +953,9 @@
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeAccountDropdown}></div>
 
 	<div
-		style={accountDropdownStyle}
-		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		use:anchoredPopover={{ anchor: accountTriggerButton, onClose: closeAccountDropdown, maxHeight: 256 }}
+		style="position: fixed; z-index: 9999;"
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1rem)] flex flex-col"
 		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
 	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
@@ -875,12 +975,15 @@
 				</div>
 			</div>
 		{/if}
-		<div class="overflow-y-auto py-1">
+		<div class="overflow-y-auto py-1" role="listbox" aria-label={accountPickerLabel}>
 			{#each filteredAccounts as account (account.id)}
 				{@const isSelected = chatModelState.accountId === account.id}
 				<button
 					type="button"
-					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150
+					role="option"
+					aria-selected={isSelected}
+					data-popover-item
+					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150 focus-visible:outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-700
 						{isSelected
 							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
 							: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
@@ -908,20 +1011,24 @@
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeOCAccountDropdown}></div>
 
 	<div
-		style={ocAccountDropdownStyle}
-		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		use:anchoredPopover={{ anchor: ocAccountTriggerButton, onClose: closeOCAccountDropdown, maxHeight: 256 }}
+		style="position: fixed; z-index: 9999;"
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-48 max-w-[calc(100vw-1rem)] flex flex-col"
 		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
 	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:key" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">{ocMatchingProvider.name} Account</span>
 		</div>
-		<div class="overflow-y-auto py-1">
+		<div class="overflow-y-auto py-1" role="listbox" aria-label="{ocMatchingProvider.name} Account">
 			{#each ocMatchingProvider.accounts as account (account.id)}
 				{@const isSelected = account.isActive}
 				<button
 					type="button"
-					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150
+					role="option"
+					aria-selected={isSelected}
+					data-popover-item
+					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150 focus-visible:outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-700
 						{isSelected
 							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
 							: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
@@ -949,20 +1056,24 @@
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeReasoningDropdown}></div>
 
 	<div
-		style={reasoningDropdownStyle}
-		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-40 max-w-[calc(100vw-1.5rem)] max-h-64 flex flex-col"
+		use:anchoredPopover={{ anchor: reasoningTriggerButton, onClose: closeReasoningDropdown, maxHeight: 256 }}
+		style="position: fixed; z-index: 9999;"
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden min-w-40 max-w-[calc(100vw-1rem)] flex flex-col"
 		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
 	>
 		<div class="flex gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-700 flex-shrink-0">
 			<Icon name="lucide:gauge" class="w-3.5 h-3.5" />
 			<span class="text-xs font-medium text-slate-500 dark:text-slate-400 tracking-wide">Reasoning effort</span>
 		</div>
-		<div class="overflow-y-auto py-1">
+		<div class="overflow-y-auto py-1" role="listbox" aria-label="Reasoning effort">
 			{#each currentReasoningControl.levels as level (level.value)}
 				{@const isSelected = currentReasoningValue === level.value}
 				<button
 					type="button"
-					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150
+					role="option"
+					aria-selected={isSelected}
+					data-popover-item
+					class="flex items-center gap-2.5 w-full px-3 py-2 text-left transition-all duration-150 focus-visible:outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-700
 						{isSelected
 							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
 							: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
@@ -986,18 +1097,21 @@
 	<div class="fixed inset-0" style="z-index: 9998;" onclick={closeDropdown}></div>
 
 	<div
-		style={dropdownStyle}
-		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-80 max-w-[calc(100vw-1.5rem)] max-h-96 flex flex-col"
+		use:anchoredPopover={{ anchor: triggerButton, onClose: closeDropdown, maxHeight: 384 }}
+		style="position: fixed; z-index: 9999;"
+		class="origin-bottom-left bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl overflow-hidden w-80 max-w-[calc(100vw-1rem)] flex flex-col"
 		transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
 	>
 
 		<!-- Engine tabs -->
-		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
+		<div class="flex border-b border-slate-200 dark:border-slate-700 flex-shrink-0 overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" role="tablist" aria-label="Engines">
 			{#each ENGINES as engine (engine.type)}
 				{@const isActive = chatModelState.engine === engine.type}
 				<button
 					type="button"
-					class="flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-medium transition-all duration-150 whitespace-nowrap
+					role="tab"
+					aria-selected={isActive}
+					class="flex items-center justify-center gap-1.5 px-2 py-2 pointer-coarse:px-3 text-xs font-medium transition-all duration-150 whitespace-nowrap
 						{isActive ? 'flex-1' : 'flex-shrink-0'}
 						{isActive
 							? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400 border-b-2 border-violet-600'
@@ -1029,7 +1143,7 @@
 
 		<!-- Model list -->
 		<div class="overflow-y-auto py-1">
-			{#if modelStore.loading}
+			{#if engineModelsLoading}
 				<div class="flex items-center justify-center gap-2 py-5 text-xs text-slate-400">
 					<div class="w-3.5 h-3.5 border-2 border-slate-300 border-t-violet-500 rounded-full animate-spin"></div>
 					<span>Loading models...</span>
@@ -1044,25 +1158,35 @@
 						<Icon name="lucide:triangle-alert" class="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
 						<div class="flex-1 min-w-0">
 							<p class="text-xs text-amber-900 dark:text-amber-100">{engineError}</p>
-							{#if isAdmin}
-								{#if engineError.includes('Settings → Stack')}
-									<button
-										type="button"
-										class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-										onclick={openStack}
-									>
-										Open Stack
-									</button>
-								{:else}
-									<button
-										type="button"
-										class="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-										onclick={() => configureEngine(chatModelState.engine)}
-									>
-										Configure {currentEngine?.name ?? 'engine'}
-									</button>
+							<div class="mt-2 flex flex-wrap items-center gap-1.5">
+								<button
+									type="button"
+									class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md border border-amber-600/50 text-amber-700 dark:text-amber-300 hover:bg-amber-600/10 cursor-pointer transition-colors"
+									onclick={retryModels}
+								>
+									<Icon name="lucide:refresh-cw" class="w-3 h-3" />
+									Retry
+								</button>
+								{#if isAdmin}
+									{#if engineError.includes('Settings → Stack')}
+										<button
+											type="button"
+											class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+											onclick={openStack}
+										>
+											Open Stack
+										</button>
+									{:else}
+										<button
+											type="button"
+											class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+											onclick={() => configureEngine(chatModelState.engine)}
+										>
+											Configure {currentEngine?.name ?? 'engine'}
+										</button>
+									{/if}
 								{/if}
-							{/if}
+							</div>
 						</div>
 					</div>
 				{:else}
@@ -1083,8 +1207,10 @@
 					<!-- Provider header -->
 					<button
 						type="button"
-						class="flex items-center gap-2 w-full px-3 py-1.5 text-left transition-colors
-							hover:bg-slate-50 dark:hover:bg-slate-700/50"
+						data-popover-item
+						aria-expanded={!isCollapsed}
+						class="flex items-center gap-2 w-full px-3 py-1.5 pointer-coarse:py-2.5 text-left transition-colors
+							hover:bg-slate-50 dark:hover:bg-slate-700/50 focus-visible:outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-700"
 						onclick={() => toggleProvider(provider)}
 					>
 						<svg viewBox="0 0 24 24" fill="none"
@@ -1108,50 +1234,60 @@
 					{#if !isCollapsed}
 						{#each sortedModels as model (model.engine.model.id)}
 							{@const isSelected = chatModelState.modelId === model.engine.model.id}
-							<button
-								type="button"
-								class="group flex items-start gap-2.5 w-full pl-5 pr-3 py-2 text-left transition-all duration-150
-									{isSelected
-										? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
-										: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}"
-								onclick={() => selectModel(model)}
-							>
-								<!-- Radio indicator -->
-								<div class="flex-shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center mt-0.5
-									{isSelected ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
-									{#if isSelected}
-										<div class="w-1.5 h-1.5 rounded-full bg-violet-600"></div>
-									{/if}
-								</div>
+							{@const isPinned = (pinnedModelIds || []).includes(model.engine.model.id)}
+							<!-- Row = select button + sibling pin button (a button can't nest
+							     another interactive element). -->
+							<div class="group flex items-stretch transition-all duration-150
+								{isSelected
+									? 'bg-violet-50 dark:bg-violet-900/20 text-violet-600 dark:text-violet-400'
+									: 'text-slate-700 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}">
+								<button
+									type="button"
+									data-popover-item
+									aria-pressed={isSelected}
+									class="flex items-start gap-2.5 flex-1 min-w-0 pl-5 pr-1 py-2 text-left focus-visible:outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-700"
+									onclick={() => selectModel(model)}
+								>
+									<!-- Radio indicator -->
+									<div class="flex-shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center mt-0.5
+										{isSelected ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
+										{#if isSelected}
+											<div class="w-1.5 h-1.5 rounded-full bg-violet-600"></div>
+										{/if}
+									</div>
 
-								<!-- Model info -->
-								<div class="flex-1 min-w-0">
-									<div class="flex items-center gap-2 min-w-0">
-										<span class="font-medium text-xs truncate">{model.engine.model.name}</span>
-										{#if model.limit.input}
-											<span class="text-3xs text-slate-400 dark:text-slate-500 flex-shrink-0">{formatTokens(model.limit.input)}</span>
-										{/if}
-										{#if (pinnedModelIds || []).includes(model.engine.model.id)}
-											<Icon name="lucide:pin" class="w-3 h-3 text-amber-500 flex-shrink-0" />
-										{/if}
+									<!-- Model info -->
+									<div class="flex-1 min-w-0">
+										<div class="flex items-center gap-2 min-w-0">
+											<span class="font-medium text-xs truncate">{model.engine.model.name}</span>
+											{#if model.limit.input}
+												<span class="text-3xs text-slate-400 dark:text-slate-500 flex-shrink-0">{formatTokens(model.limit.input)}</span>
+											{/if}
+											{#if isPinned}
+												<Icon name="lucide:pin" class="w-3 h-3 text-amber-500 flex-shrink-0" />
+											{/if}
+										</div>
+									{#if getModelTags(model).length > 0}
+										<div class="flex flex-wrap gap-1 mt-0.5">
+											{#each getModelTags(model) as tag}
+												<span class="px-1 py-px text-4xs font-medium rounded bg-slate-100 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400">{tag}</span>
+											{/each}
+										</div>
+									{/if}
 									</div>
-								{#if getModelTags(model).length > 0}
-									<div class="flex flex-wrap gap-1 mt-0.5">
-										{#each getModelTags(model) as tag}
-											<span class="px-1 py-px text-4xs font-medium rounded bg-slate-100 dark:bg-slate-700/60 text-slate-500 dark:text-slate-400">{tag}</span>
-										{/each}
-									</div>
-								{/if}
-								</div>
-								<!-- Pin toggle -->
-								<span role="button" tabindex="0"
-									class="flex-shrink-0 flex items-center justify-center w-6 h-6 rounded text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer opacity-0 group-hover:opacity-100"
-									onclick={(e) => { e.stopPropagation(); togglePinnedModel(model.engine.model.id); }}
-									onkeydown={(e) => e.key === 'Enter' && togglePinnedModel(model.engine.model.id)}
-									title={(pinnedModelIds || []).includes(model.engine.model.id) ? 'Unpin model' : 'Pin model'}>
-									<Icon name={(pinnedModelIds || []).includes(model.engine.model.id) ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
-								</span>
-							</button>
+								</button>
+								<!-- Pin toggle — always visible on touch (no hover there), with a
+								     full-size tap target separate from the row. -->
+								<button
+									type="button"
+									class="flex-shrink-0 self-center flex items-center justify-center w-6 h-6 pointer-coarse:w-9 pointer-coarse:h-9 mr-2 rounded text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors cursor-pointer opacity-0 group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
+									onclick={() => togglePinnedModel(model.engine.model.id)}
+									title={isPinned ? 'Unpin model' : 'Pin model'}
+									aria-label={isPinned ? `Unpin ${model.engine.model.name}` : `Pin ${model.engine.model.name}`}
+								>
+									<Icon name={isPinned ? 'lucide:pin-off' : 'lucide:pin'} class="w-3.5 h-3.5" />
+								</button>
+							</div>
 						{/each}
 					{/if}
 				{/each}

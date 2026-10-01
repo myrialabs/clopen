@@ -7,6 +7,7 @@
  * `backend/engine/adapters/<engine>/models.ts`.
  */
 
+import { untrack } from 'svelte';
 import { registerModels } from '$shared/constants/engines';
 import type { EngineModel, EngineType } from '$shared/types/unified';
 import ws from '$frontend/utils/ws';
@@ -14,13 +15,29 @@ import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 
 let models = $state<EngineModel[]>([]);
-let loading = $state(false);
+// Per-engine in-flight fetch count. A single global flag let one engine's
+// fetch (e.g. a background refresh after an account switch) flip another
+// engine's picker into "Loading..." — and its finally{} cleared the flag while
+// a second engine was still mid-fetch. A count (not a boolean) keeps
+// overlapping fetches of the SAME engine honest too.
+let loadingEngines = $state<Map<EngineType, number>>(new Map());
 let fetchedEngines = $state<Set<EngineType>>(new Set());
 let errors = $state<Map<EngineType, string>>(new Map());
 
 export const modelStore = {
 	get models() { return models; },
-	get loading() { return loading; },
+	/** True while ANY engine's catalog is being fetched. Prefer isLoading(engine). */
+	get loading() { return loadingEngines.size > 0; },
+
+	/** True while this engine's catalog is being fetched. */
+	isLoading(engine: EngineType): boolean {
+		return loadingEngines.has(engine);
+	},
+
+	/** Whether this engine's catalog has been fetched successfully at least once. */
+	isFetched(engine: EngineType): boolean {
+		return fetchedEngines.has(engine);
+	},
 
 	/** Get the most recent fetch error for an engine, if any */
 	getError(engine: EngineType): string | undefined {
@@ -37,9 +54,18 @@ export const modelStore = {
 		);
 	},
 
-	/** Get a model by its ID */
+	/**
+	 * Get a model by its ID across ALL engines.
+	 * Model ids collide between engines (e.g. the same OpenAI id served by
+	 * Codex, OpenCode and Pi) — when the engine is known, use getForEngine().
+	 */
 	getById(modelId: string): EngineModel | undefined {
 		return models.find(m => m.engine.model.id === modelId);
+	},
+
+	/** Get a model by engine + ID (exact match on both). */
+	getForEngine(engine: EngineType, modelId: string): EngineModel | undefined {
+		return models.find(m => m.engine.type === engine && m.engine.model.id === modelId);
 	},
 
 	/**
@@ -64,7 +90,11 @@ export const modelStore = {
 
 	/** Internal fetch logic shared by fetchModels and refreshModels */
 	async _doFetch(engine: EngineType): Promise<EngineModel[]> {
-		loading = true;
+		// untrack: callers kick fetches off from $effects; reading the map we are
+		// about to write would make that effect depend on it and loop.
+		untrack(() => {
+			loadingEngines = new Map(loadingEngines).set(engine, (loadingEngines.get(engine) ?? 0) + 1);
+		});
 		try {
 			const fetched = await ws.http('models:list', { engine });
 			const engineModels = fetched as EngineModel[];
@@ -102,7 +132,11 @@ export const modelStore = {
 
 			return [];
 		} finally {
-			loading = false;
+			const next = new Map(loadingEngines);
+			const remaining = (next.get(engine) ?? 1) - 1;
+			if (remaining > 0) next.set(engine, remaining);
+			else next.delete(engine);
+			loadingEngines = next;
 		}
 	},
 

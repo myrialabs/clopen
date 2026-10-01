@@ -6,6 +6,8 @@
 
 import { createRouter } from '$shared/utils/ws-server';
 import { streamHandler } from './stream';
+import { composerHandler } from './composer';
 
 export const chatRouter = createRouter()
-	.merge(streamHandler);
+	.merge(streamHandler)
+	.merge(composerHandler);

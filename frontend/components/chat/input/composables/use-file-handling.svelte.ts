@@ -29,6 +29,45 @@ export function buildAcceptedMimeTypes(modalities: { image: boolean; pdf: boolea
 	return types;
 }
 
+/** Category of a MIME type; unknown types are treated as documents. */
+export function categoryForMime(mimeType: string): FileCategory {
+	for (const [category, mimes] of Object.entries(MIME_BY_MODALITY)) {
+		if ((mimes as readonly string[]).includes(mimeType)) return category as FileCategory;
+	}
+	return mimeType.startsWith('image/') ? 'image' : 'pdf';
+}
+
+/**
+ * Rebuild an attachment from stored base64 (a restored draft, a message being
+ * edited, a queued message taken back). The single place that decodes one.
+ */
+export function attachmentFromBase64(source: {
+	id?: string;
+	fileName: string;
+	mediaType: string;
+	base64: string;
+}): FileAttachment | null {
+	try {
+		const byteString = atob(source.base64);
+		const bytes = new Uint8Array(byteString.length);
+		for (let i = 0; i < byteString.length; i++) {
+			bytes[i] = byteString.charCodeAt(i);
+		}
+		const blob = new Blob([bytes], { type: source.mediaType });
+		const type = categoryForMime(source.mediaType);
+		return {
+			id: source.id ?? crypto.randomUUID(),
+			file: new File([blob], source.fileName, { type: source.mediaType }),
+			type,
+			base64: source.base64,
+			previewUrl: type === 'image' ? URL.createObjectURL(blob) : undefined
+		};
+	} catch (error) {
+		debug.error('chat', 'Error decoding attachment:', error);
+		return null;
+	}
+}
+
 // ── Constants ─────────────────────────────────────────────────
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
 const ALL_MIME_TYPES = Object.values(MIME_BY_MODALITY).flat();
@@ -37,17 +76,12 @@ const ALL_MIME_TYPES = Object.values(MIME_BY_MODALITY).flat();
 export function useFileHandling() {
 	let attachedFiles = $state<FileAttachment[]>([]);
 	let isDragging = $state(false);
-	let isProcessingFiles = $state(false);
+	// A count, not a flag: a paste landing while a drop is still being read
+	// must not mark processing as finished when the first batch is.
+	let processingCount = $state(0);
 
 	/** Currently allowed MIME types — updated by ChatInput based on the active model */
 	let allowedTypes = $state<string[]>(ALL_MIME_TYPES);
-
-	function detectCategory(mimeType: string): FileCategory {
-		for (const [category, mimes] of Object.entries(MIME_BY_MODALITY)) {
-			if ((mimes as readonly string[]).includes(mimeType)) return category as FileCategory;
-		}
-		return 'image'; // fallback
-	}
 
 	async function fileToBase64(file: File): Promise<string> {
 		return new Promise((resolve, reject) => {
@@ -63,7 +97,7 @@ export function useFileHandling() {
 	}
 
 	async function processFiles(files: FileList | File[]) {
-		isProcessingFiles = true;
+		processingCount++;
 		const fileArray = Array.from(files);
 
 		for (const file of fileArray) {
@@ -91,7 +125,7 @@ export function useFileHandling() {
 				continue;
 			}
 
-			const category = detectCategory(file.type);
+			const category = categoryForMime(file.type);
 			const attachment: FileAttachment = {
 				id: crypto.randomUUID(),
 				file,
@@ -117,7 +151,7 @@ export function useFileHandling() {
 			}
 		}
 
-		isProcessingFiles = false;
+		processingCount--;
 	}
 
 	function removeAttachment(id: string) {
@@ -128,13 +162,19 @@ export function useFileHandling() {
 		attachedFiles = attachedFiles.filter((f) => f.id !== id);
 	}
 
-	function clearAllAttachments() {
-		attachedFiles.forEach((attachment) => {
-			if (attachment.previewUrl) {
+	/** Swap in a new set, releasing the previews of the ones that go away. */
+	function replaceAttachments(next: FileAttachment[]) {
+		const kept = new Set(next.map((attachment) => attachment.previewUrl).filter(Boolean));
+		for (const attachment of attachedFiles) {
+			if (attachment.previewUrl && !kept.has(attachment.previewUrl)) {
 				URL.revokeObjectURL(attachment.previewUrl);
 			}
-		});
-		attachedFiles = [];
+		}
+		attachedFiles = next;
+	}
+
+	function clearAllAttachments() {
+		replaceAttachments([]);
 	}
 
 	function handleFileSelect(fileInputElement: HTMLInputElement | undefined) {
@@ -156,6 +196,11 @@ export function useFileHandling() {
 
 	function handleDragLeave(event: DragEvent) {
 		event.preventDefault();
+		// dragleave also fires when the pointer moves onto a child of the drop
+		// zone; only leaving the zone itself ends the drag.
+		const zone = event.currentTarget as Node | null;
+		const next = event.relatedTarget as Node | null;
+		if (zone && next && zone.contains(next)) return;
 		isDragging = false;
 	}
 
@@ -190,9 +235,8 @@ export function useFileHandling() {
 
 	return {
 		get attachedFiles() { return attachedFiles; },
-		set attachedFiles(value: FileAttachment[]) { attachedFiles = value; },
 		get isDragging() { return isDragging; },
-		get isProcessingFiles() { return isProcessingFiles; },
+		get isProcessingFiles() { return processingCount > 0; },
 
 		/** Set allowed MIME types (call when model changes) */
 		set allowedTypes(types: string[]) { allowedTypes = types; },
@@ -200,6 +244,7 @@ export function useFileHandling() {
 
 		processFiles,
 		removeAttachment,
+		replaceAttachments,
 		clearAllAttachments,
 		handleFileSelect,
 		handleFileInputChange,

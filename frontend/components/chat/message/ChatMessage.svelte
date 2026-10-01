@@ -17,7 +17,7 @@
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { sessionState, loadMessagesForSession } from '$frontend/stores/core/sessions.svelte';
 	import { setInputText } from '$frontend/stores/ui/chat-input.svelte';
-	import { startEdit, shouldDimMessage } from '$frontend/stores/ui/edit-mode.svelte';
+	import { startEdit, shouldDimMessage, type EditAttachment } from '$frontend/stores/ui/edit-mode.svelte';
 	import { debug } from '$shared/utils/logger';
 	import MessageBubbleClassic from './variants/classic/MessageBubble.svelte';
 	import MessageBubbleCompact from './variants/compact/MessageBubble.svelte';
@@ -330,46 +330,30 @@
 			return;
 		}
 
-		// Get parent message ID
-		const parentMessageId = 'parent' in message ? (message as any).parent.messageId : null;
-
 		// Extract message text and attachments
-		let messageText = '';
-		const messageAttachments: Array<{
-			type: 'image' | 'document';
-			data: string;
-			mediaType: string;
-			fileName: string;
-		}> = [];
+		const textParts: string[] = [];
+		const messageAttachments: EditAttachment[] = [];
 
 		if (roleCategory === 'user' && message.type === 'user' && 'content' in message) {
-			let attachmentIndex = 0;
-
 			for (const item of message.content) {
 				if (item.type === 'text' && 'text' in item) {
-					messageText = (item as any).text;
-				} else if (item.type === 'image' && 'data' in item) {
+					textParts.push((item as any).text);
+				} else if ((item.type === 'image' || item.type === 'document') && 'data' in item) {
+					const mediaType: string = (item as any).mediaType || (item.type === 'image' ? 'image/png' : 'application/pdf');
+					const extension = mediaType.split('/')[1] || 'bin';
 					messageAttachments.push({
-						type: 'image',
+						type: item.type,
 						data: (item as any).data,
-						mediaType: (item as any).mediaType || 'image/png',
-						fileName: 'image.png'
+						mediaType,
+						fileName: (item as any).title || `${item.type === 'image' ? 'image' : 'document'}-${messageAttachments.length + 1}.${extension}`
 					});
-					attachmentIndex++;
-				} else if (item.type === 'document' && 'data' in item) {
-					messageAttachments.push({
-						type: 'document',
-						data: (item as any).data,
-						mediaType: (item as any).mediaType || 'application/pdf',
-						fileName: 'document.pdf'
-					});
-					attachmentIndex++;
 				}
 			}
 		}
+		const messageText = textParts.join('\n\n');
 
-		// Enter edit mode with attachments and parent message ID
-		startEdit(messageId!, messageText, messageTimestamp, messageAttachments, parentMessageId);
+		// Enter edit mode; where it rewinds to is resolved by the server on submit
+		startEdit(messageId!, messageText, messageTimestamp, messageAttachments);
 
 		// Populate input with message text
 		setInputText(messageText, true);

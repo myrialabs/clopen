@@ -37,21 +37,5 @@ export function resetFocus() {
 	state.shouldFocus = false;
 }
 
-// Flag to skip next server restore (prevents stale input restoration
-// when ChatInput is remounted during welcome→chat transition)
-let _skipNextRestore = false;
-
-export function setSkipNextRestore(skip: boolean) {
-	_skipNextRestore = skip;
-}
-
-export function shouldSkipRestore(): boolean {
-	if (_skipNextRestore) {
-		_skipNextRestore = false;
-		return true;
-	}
-	return false;
-}
-
 // Export reactive state
 export const chatInputState = state;

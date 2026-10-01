@@ -16,8 +16,6 @@
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
 	import { chatService } from '$frontend/services/chat/chat.service';
-	import { setSkipNextRestore } from '$frontend/stores/ui/chat-input.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 
 	// Props
@@ -164,18 +162,8 @@
 			chatService.resetForSessionSwitch();
 		}
 
-		// Clear server input state and prevent stale restore on ChatInput remount
-		setSkipNextRestore(true);
-		const currentUserId = userStore.currentUser?.id;
-		const currentChatSessionId = sessionState.currentSession?.id;
-		if (currentUserId && currentChatSessionId) {
-			ws.emit('chat:input-sync', {
-				text: '',
-				senderId: currentUserId,
-				chatSessionId: currentChatSessionId,
-				attachments: []
-			});
-		}
+		// The old session keeps its draft: the composer saves it on the switch
+		// and restores it if the user comes back.
 
 		// Clear messages for local view
 		clearMessages();
