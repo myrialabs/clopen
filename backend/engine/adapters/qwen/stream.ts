@@ -18,7 +18,7 @@
  * (README §10.12).
  *
  * AskUserQuestion: Qwen's `canUseTool` callback signature does NOT include
- * the tool_use_id (see `node_modules/@qwen-code/sdk/dist/index.d.ts:406-409`),
+ * the tool_use_id (`CanUseTool` in `@qwen-code/sdk`'s `dist/index.d.ts`),
  * so we cannot key pending answers by id at the moment the SDK invokes the
  * callback. The SDK serialises AskUserQuestion — only one can be pending at
  * a time — so we keep a single slot and recover the real tool_use_id from
@@ -35,16 +35,17 @@ import type {
 	SDKUserMessage,
 	PermissionResult,
 	ToolInput,
+	EffortTier,
 } from '@qwen-code/sdk';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
-import type { EngineOutput, EngineModel } from '$shared/types/unified';
+import type { EngineOutput, EngineModel, AskUserQuestion } from '$shared/types/unified';
 import type { AIEngine, EngineQueryOptions, StructuredGenerationOptions } from '../../types';
 import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { resolveOsPath } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
 import { getEngineEnv } from './environment';
 import { handleStreamError } from './error-handler';
-import { createSdkMessageConverter, toSdkUserMessage, type SdkMessageConverter } from './message-converter';
+import { createSdkMessageConverter, toSdkUserMessage, toQwenAnswers, type SdkMessageConverter } from './message-converter';
 import { fetchQwenModels } from './models';
 import { getQwenMcpConfig } from '../../../mcp';
 import { EngineRuns } from '../run-registry';
@@ -53,7 +54,44 @@ import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { resolveProjectBridge, buildProjectPromptContext } from '$backend/artifacts/project';
 import { resolvePermissionsFromDb, isToolAllowed, excludedBuiltinTools } from '$backend/permissions';
-import { forkQwenSessionState, sessionStateExists } from './session-fork';
+import { sessionStateExists } from './session-store';
+
+/**
+ * Every tier the SDK's `effort` option accepts. Typed against the SDK union so
+ * a tier it drops is a compile error here. The picker only offers what the
+ * model advertises (see ./models.ts); this guards against a stale per-model
+ * default from another engine reaching the CLI.
+ */
+const QWEN_EFFORTS: ReadonlySet<string> = new Set<EffortTier>(['low', 'medium', 'high', 'xhigh', 'max']);
+
+function toQwenEffort(reasoningEffort: string | undefined): EffortTier | undefined {
+	return reasoningEffort && QWEN_EFFORTS.has(reasoningEffort) ? reasoningEffort as EffortTier : undefined;
+}
+
+/** The CLI's `MAX_CAN_USE_TOOL_TIMEOUT_MS`; anything larger is ignored for its 60 s default. */
+const QWEN_MAX_CAN_USE_TOOL_TIMEOUT_MS = 600_000;
+
+/**
+ * The prompt for one turn, as a stream that stays OPEN until the turn ends.
+ *
+ * When the prompt iterable completes, the SDK waits for the first `result`
+ * or its `streamClose` timeout (60 s) and then closes the CLI's stdin. The
+ * CLI answers that by rejecting every pending and future control request
+ * with "Input closed" — so in any turn longer than a minute, AskUserQuestion,
+ * write-tool approvals and interrupt all failed ("The host could not present
+ * the required approval"). Holding the stream open until `end()` (called on
+ * `result`, on abort, and in `finally`) keeps stdin alive for the whole turn.
+ */
+function openPromptStream(message: SDKUserMessage, signal: AbortSignal): { iterable: AsyncIterable<SDKUserMessage>; end: () => void } {
+	let end!: () => void;
+	const ended = new Promise<void>((resolve) => { end = resolve; });
+	signal.addEventListener('abort', () => end(), { once: true });
+	const iterable = (async function* (): AsyncIterable<SDKUserMessage> {
+		yield message;
+		await ended;
+	})();
+	return { iterable, end };
+}
 
 interface PendingAskUserQuestion {
 	resolve: (result: PermissionResult) => void;
@@ -80,11 +118,8 @@ interface QwenRun {
 	query: Query | null;
 	/**
 	 * Live converter for this run — used by `resolveUserAnswer` to push the
-	 * user's answers into the converter state so the eventual AUQ tool_result
-	 * can be rewritten with the actual answers (the Qwen SDK's `canUseTool` →
-	 * AUQ tool execution path drops `answers` on the floor; see the comment
-	 * block at the top of `message-converter.ts` and the analysis in
-	 * `qwen/stream.ts::canUseTool` for AskUserQuestion).
+	 * user's answers into the converter state so the AUQ tool_result is shown
+	 * in the same wording every engine uses (see `convertUserMessage`).
 	 */
 	converter: SdkMessageConverter | null;
 	pendingAskUserQuestion: PendingAskUserQuestion | null;
@@ -140,6 +175,7 @@ export class QwenEngine implements AIEngine {
 			resume,
 			maxTurns,
 			modelId,
+			reasoningEffort,
 			includePartialMessages = true,
 			abortController,
 			accountId,
@@ -177,30 +213,29 @@ export class QwenEngine implements AIEngine {
 		// (Qwen otherwise auto-allows everything). Tool names arrive snake_cased.
 		const permissions = resolvePermissionsFromDb('qwen', options.mcpContext?.projectId, profileId);
 
-		// Fork-by-copy on EVERY resume — same semantics as Claude
-		// (`forkSession: true`), OpenCode (`client.session.fork()`),
-		// Copilot, and Codex (README §10.10): each turn must produce a
-		// brand-new session id so the original branch's history is never
-		// mutated and the multi-branch checkpoint tree stays consistent.
-		// Falls through to a plain resume only when the source chat can't
-		// be found on disk (best-effort recovery).
-		//
-		// TODO: replace with a native SDK fork call when @qwen-code/sdk
-		// adds one. The block is the same one-liner Claude/OpenCode use.
-		let resumeId = resume;
-		if (resume && sessionStateExists(resolvedProjectPath, resume)) {
-			const forkId = crypto.randomUUID();
-			if (forkQwenSessionState(resolvedProjectPath, resume, forkId)) {
-				resumeId = forkId;
-				debug.log('engine', `Qwen resumed session: ${forkId} (forked from ${resume})`);
-			}
+		// Native fork on EVERY resume — same semantics as Claude
+		// (`forkSession: true`) and OpenCode (`client.session.fork()`): each
+		// turn gets a brand-new session id so the original branch's history is
+		// never mutated and the multi-branch checkpoint tree stays consistent.
+		// The CLI picks the fork id itself (`--session-id` is rejected next to
+		// `--resume`), and reports it on the stream like any other session id.
+		// `--fork-session` exits the CLI when the source chat is missing, so a
+		// vanished source falls through to a plain resume (best-effort recovery).
+		const forkOnResume = !!resume && sessionStateExists(resolvedProjectPath, resume);
+		if (resume) {
+			debug.log('engine', forkOnResume
+				? `Qwen resuming session ${resume} as a fork`
+				: `Qwen resume source ${resume} not found on disk, resuming without fork`);
 		}
+		const effort = toQwenEffort(reasoningEffort);
 
 		// Capture the last few stderr lines from the bundled CLI so we can
 		// surface them when the SDK reports a generic "CLI process exited
 		// with code N" error. Otherwise the underlying cause (bad model,
 		// bad endpoint, MCP timeout, …) is invisible to the user.
 		const stderrLines: string[] = [];
+		// Closes the prompt stream; set once the query is built (see openPromptStream).
+		let endPrompt = (): void => {};
 		const STDERR_KEEP = 20;
 
 		// Optional verbose SDK logging when CLOPEN_DEBUG_QWEN is set — useful
@@ -228,54 +263,27 @@ export class QwenEngine implements AIEngine {
 					debug.warn('engine', 'qwen stderr:', trimmed);
 				},
 				...(verbose ? { logLevel: 'debug' as const, debug: true } : {}),
-				// Lift the SDK's defaults: AskUserQuestion may legitimately
-				// block the SDK indefinitely while the user thinks (Claude's
-				// behaviour). MCP requests get a longer ceiling for slow
+				// Lift the SDK's defaults: AskUserQuestion blocks while the user
+				// thinks, and MCP requests get a longer ceiling for slow
 				// browser-automation calls. Other timeouts keep the default.
 				//
-				// `canUseTool` is the cap on how long we can hold the SDK
-				// waiting for the user. The SDK feeds this to `setTimeout`,
-				// which silently clamps any value > 2^31-1 ms down to 1 ms
-				// (Node's TimeoutOverflowWarning) — that would auto-reject the
-				// AUQ before the user could even see the dialog. ~24.8 days is
-				// the practical maximum and is effectively unbounded for AUQ.
+				// `canUseTool` is ALSO forwarded to the CLI, which ignores any
+				// value above its own `MAX_CAN_USE_TOOL_TIMEOUT_MS` (10 min) and
+				// silently falls back to 60 s — so a larger "unbounded" value
+				// cancelled every question answered after a minute. 10 min is
+				// the longest wait the CLI allows.
 				timeout: {
-					canUseTool: 2_147_483_647,
+					canUseTool: QWEN_MAX_CAN_USE_TOOL_TIMEOUT_MS,
 					mcpRequest: 600_000,
 				},
 				// 'default' lets `canUseTool` decide; non-write tools auto-execute.
 				permissionMode: 'default',
-				// Block `ask_user_question` at the SDK level — `excludeTools` has
-				// the highest permission priority (see QueryOptions docs in the
-				// SDK), so the tool is never advertised to the model and
-				// `canUseTool` is never invoked for it.
-				//
-				// Why excluded: the Qwen SDK's stream-json
-				// `handleOutgoingPermissionRequest` (cli.js:486478-486485) calls
-				// `onConfirm(ProceedOnce)` WITHOUT forwarding the `updatedInput`
-				// payload we resolve `canUseTool` with — so the user's `answers`
-				// are dropped and the AUQ tool executes with `userAnswers: {}`,
-				// emitting `"User has provided the following answers:\n\n"` and
-				// closing the UI dialog before the user can respond. The
-				// converter has a rewrite workaround (recordUserAnswer +
-				// convertUserMessage interception) but it depends on a race
-				// between the empty tool_result and `resolveUserAnswer` landing —
-				// not reliable enough for production use.
-				//
-				// TODO(qwen-sdk): re-enable AUQ once the upstream SDK forwards
-				// `updatedInput` from `canUseTool` into the tool execution
-				// payload. Verify by checking `handleOutgoingPermissionRequest`
-				// in the bundled CLI — when it stops calling
-				// `onConfirm(ProceedOnce)` without the payload (or starts
-				// passing the resolved `updatedInput`), drop this excludeTools
-				// entry. The AUQ flow code (canUseTool handler, converter
-				// state, resolveUserAnswer, recordUserAnswer) is intentionally
-				// kept in place so reverting is a one-line change.
-				// `canUseTool` (permissionMode 'default') only fires for WRITE tools,
-				// so read-only tools can't be blocked there. `excludeTools` has the
-				// highest permission priority, so denied/non-allowlisted built-ins are
-				// hidden from the model entirely. MCP tools are filtered at the bridge.
-				excludeTools: ['ask_user_question', ...excludedBuiltinTools(permissions, 'qwen')],
+				// `canUseTool` (permissionMode 'default') only fires for WRITE tools
+				// and `ask_user_question`, so read-only tools can't be blocked there.
+				// `excludeTools` has the highest permission priority, so
+				// denied/non-allowlisted built-ins are hidden from the model
+				// entirely. MCP tools are filtered at the bridge.
+				excludeTools: excludedBuiltinTools(permissions, 'qwen'),
 				canUseTool: async (toolName, input, ctx) => {
 					// Qwen SDK passes the registered (snake_case) tool name here —
 					// `ToolNames.ASK_USER_QUESTION = "ask_user_question"` — NOT the
@@ -322,17 +330,16 @@ export class QwenEngine implements AIEngine {
 				},
 				...(projectContext ? { systemPrompt: { type: 'preset' as const, preset: 'qwen_code' as const, append: projectContext } } : {}),
 				...(maxTurns !== undefined ? { maxSessionTurns: maxTurns } : {}),
-				...(resumeId ? { resume: resumeId } : {}),
+				...(resume ? { resume, ...(forkOnResume ? { forkSession: true } : {}) } : {}),
+				...(effort ? { effort } : {}),
 				...(Object.keys(mcpConfig).length > 0 ? { mcpServers: mcpConfig } : {}),
 			};
 
-			const sdkPrompt = toSdkUserMessage(prompt);
-			const promptIterable = (async function* (): AsyncIterable<SDKUserMessage> {
-				yield sdkPrompt;
-			})();
+			const promptStream = openPromptStream(toSdkUserMessage(prompt), controller.signal);
+			endPrompt = promptStream.end;
 
 			const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
-			const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
+			const queryInstance = query({ prompt: promptStream.iterable, options: sdkOptions });
 			run.query = queryInstance;
 
 			const converter = createSdkMessageConverter(modelId, {
@@ -348,12 +355,27 @@ export class QwenEngine implements AIEngine {
 				},
 			});
 			run.converter = converter;
+			// The CLI may decline the requested effort (thinking disabled for the
+			// model, or a higher-priority wire override); log it once so a
+			// selector that "does nothing" is explainable from the server log.
+			let effortChecked = !effort;
 			for await (const sdkMessage of queryInstance) {
+				if (!effortChecked) {
+					const status = queryInstance.getInitialEffortStatus();
+					if (status) {
+						effortChecked = true;
+						if (!status.applied) {
+							debug.warn('engine', `Qwen effort "${effort}" not applied for ${modelId}: ${status.reason ?? (status.override ? `overridden by ${status.override.source}.${status.override.field}` : 'thinking disabled')}`);
+						}
+					}
+				}
+				if (sdkMessage.type === 'result') endPrompt();
 				yield* converter.convert(sdkMessage);
 			}
 		} catch (error) {
 			handleStreamError(error, stderrLines.join('\n'));
 		} finally {
+			endPrompt();
 			// Retire THIS run only — another chat session of the same project may
 			// still be streaming on this instance.
 			this.runs.remove(run);
@@ -450,25 +472,23 @@ export class QwenEngine implements AIEngine {
 			maxSessionTurns: 1,
 		};
 
-		const sdkPrompt: SDKUserMessage = {
+		const promptStream = openPromptStream({
 			type: 'user',
 			uuid: crypto.randomUUID(),
 			session_id: '',
 			parent_tool_use_id: null,
 			message: { role: 'user', content: jsonPrompt },
-		};
-		const promptIterable = (async function* (): AsyncIterable<SDKUserMessage> {
-			yield sdkPrompt;
-		})();
+		}, controller.signal);
 
 		const { query } = await loadEngineSdk<typeof import('@qwen-code/sdk')>('qwen', '@qwen-code/sdk');
-		const queryInstance = query({ prompt: promptIterable, options: sdkOptions });
+		const queryInstance = query({ prompt: promptStream.iterable, options: sdkOptions });
 
 		let resultText = '';
 		let errorMessage = '';
 		try {
 			for await (const message of queryInstance) {
 				if (message.type === 'result') {
+					promptStream.end();
 					if (message.subtype === 'success') {
 						resultText = message.result || '';
 					} else {
@@ -481,6 +501,8 @@ export class QwenEngine implements AIEngine {
 				throw new Error('Generation was cancelled');
 			}
 			throw error;
+		} finally {
+			promptStream.end();
 		}
 
 		if (!resultText) {
@@ -510,18 +532,19 @@ export class QwenEngine implements AIEngine {
 			return false;
 		}
 
-		// Push the answers into converter state FIRST so the rewrite is in
-		// place by the time the SDK's broken AUQ tool_result arrives. The
-		// SDK's `handleOutgoingPermissionRequest` calls `onConfirm(ProceedOnce)`
-		// without a payload — `userAnswers` always ends up `{}` and the
-		// tool_result body is `"User has provided the following answers:\n\n"`
-		// (empty). The converter intercepts that tool_result and replaces its
-		// content with the proper formatted answers we just stored.
+		// Push the answers into converter state FIRST so they are in place by
+		// the time the AUQ tool_result arrives. The CLI forwards `answers`
+		// from `updatedInput` to the tool, so the model sees the real answers;
+		// the converter only rewrites the tool_result into the cross-engine
+		// wording for the UI.
 		run.converter?.recordUserAnswer(toolUseId, answers);
 
+		// The frontend keys answers by question text; the CLI only reads
+		// question-index keys and drops the rest (see toQwenAnswers).
+		const questions = Array.isArray(pending.input['questions']) ? pending.input['questions'] as AskUserQuestion[] : [];
 		pending.resolve({
 			behavior: 'allow',
-			updatedInput: { ...pending.input, answers },
+			updatedInput: { ...pending.input, answers: toQwenAnswers(questions, answers) },
 		});
 		run.pendingAskUserQuestion = null;
 		return true;

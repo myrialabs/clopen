@@ -249,7 +249,7 @@ resume.
 | OpenCode  | Call `client.session.fork({ path: { id: resume } })` on every resume — native.               |
 | Copilot   | Call `client.rpc.sessions.fork({ sessionId: resume })` on every resume — native (added in `@github/copilot-sdk` 1.0.0-beta.4; still marked `@experimental` in 1.0.16, so keep the fallback-to-plain-resume path). |
 | Codex     | **No native API yet** — fork by copying the rollout JSONL FILE on every resume.              |
-| Qwen Code | **No native API yet** — fork by copying the chat JSONL FILE on every resume.                 |
+| Qwen Code | Pass `resume` + `forkSession: true` on every resume — native since `@qwen-code/sdk` 0.1.17 (CLI `--fork-session`); plain resume when the source chat is gone (see §10.25). |
 | Pi        | `SessionManager.forkFrom()` on the on-disk JSONL tree (in Clopen's isolated sessions dir) — native, on every resume. |
 | Cline     | **No session store at all** (stateless `Agent`) — the adapter reconstructs branch history in memory and forks by copy. See "In-process, session-less SDKs" below. |
 
@@ -260,10 +260,9 @@ resume.
 > the same session id is reused across every turn (visible in persisted
 > assistant messages) and downstream branch logic breaks.
 
-The two remaining on-disk workarounds (Codex and Qwen) follow the same
+The remaining on-disk workaround (Codex) follows this
 shape — copy the state, replace the source id with a fresh one, then
-resume against the fork — but the SDKs lay state out differently. Get
-the layout wrong and `sessionStateExists()` silently returns false on
+resume against the fork. Get the on-disk layout wrong and `sessionStateExists()` silently returns false on
 every turn, the fork block is skipped, and the engine resumes the
 original session — exactly the symptom multi-branch checkpoints
 surface as.
@@ -288,9 +287,23 @@ assumed a directory layout (`<CODEX_HOME>/sessions/<thread_id>/`) — the
 result was a permanently-broken fork because `sessionStateExists()`
 never matched. If you change the helper, watch for that regression.
 
-**Qwen Code — single chat JSONL keyed by sanitised cwd.** The chat id
-is the filename basename; the parent directory is derived from the
-project's cwd via the SDK's `sanitizeCwd()`
+```ts
+// codex/stream.ts (resume path) — fork on EVERY resume.
+let resumeId = resume;
+if (resume && sessionStateExists(resume)) {
+  const forkId = crypto.randomUUID();
+  if (forkCodexSessionState(resume, forkId)) {
+    resumeId = forkId;
+  }
+}
+// then pass resumeId to the SDK's resume entry point.
+```
+
+**Qwen Code still needs the layout, even with a native fork.**
+`--fork-session` on a missing source exits the CLI, so
+`qwen/session-store.ts` checks the chat exists before asking for a fork. The
+chat id is the filename basename; the parent directory is derived from the
+project's cwd via the CLI's `sanitizeCwd()`
 (`cwd.replace(/[^a-zA-Z0-9]/g, '-')`, lowercased on win32):
 
 ```
@@ -298,28 +311,9 @@ project's cwd via the SDK's `sanitizeCwd()`
 ```
 
 where `<QWEN_RUNTIME_DIR>` is Clopen's isolated `{clopenDir}/engine/qwen/user/`
-(§10.19), **not** `~/.qwen` — both the env var and the fork helper
-(`getQwenRuntimeDir()`) resolve to the same base, so they stay in sync.
-
-Every record line carries a `sessionId` field equal to the file's
-basename. The fork helper copies the file to
-`<chats>/<forkId>.jsonl` in the same project directory and replaces
-the source id throughout. The Qwen `session-fork.ts` therefore takes
-`projectPath` as an extra argument — Codex and Copilot are
-cwd-agnostic because their layouts aren't keyed on it.
-
-```ts
-// stream.ts (resume path) — fork on EVERY resume; pattern is identical
-// across copilot/codex/qwen, only the helper signature differs.
-let resumeId = resume;
-if (resume && sessionStateExists(/* projectPath if qwen, */ resume)) {
-  const forkId = crypto.randomUUID();
-  if (forkXxxSessionState(/* projectPath if qwen, */ resume, forkId)) {
-    resumeId = forkId;
-  }
-}
-// then pass resumeId to the SDK's resume entry point.
-```
+(§10.19), **not** `~/.qwen` — both the env var and the store
+(`getQwenRuntimeDir()`) resolve to the same base, so they stay in sync. Get it
+wrong and every resume silently skips the fork.
 
 The expected effect, observable by logging the session/thread id per
 turn:
@@ -1010,7 +1004,7 @@ source of truth; do not hand-join the path.
 | Claude | `CLAUDE_CONFIG_DIR` | `claude/environment.ts` (`getClaudeUserConfigDir()` → helper) |
 | Codex | `CODEX_HOME` | `codex/credential.ts` (`CODEX_HOME` const) **+** the SDK's `env` in `codex/stream.ts` **+** the `codex login` PTY env in `ws/engine/codex/accounts.ts` |
 | Copilot | `baseDirectory` (SDK sets `COPILOT_HOME`) | `copilot/stream.ts` `new CopilotClient({ baseDirectory })` |
-| Qwen | `QWEN_RUNTIME_DIR` | `qwen/environment.ts` **+** `getQwenRuntimeDir()` in `qwen/session-fork.ts` |
+| Qwen | `QWEN_RUNTIME_DIR` | `qwen/environment.ts` **+** `getQwenRuntimeDir()` in `qwen/session-store.ts` |
 | OpenCode | `XDG_DATA_HOME` / `XDG_CONFIG_HOME` / `XDG_STATE_HOME` / `XDG_CACHE_HOME` | `opencode/server.ts` spawn env |
 
 Sharp edges, each of which silently defeats isolation if missed:
@@ -1024,8 +1018,8 @@ Sharp edges, each of which silently defeats isolation if missed:
   runs in a separate PTY (`ws/engine/codex/accounts.ts`); without
   `CODEX_HOME` there, the OAuth `auth.json` lands in `~/.codex` while the
   stream reads the isolated dir → "logged in but not authenticated".
-- **Keep the fork helper's base in lockstep with the env var.** Codex's
-  `session-fork.ts` reads `getCodexHomeDir()` and Qwen's reads
+- **Keep the session-store base in lockstep with the env var.** Codex's
+  `session-fork.ts` reads `getCodexHomeDir()` and Qwen's `session-store.ts` reads
   `getQwenRuntimeDir()` — both resolve to the same isolated base the env
   var sets. If they drift, `sessionStateExists()` returns false and
   multi-branch checkpoints break (see §10.10).
@@ -1285,11 +1279,12 @@ Three consequences worth internalizing:
 **The model advertises, the UI obeys.** `EngineModel.capabilities.
 reasoningControl` (`{ levels, default }`) is the entire contract. The
 picker renders a pill when it's present and nothing when it's absent —
-which is how Qwen, OpenCode, and Cline stay knob-less without a single
-engine name appearing in the frontend. Prefer deriving the level list
-from the SDK's own payload (Copilot's `supportedReasoningEfforts`, Pi's
-`getSupportedThinkingLevels`, Cursor's `ModelParameterDefinition`) over
-hardcoding; only static catalogs (Claude, Codex) spell it out.
+which is how OpenCode and Cline (and Qwen on endpoints that publish no
+capabilities) stay knob-less without a single engine name appearing in the
+frontend. Prefer deriving the level list from the SDK's own payload
+(Copilot's `supportedReasoningEfforts`, Pi's `getSupportedThinkingLevels`,
+Cursor's `ModelParameterDefinition`, Qwen's `/models` `supported_parameters`)
+over hardcoding; only static catalogs (Claude, Codex) spell it out.
 
 **Clamp on the way in.** The token reaching `streamQuery` may be stale —
 persisted on a session whose model has since changed, or restored from a
@@ -1645,6 +1640,71 @@ the first try. The work was elsewhere:
   turns while artifact sync and the user rewrite AGENTS.md and Copilot's
   instruction files. New sessions pass `refreshCustomInstructions: true` (a
   create-only option); resumed ones call `session.rpc.instructions.reload()`.
+
+**The Qwen pass (0.1.8 → 0.1.17) retired two workarounds whose cause had
+already been fixed — re-check a workaround's TODO condition against the bundled
+CLI on every bump, not only when the changelog mentions it.**
+
+- **The SDK can learn a flag before its CLI does.** `QueryOptions.forkSession`
+  already existed in 0.1.8 and pushed `--fork-session`, but the 0.1.8 CLI had
+  no such option, so `session-fork.ts` copied the chat JSONL instead. 0.1.17's
+  CLI forks natively (`sessionService.forkSession(src, randomUUID())`), so the
+  adapter now passes `resume` + `forkSession: true`. Two details: the CLI mints
+  the fork id itself and rejects `--session-id` next to `--resume`, so the new
+  id is only known from the stream; and `--fork-session` on a missing source
+  exits with code 1, so the on-disk existence check stays in front of it
+  (`qwen/session-store.ts`). Grep the CLI's option table
+  (`dist/cli/chunks/`), not the SDK's `.d.ts`, to know what actually works.
+- **AskUserQuestion had been fixed upstream since at least 0.1.8 — but
+  re-enabling it exposed four Clopen-side faults, each invisible in the UI.**
+  `handleOutgoingPermissionRequest` forwards `updatedInput` through
+  `buildAllowConfirmationPayload`, so the `excludeTools` block outlived its
+  cause. What it had been hiding:
+  1. *Answer keys.* The CLI reads `answers` by question **index** and silently
+     drops other keys (`parseAnswerQuestionIndex`), then tells the model "No
+     valid answers were provided." The frontend keys by question **text**
+     (Claude's shape). `toQwenAnswers` re-keys at the adapter boundary.
+  2. *The prompt stream closed stdin after 60 s.* A one-shot prompt iterable
+     completes immediately; the SDK then waits for the first `result` or
+     `timeout.streamClose` (60 s) and ends the CLI's stdin. The CLI's
+     `markInputClosed` rejects every pending and future control request, so in
+     any turn longer than a minute AskUserQuestion, write approvals and
+     interrupt all failed with "The host could not present the required
+     approval". `openPromptStream` keeps the iterable open until `result`.
+  3. *`timeout.canUseTool` above 10 min is ignored, not clamped.* The SDK
+     forwards it to the CLI, which accepts at most `MAX_CAN_USE_TOOL_TIMEOUT_MS`
+     (600 000) and otherwise keeps its 60 s default. The old
+     `2_147_483_647` therefore meant "60 s".
+  4. *The converter rewrote failures into answers.* It replaced every AUQ
+     tool_result with the user's answers, so a call the CLI had cancelled showed
+     as answered while the model was told the opposite. Errors pass through now.
+  The SDK's message router also `await`s each control request, so while a
+  question is open nothing else is read from the CLI — the transcript stalls
+  until the user answers. That is upstream behaviour; it is harmless once
+  stdin stays open, but it is why the stall looked like a hang.
+- **Managed auto-memory holds the turn's `result` hostage.** On by default in
+  the 0.1.17 CLI: after every turn an extraction agent (up to 5 model calls,
+  2 min) runs, and `result` is only emitted after it — the chat sat on
+  "working" with the interrupt button up, spending the user's tokens on
+  memories written to the CLI's own store, which no other engine reads.
+  `environment.ts` points `QWEN_CODE_SYSTEM_SETTINGS_PATH` at a Clopen-owned
+  file that sets `memory.enableManagedAutoMemory` / `enableManagedAutoDream`
+  to `false`; the system tier outranks `~/.qwen` and the repo's `.qwen/`.
+- **Reproduce engine bugs against a fake endpoint, not by reading minified
+  code.** A 40-line `Bun.serve` that speaks OpenAI SSE and scripts the model's
+  tool calls ran the real bundled CLI through every failure above in seconds,
+  with `timeout.streamClose` shortened to replay the 60 s case.
+- **`cli.js` is a loader now.** It shrank from a single 400k-line bundle to an
+  11-line entry over `dist/cli/chunks/`, so every `cli.js:<line>` citation in
+  the adapter went stale at once. Cite the symbol (`sanitizeCwd`,
+  `FORK_PLACEHOLDER_RESULT`, `parseAnswerQuestionIndex`), never a line.
+- **Effort is honoured only where the endpoint says so.** The SDK's `effort`
+  is turned by the CLI into the provider's own field (`reasoning_effort`,
+  DashScope `enable_thinking`, …) and clamped to what it believes the endpoint
+  accepts. Clopen shows the selector only when the model's `/models` entry
+  lists `reasoning_effort` in `supported_parameters` (OpenRouter); DashScope and
+  Fireworks publish no capability data, so no selector. When the CLI declines
+  an effort, `Query.getInitialEffortStatus()` says why and the adapter logs it.
 
 ---
 

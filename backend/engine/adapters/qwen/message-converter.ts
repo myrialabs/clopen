@@ -60,10 +60,11 @@ import { resolveOpenCodeToolName } from '../../../mcp';
 // has only just been spawned — its real output is still pending":
 //
 // 1. FORK_PLACEHOLDER_RESULT — fire-and-forget fork (no `subagent_type`,
-//    no `run_in_background`). Source: `node_modules/@qwen-code/sdk/dist/cli/cli.js:277525`.
+//    no `run_in_background`). Source: `FORK_PLACEHOLDER_RESULT` in the SDK's
+//    bundled CLI (`node_modules/@qwen-code/sdk/dist/cli/chunks/`).
 // 2. The "Background agent launched successfully…" multiline blob —
 //    `run_in_background: true` mode that emits a `task_notification` later.
-//    Source: same file around line 281616.
+//    Source: same chunk directory.
 //
 // We intercept these so the Agent block stays in the "pending" state in the
 // UI while sub-activities accumulate, then emit a synthetic tool_result with
@@ -79,23 +80,31 @@ function isQwenAgentPlaceholderResult(content: string): boolean {
 }
 
 /**
+ * Re-key the user's AskUserQuestion answers by question INDEX ("0", "1", …),
+ * the only shape Qwen's CLI accepts (`parseAnswerQuestionIndex` in the SDK's
+ * bundled CLI drops every other key, then tells the model "No valid answers
+ * were provided."). The frontend keys answers by question TEXT, the shape
+ * Claude uses; index keys are accepted too so either side can change.
+ */
+export function toQwenAnswers(questions: AskUserQuestion[], answers: Record<string, string>): Record<string, string> {
+	const indexed: Record<string, string> = {};
+	questions.forEach((q, i) => {
+		const value = answers[q.question] ?? answers[String(i)];
+		if (typeof value === 'string') indexed[String(i)] = value;
+	});
+	return indexed;
+}
+
+/**
  * Format the user's answers to AskUserQuestion in OpenCode's wording so the
  * downstream model sees a consistent payload regardless of which engine ran.
- * Mirrors the OpenCode adapter's output:
+ * Mirrors the OpenCode adapter's output — and it is the exact shape the
+ * frontend's AskUserQuestion card parses (`"<question>"="<answer>"`):
  *   `User has answered your questions: "Q1"="A1", "Q2"="A2". You can now continue with the user's answers in mind.`
- *
- * Qwen's `answers` map is keyed by question INDEX (string number), not by
- * question text — see `node_modules/@qwen-code/sdk/dist/cli/cli.js:284219-284222`.
- * We dereference each index against the original questions array.
  */
 function formatAskUserQuestionResult(questions: AskUserQuestion[], answers: Record<string, string>): string {
-	const pairs: string[] = [];
-	for (const [key, value] of Object.entries(answers)) {
-		const idx = Number.parseInt(key, 10);
-		const q = Number.isFinite(idx) ? questions[idx] : undefined;
-		const label = q?.question ?? q?.header ?? `Question ${key}`;
-		pairs.push(`"${label}"="${value}"`);
-	}
+	const pairs = Object.entries(toQwenAnswers(questions, answers))
+		.map(([idx, value]) => `"${questions[Number(idx)].question}"="${value}"`);
 	if (pairs.length === 0) {
 		return 'User did not provide any answers.';
 	}
@@ -526,8 +535,8 @@ export interface QwenConverterState {
 	 * whose canonical name is `AskUserQuestion`. The engine wires this to the
 	 * pending-answer slot so `resolveUserAnswer(toolUseId, …)` can verify the
 	 * inbound id matches the one the frontend was shown — Qwen's `canUseTool`
-	 * callback intentionally does NOT pass the tool_use_id (line 486179 of the
-	 * bundled CLI), so the converter is the only place we can recover it.
+	 * callback does NOT pass the tool_use_id (`CanUseTool` in the SDK's
+	 * `dist/index.d.ts`), so the converter is the only place we can recover it.
 	 */
 	onAskUserQuestionEmitted?: (toolUseId: string) => void;
 	/**
@@ -667,12 +676,19 @@ export function convertUserMessage(msg: SDKUserMessage, state: QwenConverterStat
 			continue;
 		}
 
-		// 1. AskUserQuestion: replace the SDK's broken empty-answer body with
-		//    the real answers. The Qwen SDK's stream-json `handleOutgoingPermissionRequest`
-		//    calls `onConfirm(ProceedOnce)` without a payload, dropping the
-		//    `answers` we passed via `updatedInput`. See the analysis in
-		//    `qwen/stream.ts::resolveUserAnswer` and `cli.js:486478-486485`.
+		// 1. AskUserQuestion: the CLI answers with its own
+		//    `**Header**: value` body (the model already saw that). Replace it
+		//    with the cross-engine wording so the UI renders every engine's
+		//    answers the same way. Answers arrive via `recordUserAnswer`
+		//    before the tool runs (see `qwen/stream.ts::resolveUserAnswer`).
+		//    A failed call (the CLI cancelled the question) passes through
+		//    untouched — rewriting it would show answers the model never got.
 		const auq = state.askUserQuestions.get(block.toolUseId);
+		if (auq && block.isError) {
+			state.askUserQuestions.delete(block.toolUseId);
+			outBlocks.push(block);
+			continue;
+		}
 		if (auq) {
 			const content = auq.answered && auq.answers
 				? formatAskUserQuestionResult(auq.questions, auq.answers)
@@ -846,9 +862,10 @@ export function convertSystemInit(msg: SDKSystemMessage, state: QwenConverterSta
 /**
  * Handle a `task_notification` system message — emitted by the Qwen SDK when
  * a `run_in_background: true` Agent reaches a terminal status. Source:
- * `node_modules/@qwen-code/sdk/dist/cli/cli.js:485345-485353` and 227829.
+ * `emitSystemMessage("task_notification", …)` in the SDK's bundled CLI
+ * (`node_modules/@qwen-code/sdk/dist/cli/chunks/`).
  *
- * `data` shape (per `cli.js:485240-485249`):
+ * `data` shape (the CLI's `sdkNotification`):
  *   `{ task_id, tool_use_id, status: 'completed'|'failed'|'cancelled'|'running', usage? }`
  *
  * The full sub-agent text is NOT in `data` — it's only in the SDK-internal
