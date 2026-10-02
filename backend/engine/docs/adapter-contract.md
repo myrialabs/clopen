@@ -244,7 +244,8 @@ Where each engine's knob lives:
 | `copilot`     | `SessionConfig.reasoningEffort`         | from `ModelInfo.supportedReasoningEfforts` (dynamic) |
 | `pi`          | agent `thinkingLevel`                   | from `getSupportedThinkingLevels(model)` (dynamic; `clampThinkingLevel` on apply) |
 | `cursor`      | `ModelSelection.params[]`               | from the model's reasoning-ish `ModelParameterDefinition` (dynamic) |
-| `qwen`, `opencode`, `cline` | — (none exposed)          | no `reasoningControl` → selector hidden    |
+| `qwen`        | `effort` on `query()`                   | `low…xhigh` only when the `/models` entry lists `reasoning_effort` in `supported_parameters` (OpenRouter); hidden on DashScope/Fireworks |
+| `opencode`, `cline` | — (none exposed)                  | no `reasoningControl` → selector hidden    |
 
 Cursor is the one engine whose token is **not** a bare level: it encodes the
 model-parameter id as `"<paramId>::<value>"` so `stream.ts` can rebuild a
@@ -292,7 +293,8 @@ adapters/<name>/
 ├── server.ts?              ← OPTIONAL   subprocess + client lifecycle (opencode)
 ├── config.ts?              ← OPTIONAL   runtime config builder (opencode)
 ├── presets.ts?             ← OPTIONAL   multi-provider/region preset catalog (qwen, opencode)
-└── session-fork.ts?        ← OPTIONAL   on-disk session fork workaround (codex, qwen)
+├── session-store.ts?       ← OPTIONAL   on-disk session lookup for a native fork (qwen)
+└── session-fork.ts?        ← OPTIONAL   on-disk session fork workaround (codex)
 ```
 
 Naming rules — strict, even when an SDK's local jargon differs:

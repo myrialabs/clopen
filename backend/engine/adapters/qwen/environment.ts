@@ -16,12 +16,46 @@
  * deprecated the free-tier OAuth in April 2026.
  */
 
+import fs from 'node:fs';
+import path from 'node:path';
 import { engineQueries } from '$backend/database/queries/engine-queries';
 import type { EngineAccount } from '$backend/database/queries/engine-queries';
 import { getCleanSpawnEnv } from '$backend/utils/index.js';
 import { debug } from '$shared/utils/logger';
 import { parseQwenCredential, resolveQwenBaseUrl } from './credential';
-import { getQwenRuntimeDir } from './session-fork';
+import { getQwenRuntimeDir } from './session-store';
+
+/**
+ * Settings Clopen forces on every Qwen CLI run, via the CLI's system-settings
+ * tier (highest precedence, so neither ~/.qwen nor a repo's .qwen/ can turn
+ * them back on).
+ *
+ * Managed auto-memory (on by default since the 0.1.17 CLI) runs an extraction
+ * agent after every turn and holds the `result` back until it finishes — a
+ * minute or more of extra model calls on the user's key, with the chat stuck
+ * on "working" the whole time. It also writes memories into the CLI's own
+ * store, which no other engine reads; Clopen owns memory for every engine.
+ */
+const QWEN_SYSTEM_SETTINGS = {
+	memory: {
+		enableManagedAutoMemory: false,
+		enableManagedAutoDream: false,
+	},
+};
+
+/** Write the forced settings file (only when it changed) and return its path. */
+function ensureQwenSystemSettings(): string {
+	const file = path.join(getQwenRuntimeDir(), 'clopen-system-settings.json');
+	const content = `${JSON.stringify(QWEN_SYSTEM_SETTINGS, null, 2)}\n`;
+	try {
+		if (fs.readFileSync(file, 'utf-8') === content) return file;
+	} catch {
+		/* missing — written below */
+	}
+	fs.mkdirSync(path.dirname(file), { recursive: true });
+	fs.writeFileSync(file, content);
+	return file;
+}
 
 export interface QwenEnvResolution {
 	env: Record<string, string>;
@@ -71,10 +105,13 @@ export function getEngineEnv(accountId?: number): QwenEnvResolution | null {
 	env['OPENAI_BASE_URL'] = baseUrl;
 	// Isolate Qwen's runtime output (chats/sessions, history, logs, tmp) to
 	// {clopenDir}/engine/qwen/user/ instead of the shared ~/.qwen. Mirrors the path
-	// the fork helper reads from (see ./session-fork.ts). The CLI's global
+	// the session store reads from (see ./session-store.ts). The CLI's global
 	// settings.json stays in ~/.qwen — there is no env override for it — but
 	// Clopen uses paste-token auth so that file is irrelevant here.
 	env['QWEN_RUNTIME_DIR'] = getQwenRuntimeDir();
+	// Replaces the machine-wide system settings file for these runs only
+	// (`/Library/Application Support/QwenCode/settings.json` and friends).
+	env['QWEN_CODE_SYSTEM_SETTINGS_PATH'] = ensureQwenSystemSettings();
 	// Strip any inherited Qwen OAuth hints — if the host shell exports them
 	// the bundled CLI prefers the OAuth path even when API-key env vars are
 	// present, surfacing the "OAuth free tier discontinued" error.
