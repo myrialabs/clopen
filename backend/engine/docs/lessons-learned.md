@@ -440,6 +440,15 @@ When you add an engine whose CLI/SDK accepts a streamable-http MCP URL
    of `mcp__<server>__<tool>` — the prefix didn't strip and the registry
    lookup fell through to the `mcp__<mcpServerName>__<rawName>` fallback.
 
+   **The one exception is an engine whose names are lossy.** Pi turns every
+   character outside `[A-Za-z0-9_]` into `_` and hash-suffixes collisions
+   (`mcp__clopen_mcp__actions`, `mcp__my_server__get_page`), so no prefix
+   list can recover an external namespace or a hyphenated tool name. Pi
+   keeps the original on the tool's `label` (`<server>/<tool>`), so
+   `pi/mcp.ts::resolvePiToolName` reads that back and still hands the bare
+   internal tool name to `resolveOpenCodeToolName()`. Map through whatever
+   the SDK preserves; never parse a sanitized name.
+
 3. If your engine has **no callback hook** for AskUserQuestion (Codex's
    SDK is the canonical example), AskUserQuestion stays unsupported for
    that engine until the upstream SDK exposes a native primitive. The
@@ -950,7 +959,8 @@ What this means for a new adapter:
    shape. No stdio branch, no `oauth` flags, no third-party header forwarding —
    the proxy injects the upstream credential itself. Every existing builder is
    now identical bar the SDK field names
-   (`getClaude/OpenCode/Codex/Copilot/QwenExternalMcpConfig`); mirror that.
+   (`getClaude/OpenCode/Codex/Copilot/Cursor/Pi/QwenExternalMcpConfig`);
+   mirror that.
 
 2. **Use the engine's real URL/header field** — same per-SDK caveats as the
    internal bridge (§10.12), because the shape is identical:
@@ -961,6 +971,8 @@ What this means for a new adapter:
    - Copilot: set `tools: ['*']` so the CLI exposes the proxy's tools (its
      "undefined = all" default is not honoured for dynamically discovered
      servers).
+   - Pi: `exposure: 'direct'` (its default, `codemode`, hides the tools
+     behind a scripting tool) and `timeout` in **seconds**.
 
 > **Two token systems — don't conflate them.** The bridge (internal AND
 > external endpoints) is authed by a process-scoped, in-memory **service token**
@@ -1705,6 +1717,87 @@ CLI on every bump, not only when the changelog mentions it.**
   lists `reasoning_effort` in `supported_parameters` (OpenRouter); DashScope and
   Fireworks publish no capability data, so no selector. When the CLI declines
   an effort, `Query.getInitialEffortStatus()` says why and the adapter logs it.
+
+**The October 2026 Pi pass (0.84.1 → 1.1.0) traded the bespoke MCP bridge for
+Pi's own client.** `bun run check` found one error (`preflightResult` now
+receives a disposition string and is no longer called on rejection — the
+rejection throws, so the old "not accepted" notice was dead). The 0.86/0.87
+breaking changes (`TranscriptContext`, canonical `SessionManager` context,
+`shouldStopAfterTurn`) touch nothing Clopen calls. The real work was MCP:
+
+- **SDK sessions don't load the built-in MCP/codemode/tool_search
+  extensions** — the CLI does. Add `createMcpExtension()` to the resource
+  loader yourself, and pass `loadConfig`, `logPath`, `openUrl` and
+  `updateConfig`: every default falls back to Pi's `getAgentDir()`, i.e. the
+  user's real `~/.pi/agent`, not the isolated `agentDir` the session got.
+  Servers carrying an `Authorization` header never touch Pi's OAuth store.
+- **A `tools` allowlist drops every tool registered later.** MCP tools register
+  when their server connects, after the session exists, and the allowlist
+  filters them out. The built-ins go in as the `defaultTools` setting instead,
+  denied ones in `excludeTools`; custom and extension tools stay enabled.
+- **`session_start` is not automatic, and neither is `session_shutdown`.**
+  `bindExtensions({})` connects the servers (the first prompt waits up to 10 s
+  for `direct` ones); `dispose()` does **not** emit `session_shutdown`, which is
+  the only thing that closes them. Without the explicit emit every turn leaks
+  one connection per server.
+- **The MCP extension reports failures only through `ctx.ui.notify`**, a no-op
+  in an SDK session: a server that never connected (wrong port, 401) simply left
+  its tools missing. `pi/mcp.ts` hands the extension a context whose `notify`
+  writes to the debug log.
+- **Login flows can need app context the CLI supplies on its own.** Sign in
+  with ChatGPT (`openai`, new in 0.99) throws "requires a device ID (UUID) for
+  this installation" unless `ModelRuntime.login(…, { getDeviceId })` is given
+  one; the CLI keeps it in its global settings, Clopen in the `settings` table
+  (`getPiDeviceId`). Diff `LoginOptions` on every bump. The same pass added an
+  SDK `loginLabel` per OAuth provider, which now wins over Clopen's own labels.
+- **`CredentialStore.modify` must be a real lock.** Pi's refresh re-checks
+  expiry *inside* `modify` and relies on the store to serialize per provider —
+  "cross-process too where the backing store supports it". `DbCredentialStore`
+  read, refreshed and wrote with no lock, and Clopen builds one store per
+  stream and per model-list refresh, so two turns could spend the same rotating
+  refresh token; OpenAI and Anthropic then revoke the grant
+  (`refresh_token_invalidated`). Writes now go through a process-wide
+  per-account `createKeyedLock` (`backend/utils/keyed-lock.ts`), re-login and
+  edits included. Cline's `resolveClineAuth` had the same race and shares the
+  fix.
+- **A `manual_code` prompt is either a fallback or the only way in.** Pi races
+  "paste the redirect URL" against its loopback callback and aborts the prompt
+  (`AuthPrompt.signal`) when the callback wins; Anthropic's copy-code method
+  asks for the same kind with nothing to race. A signal alone doesn't decide it
+  (a flow whose port was taken still passes one), so the login handlers probe
+  the auth URL's loopback `redirect_uri` (`hasLoopbackCallbackListener`) and
+  send `optional`; `OAuthBrowserStep.svelte` folds an optional paste away on a
+  local connection and asks for a required one outright.
+- **`invalid_grant` right after a successful ChatGPT sign-in was upstream**
+  (earendil-works/pi#10258, same in Pi's CLI, closed 2026-10-02; 1.0.3 also
+  fixed a `refresh_token_invalidated` after a refresh cancelled mid-flight). The
+  login error still explains it should it recur.
+- **1.0.1 dropped `npm-shrinkwrap.json`.** Pi's own packages depend on each
+  other with `^` ranges, so a Stack install of 1.1.0 would have taken whatever
+  `pi-mcp`/`pi-tui`/`pi-codemode`/`pi-telemetry`/`chord` 1.x was newest — the
+  typebox/peer float (#362) again, one level down. Every sibling is declared in
+  `package.json` and listed in `ENGINE_PACKAGES.pi` now; their third-party
+  dependencies are exact pins, so nothing else floats.
+- **Provider ids get renamed.** 1.0.3 turned `azure-openai-responses` into
+  `azure`; accounts, chat sessions and saved model choices keep the id they were
+  made with. `canonicalPiProviderId` (`pi/credential.ts`) reads every incoming
+  and stored id through one rename map instead of migrating each store, and a
+  credential is rewritten under the new id on its next save. Add future renames
+  there.
+- **Sign in with ChatGPT no longer degrades when its port is taken** (1.0.1):
+  it fails with "Port 1455 is in use". Codex's browser login listens there
+  first and moves on when it can't, so in Clopen the holder is usually another
+  pending sign-in; the login error says that rather than pi's "another pi
+  session".
+- **Cache warming is on by default** (`cacheWarming: "streaming"`): during long
+  tool runs Pi re-sends the prefix when it estimates ≥ $0.05 of avoided
+  cache-miss cost. Left at the default; it is billed and not visible in
+  Clopen's usage.
+- **New dependencies** (`pi-mcp`, `pi-codemode`, `quickjs-wasi`, `chord`,
+  `pi-telemetry`): the MCP client loads only when a session has servers,
+  codemode only when activated, and `pi-telemetry` is type contracts. `chord`
+  pulls an `esbuild` whose postinstall Bun blocks, but no file in
+  `pi-coding-agent/dist` imports `chord` at all.
 
 ---
 

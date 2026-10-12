@@ -305,12 +305,12 @@ async function withProjectUpstreamClient<T>(projectId: string, name: string, fn:
 	}
 }
 
-/** Sanitized tools of a trusted project server — for the in-process engines (Pi, Cline). */
+/** Sanitized tools of a trusted project server — for the in-process engine (Cline). */
 export async function listProjectServerTools(projectId: string, name: string): Promise<Tool[]> {
 	return withProjectUpstreamClient(projectId, name, async (client) => (await listAllToolsRaw(client)).map(sanitizeTool));
 }
 
-/** Call one tool of a trusted project server — for the in-process engines (Pi, Cline). */
+/** Call one tool of a trusted project server — for the in-process engine (Cline). */
 export async function callProjectServerTool(projectId: string, name: string, toolName: string, args: unknown): Promise<unknown> {
 	return withProjectUpstreamClient(projectId, name, async (client) =>
 		client.request(

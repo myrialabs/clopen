@@ -18,6 +18,8 @@
 
 import type { Credential, CredentialInfo, CredentialStore } from '@earendil-works/pi-ai';
 import { engineQueries, type EngineAccount } from '$backend/database/queries/engine-queries';
+import { settingsQueries } from '$backend/database/queries/settings-queries';
+import { createKeyedLock } from '$backend/utils/keyed-lock';
 import { debug } from '$shared/utils/logger';
 
 /** The single `engine_providers` row that owns every Pi account (Qwen-style). */
@@ -31,11 +33,44 @@ export function getPiAccounts(): EngineAccount[] {
 	return provider ? engineQueries.getAccountsByProvider(provider.id) : [];
 }
 
+/**
+ * Provider ids pi-ai has renamed, old → new. Accounts, chat sessions and saved
+ * model choices keep whatever id they were created with, so every id coming in
+ * is read through this; a stored credential is rewritten under the new id the
+ * next time it is saved.
+ */
+const RENAMED_PROVIDERS: Record<string, string> = {
+	// pi 1.0.3: the provider now also serves Foundry Chat Completions.
+	'azure-openai-responses': 'azure',
+};
+
+/** The current pi-ai id for a provider id that may predate a rename. */
+export function canonicalPiProviderId(providerId: string): string {
+	return RENAMED_PROVIDERS[providerId] ?? providerId;
+}
+
 /** The account backing a given pi-ai provider id, preferring the active one. */
 export function getPiAccountForProvider(providerId: string): EngineAccount | null {
-	const accounts = getPiAccounts().filter(a => parsePiCredential(a.credential)?.provider === providerId);
+	const wanted = canonicalPiProviderId(providerId);
+	const accounts = getPiAccounts().filter(a => parsePiCredential(a.credential)?.provider === wanted);
 	if (accounts.length === 0) return null;
 	return accounts.find(a => a.is_active === 1) ?? accounts[accounts.length - 1];
+}
+
+const DEVICE_ID_KEY = 'pi_device_id';
+
+/**
+ * Stable id of this Clopen installation, created on first use. Pi's login flows
+ * ask for it through `LoginOptions.getDeviceId` — Sign in with ChatGPT sends it
+ * to OpenAI as the agent host id and refuses to start without one. The Pi CLI
+ * keeps it in its global settings; Clopen keeps it in the `settings` table.
+ */
+export function getPiDeviceId(): string {
+	const stored = settingsQueries.get(DEVICE_ID_KEY)?.value;
+	if (stored) return stored;
+	const id = crypto.randomUUID();
+	settingsQueries.set(DEVICE_ID_KEY, id);
+	return id;
 }
 
 export interface PiCredential {
@@ -55,7 +90,7 @@ export function parsePiCredential(stored: string | null | undefined): PiCredenti
 		if (!parsed || typeof parsed.provider !== 'string' || !parsed.provider) return null;
 		const cred = parsed.credential as Credential | undefined;
 		if (!cred || (cred.type !== 'api_key' && cred.type !== 'oauth')) return null;
-		return { provider: parsed.provider, credential: cred };
+		return { provider: canonicalPiProviderId(parsed.provider), credential: cred };
 	} catch {
 		return null;
 	}
@@ -70,6 +105,27 @@ export function describePiCredential(stored: string | null | undefined): { provi
 	const parsed = parsePiCredential(stored);
 	if (!parsed) return null;
 	return { provider: parsed.provider, type: parsed.credential.type };
+}
+
+/**
+ * Per-account write chain shared by EVERY store instance in the process. Each
+ * stream and each model-list refresh builds its own `DbCredentialStore`, but
+ * they all write the same row — and providers that rotate refresh tokens
+ * (OpenAI, Anthropic) revoke the grant when one token is spent twice. Pi's
+ * refresh re-checks expiry inside `modify`, so serializing here turns the
+ * second caller into a no-op instead of a second refresh.
+ */
+const withAccountLock = createKeyedLock<number>();
+
+/**
+ * Replace an account's stored credential (re-login, edited key) in line with
+ * any refresh in flight, so the refresh can't land afterwards and put the old
+ * grant back.
+ */
+export function writePiAccountCredential(accountId: number, serialized: string): Promise<void> {
+	return withAccountLock(accountId, async () => {
+		engineQueries.updateAccountCredential(accountId, serialized);
+	});
 }
 
 /**
@@ -117,18 +173,18 @@ export class DbCredentialStore implements CredentialStore {
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 	): Promise<Credential | undefined> {
 		const accountId = this.providerToAccount.get(providerId);
-		const current = accountId !== undefined
-			? parsePiCredential(engineQueries.getAccount(accountId)?.credential)?.credential
-			: undefined;
+		// No row behind it (a login into an empty store): nothing to race over.
+		if (accountId === undefined) return (await fn(undefined)) ?? undefined;
 
-		const next = await fn(current);
-		if (next === undefined) return current;
-
-		if (accountId !== undefined) {
+		return withAccountLock(accountId, async () => {
+			// Read inside the lock — a refresh that just finished must be seen.
+			const current = parsePiCredential(engineQueries.getAccount(accountId)?.credential)?.credential;
+			const next = await fn(current);
+			if (next === undefined) return current;
 			engineQueries.updateAccountCredential(accountId, serializePiCredential({ provider: providerId, credential: next }));
 			debug.log('engine', `Pi: persisted refreshed credential for provider "${providerId}" (account ${accountId})`);
-		}
-		return next;
+			return next;
+		});
 	}
 
 	async delete(providerId: string): Promise<void> {

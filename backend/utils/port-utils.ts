@@ -46,3 +46,22 @@ export async function findAvailablePort(startPort: number, maxAttempts = 8): Pro
 	}
 	throw new Error(`No available port found starting from ${startPort} (tried ${maxAttempts} ports)`);
 }
+
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+
+/**
+ * Whether an OAuth flow's loopback callback is actually listening, read off the
+ * `redirect_uri` of its authorization URL. Engine logins race that callback
+ * against a pasted redirect URL; the paste is only required when nothing is
+ * listening (the port was taken) or the redirect goes to a hosted page instead.
+ */
+export async function hasLoopbackCallbackListener(authUrl: string): Promise<boolean> {
+	try {
+		const redirect = new URL(new URL(authUrl).searchParams.get('redirect_uri') ?? '');
+		if (!LOOPBACK_HOSTS.has(redirect.hostname)) return false;
+		const port = Number(redirect.port || (redirect.protocol === 'https:' ? 443 : 80));
+		return await isPortInUse(port);
+	} catch {
+		return false;
+	}
+}

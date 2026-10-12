@@ -23,6 +23,7 @@ import type { OAuthCredentials, ProviderSettings } from '@cline/sdk';
 import { engineQueries, type EngineAccount } from '$backend/database/queries/engine-queries';
 import { debug } from '$shared/utils/logger';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
+import { createKeyedLock } from '$backend/utils/keyed-lock';
 
 export type ClineAuthMethod = 'api_key' | 'oauth';
 
@@ -107,6 +108,24 @@ export interface ResolvedClineAuth {
 const OAUTH_REFRESH_BUFFER_MS = 60_000;
 
 /**
+ * One refresh per account at a time. Concurrent streams each resolve auth, and
+ * a refresh token spent twice gets the grant revoked by providers that rotate
+ * it; the second caller re-reads the row inside the lock and finds it fresh.
+ */
+const withAccountLock = createKeyedLock<number>();
+
+/**
+ * Replace an account's stored credential (re-login, edited key) in line with
+ * any refresh in flight, so the refresh can't land afterwards and put the old
+ * grant back.
+ */
+export function writeClineAccountCredential(accountId: number, serialized: string): Promise<void> {
+	return withAccountLock(accountId, async () => {
+		engineQueries.updateAccountCredential(accountId, serialized);
+	});
+}
+
+/**
  * Resolve the auth an `Agent` needs for one account. For OAuth accounts this
  * refreshes a near-expired access token (persisting the rotated blob back to the
  * DB) and formats it into the api-key the provider handler expects.
@@ -126,31 +145,36 @@ export async function resolveClineAuth(account: EngineAccount): Promise<Resolved
 
 	// OAuth: refresh if near-expiry, then format the access token as an api key.
 	const { getProviderAuthHandler, formatProviderOAuthApiKey } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
-	let creds = parsed.oauth as OAuthCredentials;
 	const handler = getProviderAuthHandler(parsed.provider);
-	const nearExpiry = typeof creds.expires === 'number' && creds.expires <= Date.now() + OAUTH_REFRESH_BUFFER_MS;
-	if (handler && creds.refresh && nearExpiry) {
-		try {
-			const settings = {
-				auth: {
-					accessToken: creds.access,
-					refreshToken: creds.refresh,
-					expiresAt: creds.expires,
-					...(creds.accountId ? { accountId: creds.accountId } : {}),
-				},
-			} as ProviderSettings;
-			const refreshed = await handler.refresh({ settings, credentials: creds });
-			if (refreshed?.access) {
-				creds = refreshed;
+	const isNearExpiry = (c: OAuthCredentials) => typeof c.expires === 'number' && c.expires <= Date.now() + OAUTH_REFRESH_BUFFER_MS;
+	let creds = parsed.oauth as OAuthCredentials;
+	if (handler && creds.refresh && isNearExpiry(creds)) {
+		creds = await withAccountLock(account.id, async () => {
+			// The row, not the caller's snapshot: another stream may have refreshed it.
+			const current = (parseClineCredential(engineQueries.getAccount(account.id)?.credential)?.oauth ?? parsed.oauth) as OAuthCredentials;
+			if (!current.refresh || !isNearExpiry(current)) return current;
+			try {
+				const settings = {
+					auth: {
+						accessToken: current.access,
+						refreshToken: current.refresh,
+						expiresAt: current.expires,
+						...(current.accountId ? { accountId: current.accountId } : {}),
+					},
+				} as ProviderSettings;
+				const refreshed = await handler.refresh({ settings, credentials: current });
+				if (!refreshed?.access) return current;
 				engineQueries.updateAccountCredential(
 					account.id,
 					serializeClineCredential({ ...parsed, oauth: refreshed }),
 				);
 				debug.log('engine', `Cline: refreshed OAuth token for provider "${parsed.provider}" (account ${account.id})`);
+				return refreshed;
+			} catch (error) {
+				debug.warn('engine', `Cline OAuth refresh failed for "${parsed.provider}" (using stored token): ${error instanceof Error ? error.message : String(error)}`);
+				return current;
 			}
-		} catch (error) {
-			debug.warn('engine', `Cline OAuth refresh failed for "${parsed.provider}" (using stored token): ${error instanceof Error ? error.message : String(error)}`);
-		}
+		});
 	}
 
 	let apiKey: string;

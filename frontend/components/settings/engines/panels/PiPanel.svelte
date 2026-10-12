@@ -10,6 +10,8 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import AccountEditForm from '../AccountEditForm.svelte';
 	import AccountField from '../AccountField.svelte';
+	import OAuthBrowserStep from '../OAuthBrowserStep.svelte';
+	import RadioCardGroup from '../RadioCardGroup.svelte';
 	import type { PiStatus } from './panel-types';
 
 	interface Props {
@@ -45,9 +47,11 @@
 	// Interactive / OAuth login flow state
 	let piLoginId = $state<string | null>(null);
 	let piLoginMessages = $state<string[]>([]);
+	let piLoginLinks = $state<{ url: string; label?: string }[]>([]);
 	let piLoginUrl = $state<string | null>(null);
+	let piLoginUrlInstructions = $state<string | null>(null);
 	let piLoginDeviceCode = $state<{ userCode: string; verificationUri: string } | null>(null);
-	let piLoginPrompt = $state<{ kind: string; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[] } | null>(null);
+	let piLoginPrompt = $state<{ kind: string; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[]; optional?: boolean } | null>(null);
 	let piLoginPromptValue = $state('');
 
 	// Inline edit-in-card state
@@ -68,27 +72,41 @@
 			ws.on('engine:pi-account-login-started', (data: { loginId: string }) => {
 				piLoginId = data.loginId;
 			}),
-			ws.on('engine:pi-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string; instructions?: string; userCode?: string; verificationUri?: string }) => {
+			// Every event is scoped to the login on screen, so a cancelled attempt
+			// still winding down can't paint over the next one.
+			ws.on('engine:pi-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string; instructions?: string; userCode?: string; verificationUri?: string; links?: { url: string; label?: string }[] }) => {
+				if (data.loginId !== piLoginId) return;
 				if (data.kind === 'auth_url' && data.url) {
+					// The browser step explains itself; the flow's own instructions
+					// are shown only when the paste they describe is required.
 					piLoginUrl = data.url;
-					if (data.instructions) piLoginMessages = [...piLoginMessages, data.instructions];
+					piLoginUrlInstructions = data.instructions ?? null;
 				} else if (data.kind === 'device_code' && data.userCode && data.verificationUri) {
 					piLoginDeviceCode = { userCode: data.userCode, verificationUri: data.verificationUri };
 				} else if (data.message) {
 					piLoginMessages = [...piLoginMessages, data.message];
 				}
+				if (data.links?.length) piLoginLinks = [...piLoginLinks, ...data.links];
 			}),
-			ws.on('engine:pi-account-login-prompt', (data: { loginId: string; kind: string; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[] }) => {
-				piLoginPrompt = { kind: data.kind, message: data.message, placeholder: data.placeholder, options: data.options };
+			ws.on('engine:pi-account-login-prompt', (data: { loginId: string; kind: string; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[]; optional: boolean }) => {
+				if (data.loginId !== piLoginId) return;
+				piLoginPrompt = { kind: data.kind, message: data.message, placeholder: data.placeholder, options: data.options, optional: data.optional };
 				piLoginPromptValue = data.options?.[0]?.id ?? '';
 			}),
-			ws.on('engine:pi-account-login-complete', async (_data: { loginId: string; accountId: number }) => {
+			ws.on('engine:pi-account-login-prompt-closed', (data: { loginId: string }) => {
+				if (data.loginId !== piLoginId) return;
+				piLoginPrompt = null;
+				piLoginPromptValue = '';
+			}),
+			ws.on('engine:pi-account-login-complete', async (data: { loginId: string; accountId: number }) => {
+				if (data.loginId !== piLoginId) return;
 				piAddStep = 'success';
 				resetPiLoginState();
 				await refreshPiStatus();
 				await modelStore.refreshModels('pi');
 			}),
 			ws.on('engine:pi-account-login-error', (data: { loginId: string; message: string }) => {
+				if (data.loginId !== piLoginId) return;
 				piAddError = data.message;
 				piAddStep = 'error';
 				resetPiLoginState();
@@ -106,7 +124,9 @@
 	function resetPiLoginState() {
 		piLoginId = null;
 		piLoginMessages = [];
+		piLoginLinks = [];
 		piLoginUrl = null;
+		piLoginUrlInstructions = null;
 		piLoginDeviceCode = null;
 		piLoginPrompt = null;
 		piLoginPromptValue = '';
@@ -211,9 +231,9 @@
 		});
 	}
 
-	function submitPiLoginPrompt() {
+	function submitPiLoginPrompt(value = piLoginPromptValue) {
 		if (!piLoginId || !piLoginPrompt) return;
-		ws.emit('engine:pi-account-login-submit', { loginId: piLoginId, value: piLoginPromptValue });
+		ws.emit('engine:pi-account-login-submit', { loginId: piLoginId, value });
 		piLoginPrompt = null;
 		piLoginPromptValue = '';
 	}
@@ -419,22 +439,14 @@
 								<Icon name="lucide:user-plus" class="w-3.5 h-3.5" />
 								How do you want to connect {piSelectedPreset?.name}?
 							</div>
-							<div class="space-y-2" role="radiogroup" aria-label="Authentication mode">
-								<button type="button" role="radio" aria-checked={piAddMode === 'api_key'} onclick={() => { piAddMode = 'api_key'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {piAddMode === 'api_key' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
-									<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {piAddMode === 'api_key' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
-										<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {piAddMode === 'api_key' ? 'scale-100' : 'scale-0'}"></span>
-									</span>
-									<Icon name="lucide:key" class="w-3.5 h-3.5" />
-									<span>API key</span>
-								</button>
-								<button type="button" role="radio" aria-checked={piAddMode === 'oauth'} onclick={() => { piAddMode = 'oauth'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {piAddMode === 'oauth' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
-									<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {piAddMode === 'oauth' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
-										<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {piAddMode === 'oauth' ? 'scale-100' : 'scale-0'}"></span>
-									</span>
-									<Icon name="lucide:log-in" class="w-3.5 h-3.5" />
-									<span>{piSelectedPreset?.oauthLabel ?? 'Sign in'}</span>
-								</button>
-							</div>
+							<RadioCardGroup
+								label="Authentication mode"
+								bind:value={piAddMode}
+								options={[
+									{ value: 'api_key', label: 'API key', icon: 'lucide:key' },
+									{ value: 'oauth', label: piSelectedPreset?.oauthLabel ?? 'Sign in', icon: 'lucide:log-in' },
+								]}
+							/>
 							<div class="flex gap-2">
 								<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" onclick={proceedPiMode} disabled={!piAddMode}>
 									<Icon name="lucide:arrow-right" class="w-4 h-4" />
@@ -481,51 +493,61 @@
 								<Icon name={piReauthAccountId ? 'lucide:key-round' : 'lucide:log-in'} class="w-3.5 h-3.5" />
 								{piReauthAccountId ? 'Re-authenticating account' : 'Authenticating'}
 							</div>
-							{#if piLoginUrl}
-								<div class="space-y-1.5">
-									<p class="text-xs text-slate-600 dark:text-slate-400">Open this URL to authorize, then return here:</p>
-									<a href={piLoginUrl} target="_blank" rel="noopener noreferrer" class="block text-xs text-violet-600 dark:text-violet-400 hover:underline break-all">{piLoginUrl}</a>
-								</div>
-							{/if}
-							{#if piLoginDeviceCode}
-								<div class="space-y-1.5 text-xs text-slate-600 dark:text-slate-400">
-									<p>Go to <a href={piLoginDeviceCode.verificationUri} target="_blank" rel="noopener noreferrer" class="text-violet-600 dark:text-violet-400 hover:underline">{piLoginDeviceCode.verificationUri}</a> and enter code:</p>
-									<code class="inline-block px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 font-mono text-sm text-slate-900 dark:text-slate-100">{piLoginDeviceCode.userCode}</code>
-								</div>
-							{/if}
-							{#each piLoginMessages as msg}
-								<p class="text-xs text-slate-500 dark:text-slate-400">{msg}</p>
-							{/each}
-							{#if piLoginPrompt}
-								<div class="space-y-2">
-									<p class="text-xs font-medium text-slate-700 dark:text-slate-300">{piLoginPrompt.message}</p>
-									{#if piLoginPrompt.kind === 'select' && piLoginPrompt.options}
-										<select bind:value={piLoginPromptValue} class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-violet-500/40">
-											{#each piLoginPrompt.options as opt (opt.id)}
-												<option value={opt.id}>{opt.label}</option>
-											{/each}
-										</select>
-									{:else}
-										<input type="text" bind:value={piLoginPromptValue} placeholder={piLoginPrompt.placeholder ?? ''} class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
-									{/if}
-								</div>
-								<div class="flex gap-2">
-									<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors" onclick={submitPiLoginPrompt}>
-										<Icon name="lucide:arrow-right" class="w-4 h-4" />
-										Submit
-									</button>
-									<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelPiAdd}>
+							{#if piLoginUrl && (!piLoginPrompt || piLoginPrompt.kind === 'manual_code')}
+								<OAuthBrowserStep
+									url={piLoginUrl}
+									instructions={piLoginUrlInstructions}
+									fallback={piLoginPrompt}
+									onSubmitFallback={(value) => submitPiLoginPrompt(value)}
+									onCancel={cancelPiAdd}
+								/>
+								{#each piLoginMessages as msg}
+									<p class="text-xs text-slate-500 dark:text-slate-400">{msg}</p>
+								{/each}
+							{:else}
+								{#if piLoginDeviceCode}
+									<div class="space-y-1.5 text-xs text-slate-600 dark:text-slate-400">
+										<p>Go to <a href={piLoginDeviceCode.verificationUri} target="_blank" rel="noopener noreferrer" class="text-violet-600 dark:text-violet-400 hover:underline">{piLoginDeviceCode.verificationUri}</a> and enter code:</p>
+										<code class="inline-block px-2 py-1 rounded bg-slate-100 dark:bg-slate-700 font-mono text-sm text-slate-900 dark:text-slate-100">{piLoginDeviceCode.userCode}</code>
+									</div>
+								{/if}
+								{#each piLoginMessages as msg}
+									<p class="text-xs text-slate-500 dark:text-slate-400">{msg}</p>
+								{/each}
+								{#each piLoginLinks as link (link.url)}
+									<a href={link.url} target="_blank" rel="noopener noreferrer" class="block text-xs text-violet-600 dark:text-violet-400 hover:underline">{link.label ?? link.url} ↗</a>
+								{/each}
+								{#if piLoginPrompt}
+									<div class="space-y-2">
+										<p class="text-xs font-medium text-slate-700 dark:text-slate-300">{piLoginPrompt.message}</p>
+										{#if piLoginPrompt.kind === 'select' && piLoginPrompt.options}
+											<RadioCardGroup
+												label={piLoginPrompt.message}
+												bind:value={piLoginPromptValue}
+												options={piLoginPrompt.options.map((opt) => ({ value: opt.id, label: opt.label, description: opt.description }))}
+											/>
+										{:else}
+											<input type={piLoginPrompt.kind === 'secret' ? 'password' : 'text'} autocomplete="off" bind:value={piLoginPromptValue} placeholder={piLoginPrompt.placeholder ?? ''} class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+										{/if}
+									</div>
+									<div class="flex gap-2">
+										<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors" onclick={() => submitPiLoginPrompt()}>
+											<Icon name="lucide:arrow-right" class="w-4 h-4" />
+											Submit
+										</button>
+										<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelPiAdd}>
+											Cancel
+										</button>
+									</div>
+								{:else}
+									<div class="flex items-center gap-2 text-sm text-slate-500">
+										<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+										<span>Waiting for authentication…</span>
+									</div>
+									<button type="button" class="w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelPiAdd}>
 										Cancel
 									</button>
-								</div>
-							{:else}
-								<div class="flex items-center gap-2 text-sm text-slate-500">
-									<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
-									<span>Waiting for authentication…</span>
-								</div>
-								<button type="button" class="w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelPiAdd}>
-									Cancel
-								</button>
+								{/if}
 							{/if}
 						</div>
 					{:else if piAddStep === 'success'}

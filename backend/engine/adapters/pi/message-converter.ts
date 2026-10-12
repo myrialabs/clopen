@@ -14,8 +14,8 @@
  *
  * Pi built-in tool names are lowercase (`read`, `bash`, …); we canonicalise them
  * to the unified PascalCase names + normalise input field names so the shared
- * tool UI renders identically to Claude/Codex. MCP tools already arrive as
- * `mcp__<server>__<tool>` from the bridge (see ./mcp-tools.ts).
+ * tool UI renders identically to Claude/Codex. MCP tools arrive under Pi's
+ * sanitized names and are mapped back through `resolveToolName` (see ./mcp.ts).
  */
 
 import type { AgentSessionEvent } from '@earendil-works/pi-coding-agent';
@@ -180,6 +180,8 @@ function mapUsage(raw: PiUsage | null | undefined): TokenUsage | null {
 export interface PiConverterOptions {
 	engine: MessageEngine;
 	sessionId: string;
+	/** Maps a Pi tool name to Clopen's canonical one (MCP names are sanitized by Pi). */
+	resolveToolName?: (name: string) => string;
 }
 
 export interface PiMessageConverter {
@@ -191,7 +193,7 @@ export interface PiMessageConverter {
 }
 
 export function createPiMessageConverter(options: PiConverterOptions): PiMessageConverter {
-	const { engine, sessionId } = options;
+	const { engine, sessionId, resolveToolName = (name: string) => name } = options;
 	const totalUsage: TokenUsage = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
 	let totalCostUsd = 0;
 	let turns = 0;
@@ -214,7 +216,7 @@ export function createPiMessageConverter(options: PiConverterOptions): PiMessage
 				if (block.text.trim()) blocks.push({ type: 'text', text: block.text });
 			} else if (block.type === 'toolCall') {
 				const call = block as PiToolCall;
-				const canonical = canonicaliseToolName(call.name);
+				const canonical = canonicaliseToolName(resolveToolName(call.name));
 				const finalName = toCanonicalToolName(canonical);
 				const rawInput = (call.arguments && typeof call.arguments === 'object' ? call.arguments : {}) as Record<string, unknown>;
 				blocks.push({

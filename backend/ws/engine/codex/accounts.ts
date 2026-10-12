@@ -7,15 +7,19 @@
  *      is wrapped as `{kind:"api_key", apiKey}` and stored in
  *      `engine_accounts.credential`. No filesystem mutation.
  *
- *   2. **ChatGPT browser OAuth** — spawn `codex login` inside a PTY (so the
- *      CLI thinks it's interactive and emits its banner + URL prompt),
- *      scrape stdout for the `https://auth.openai.com/...` URL, surface it
- *      to the UI. The CLI writes `~/.codex/auth.json` after the user
- *      finishes OAuth in the browser. We snapshot the file content into
- *      `engine_accounts.credential` as `{kind:"chatgpt", authJson:<file>}`.
- *
- *      Headless fallback: `codex login --device-auth` produces a device code
- *      printed to stdout that the user enters at openai.com/auth/device.
+ *   2. **Sign in with ChatGPT** — spawn `codex login` inside a PTY (so the
+ *      CLI thinks it's interactive and emits its banner + prompt) and scrape
+ *      stdout. The user picks the method:
+ *        - browser (`codex login`): the CLI prints an
+ *          `https://auth.openai.com/oauth/authorize…` URL and finishes on its
+ *          own through a loopback callback on the server (127.0.0.1:1455, or
+ *          the next free port), so it only completes when the browser runs on
+ *          the same machine;
+ *        - device code (`codex login --device-auth`): a one-time code the user
+ *          enters at auth.openai.com/codex/device — works from anywhere.
+ *      The CLI writes `auth.json` into Clopen's isolated CODEX_HOME; we
+ *      snapshot it into `engine_accounts.credential` as
+ *      `{kind:"chatgpt", authJson:<file>}`.
  *
  * Switching between accounts:
  *   - chatgpt → write the stored `authJson` blob back to `~/.codex/auth.json`
@@ -118,13 +122,13 @@ function cleanupSetup(setupId: string): void {
 	setupProcesses.delete(setupId);
 }
 
-function extractAuthUrl(buffer: string): string | null {
+export function extractAuthUrl(buffer: string): string | null {
 	// Browser-OAuth flow URL printed by `codex login` (no --device-auth).
 	const match = buffer.match(/https:\/\/auth\.openai\.com\/oauth\/authorize\?[^\s]+/);
 	return match ? match[0] : null;
 }
 
-function extractDeviceCode(buffer: string): { code: string; verificationUrl: string } | null {
+export function extractDeviceCode(buffer: string): { code: string; verificationUrl: string } | null {
 	// `codex login --device-auth` (v0.120+) prints a multi-line block:
 	//   1. Open this link in your browser and sign in to your account
 	//      https://auth.openai.com/codex/device
@@ -146,7 +150,7 @@ function extractDeviceCode(buffer: string): { code: string; verificationUrl: str
 	return { code: codeMatch[1], verificationUrl: urlMatch[0] };
 }
 
-function isLoginSuccess(buffer: string): boolean {
+export function isLoginSuccess(buffer: string): boolean {
 	return /Successfully logged in/i.test(buffer);
 }
 
@@ -306,7 +310,7 @@ export const codexAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	// ─── ChatGPT browser OAuth flow ───
+	// ─── Sign in with ChatGPT (browser or device code) ───
 	//
 	// Spawn `codex login` in a PTY (the CLI silently no-ops when stdout
 	// isn't a TTY), scan stdout for the URL/device-code prompt, surface it

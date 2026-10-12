@@ -116,7 +116,19 @@ export const ENGINE_PACKAGES: Partial<Record<ToolId, string[]>> = {
 	copilot: ['@github/copilot-sdk'],
 	codex: ['@openai/codex-sdk'],
 	qwen: ['@qwen-code/sdk'],
-	pi: ['@earendil-works/pi-coding-agent', '@earendil-works/pi-ai', '@earendil-works/pi-agent-core'],
+	// Pi's packages ship in lockstep but depend on each other with `^` ranges,
+	// and 1.0.1 dropped the shrinkwrap that used to hold them together — pin
+	// every sibling so a later Pi release can't mix into this install.
+	pi: [
+		'@earendil-works/pi-coding-agent',
+		'@earendil-works/pi-ai',
+		'@earendil-works/pi-agent-core',
+		'@earendil-works/pi-mcp',
+		'@earendil-works/pi-codemode',
+		'@earendil-works/pi-tui',
+		'@earendil-works/pi-telemetry',
+		'@earendil-works/chord'
+	],
 	cline: ['@cline/sdk', '@cline/agents'],
 	cursor: ['@cursor/sdk'],
 };

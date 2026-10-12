@@ -24,6 +24,7 @@ import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig as CopilotMcpServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
+import type { McpServerConfig as PiMcpServerConfig } from '@earendil-works/pi-coding-agent';
 import { debug } from '$shared/utils/logger';
 import { mcpServerQueries } from '$backend/database/queries';
 import { externalNamespace, MCP_TOOL_CALL_TIMEOUT_MS } from '../shared/constants';
@@ -250,6 +251,22 @@ export function getCopilotExternalMcpConfig(profileFilter?: Set<string>, project
 	return out;
 }
 
+/** Pi: `McpServerConfig` (http variant, `direct` exposure) pointing at the bridge proxy. */
+export function getPiExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, PiMcpServerConfig> {
+	const out: Record<string, PiMcpServerConfig> = {};
+	for (const b of bridgesFor('pi', profileFilter, projectId)) {
+		out[b.namespace] = {
+			type: 'http',
+			url: b.url,
+			exposure: 'direct',
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS / 1000,
+			headers: serviceAuthHeaders()
+		};
+	}
+	logBuilt('Pi', out);
+	return out;
+}
+
 /** Qwen Code: `CLIMcpServerConfig` Streamable-HTTP (`httpUrl`) at the bridge proxy. */
 /** Cursor: `McpServerConfig` (http variant) pointing at the bridge proxy. */
 export function getCursorExternalMcpConfig(profileFilter?: Set<string>, projectId?: string | null): Record<string, CursorMcpServerConfig> {
@@ -335,6 +352,7 @@ export function getEngineConfigsForServer(slug: string): Record<string, unknown>
 		codex: () => getCodexExternalMcpConfig() as Record<string, unknown>,
 		copilot: () => getCopilotExternalMcpConfig() as Record<string, unknown>,
 		cursor: () => getCursorExternalMcpConfig() as Record<string, unknown>,
+		pi: () => getPiExternalMcpConfig() as Record<string, unknown>,
 		qwen: () => getQwenExternalMcpConfig() as Record<string, unknown>
 	};
 

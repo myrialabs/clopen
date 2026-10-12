@@ -43,7 +43,7 @@ const PROVIDER_FIELDS: Record<string, PiCredentialField[]> = {
 		{ key: 'CLOUDFLARE_ACCOUNT_ID', label: 'Account ID', secret: false, role: 'env' },
 		{ key: 'CLOUDFLARE_GATEWAY_ID', label: 'Gateway ID', secret: false, role: 'env' },
 	],
-	'azure-openai-responses': [
+	azure: [
 		{ key: 'apiKey', label: 'API key', secret: true, role: 'key' },
 		{ key: 'AZURE_OPENAI_BASE_URL', label: 'Base URL', secret: false, role: 'env', placeholder: 'https://your-resource.openai.azure.com' },
 	],
@@ -87,12 +87,15 @@ const API_KEY_URLS: Record<string, string> = {
 	nvidia: 'https://build.nvidia.com',
 };
 
-/** Human labels for the OAuth (subscription) option, keyed by provider id. */
+/**
+ * Labels for the OAuth (subscription) option where Pi ships no `loginLabel` of
+ * its own. Pi's label wins when present; anything else falls back to its OAuth
+ * display name.
+ */
 const OAUTH_LABELS: Record<string, string> = {
 	anthropic: 'Sign in with Claude Pro/Max',
-	'openai-codex': 'Sign in with ChatGPT (Plus/Pro)',
+	'openai-codex': 'Sign in with ChatGPT (legacy)',
 	'github-copilot': 'Sign in with GitHub Copilot',
-	xai: 'Sign in with SuperGrok or X Premium',
 	radius: 'Sign in with Radius',
 };
 
@@ -121,7 +124,9 @@ export async function getPiProviderPresets(): Promise<PiProviderPreset[]> {
 				name: provider.name,
 				authModes,
 				...(authModes.includes('api_key') ? { fields: getPiProviderFields(provider.id) } : {}),
-				...(OAUTH_LABELS[provider.id] ? { oauthLabel: OAUTH_LABELS[provider.id] } : {}),
+				...(provider.auth.oauth ? {
+					oauthLabel: provider.auth.oauth.loginLabel ?? OAUTH_LABELS[provider.id] ?? `Sign in with ${provider.auth.oauth.name}`,
+				} : {}),
 				...(API_KEY_URLS[provider.id] ? { apiKeyUrl: API_KEY_URLS[provider.id] } : {}),
 			});
 		}

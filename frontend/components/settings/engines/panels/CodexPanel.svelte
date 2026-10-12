@@ -13,6 +13,9 @@
 	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
 	import AccountEditForm from '../AccountEditForm.svelte';
 	import AccountField from '../AccountField.svelte';
+	import OAuthBrowserStep from '../OAuthBrowserStep.svelte';
+	import RadioCardGroup from '../RadioCardGroup.svelte';
+	import { isLocalConnection } from '$frontend/utils/platform';
 	import { mountDebugViewer } from './debug-viewer';
 	import type { CodexStatus } from './panel-types';
 
@@ -29,22 +32,27 @@
 	const codexEngine = ENGINES.find(e => e.type === 'codex')!;
 	const codexAccounts = $derived(codexAccountsStore.accounts);
 
-	// Codex add-account flow — dual mode
-	// ChatGPT flow always runs `codex login --device-auth` (works on
-	// remote/headless machines and gives a stable URL+code prompt we can
-	// scrape). The browser-OAuth variant is intentionally not exposed.
+	// Codex add-account flow — dual mode, and ChatGPT sign-in two ways:
+	// `codex login` (browser, finishes on its own through the CLI's loopback
+	// callback) or `codex login --device-auth` (a one-time code). The callback
+	// lives on the server's 127.0.0.1, so the browser method can only finish
+	// when the page is opened on that same machine.
 	type CodexAuthMode = 'api_key' | 'chatgpt';
+	type CodexLoginMethod = 'browser' | 'device';
 	type CodexAddStep =
 		| 'idle'
 		| 'picking-mode'
 		| 'editing-api-key'
-		| 'chatgpt-loading'      // codex login spawned, waiting for device code
-		| 'chatgpt-waiting'      // device code shown, waiting for user to verify in browser
+		| 'chatgpt-loading'      // codex login spawned, waiting for its URL / device code
+		| 'chatgpt-waiting'      // URL or device code shown, waiting for the user to finish in the browser
 		| 'saving'
 		| 'success'
 		| 'error';
 	let codexAddStep = $state<CodexAddStep>('idle');
 	let codexAddMode = $state<CodexAuthMode | null>(null);
+	const browserLoginAvailable = isLocalConnection();
+	let codexLoginMethod = $state<CodexLoginMethod>(browserLoginAvailable ? 'browser' : 'device');
+	let codexAuthUrl = $state<string | null>(null);
 	let codexAddName = $state('');
 	let codexAddApiKey = $state('');
 	let codexAddError = $state('');
@@ -96,6 +104,12 @@
 		// Filtering by setupId on these per-user broadcasts isn't necessary;
 		// the backend already serializes one login at a time per user.
 		cleanups.push(
+			ws.on('engine:codex-account-setup-url', (data: { setupId: string; authUrl: string }) => {
+				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
+				codexSetupId = data.setupId;
+				codexAuthUrl = data.authUrl;
+				codexAddStep = 'chatgpt-waiting';
+			}),
 			ws.on('engine:codex-account-setup-device-code', (data: { setupId: string; code: string; verificationUrl: string }) => {
 				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
 				codexSetupId = data.setupId;
@@ -144,6 +158,7 @@
 	function startCodexAdd() {
 		codexAddStep = 'picking-mode';
 		codexAddMode = null;
+		codexAuthUrl = null;
 		codexAddName = '';
 		codexAddApiKey = '';
 		codexAddError = '';
@@ -190,6 +205,7 @@
 		codexAddStep = 'chatgpt-loading';
 		codexAddError = '';
 		codexDeviceCode = null;
+		codexAuthUrl = null;
 		codexUrlCopied = false;
 		codexCodeCopied = false;
 		hasCodexDebugData = false;
@@ -202,7 +218,7 @@
 		codexSetupId = null;
 		ws.emit('engine:codex-account-setup-start', {
 			name: codexAddName.trim(),
-			deviceAuth: true,
+			deviceAuth: codexLoginMethod === 'device',
 			...(codexReauthAccountId != null ? { reauthAccountId: codexReauthAccountId } : {}),
 		});
 	}
@@ -215,6 +231,7 @@
 		codexAddStep = 'idle';
 		codexSetupId = null;
 		codexDeviceCode = null;
+		codexAuthUrl = null;
 		codexAddName = '';
 		codexAddApiKey = '';
 		codexAddError = '';
@@ -297,13 +314,16 @@
 		codexRenameApiKey = '';
 	}
 
-	// Re-authenticate an existing ChatGPT account in place by re-running the
-	// device-code login flow, reusing the same add-account UI.
+	// Re-authenticate an existing ChatGPT account in place: pick a login
+	// method, then run the same sign-in flow as adding one.
 	function startCodexReauth(account: CodexAccountItem) {
 		codexReauthAccountId = account.id;
 		codexAddName = account.name;
 		codexAddMode = 'chatgpt';
-		startCodexChatGptLogin();
+		codexAddError = '';
+		codexAuthUrl = null;
+		codexDeviceCode = null;
+		codexAddStep = 'picking-mode';
 	}
 
 	function openStackSection() {
@@ -433,32 +453,46 @@
 								{#if codexAddStep === 'picking-mode'}
 									<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
 										<div class="flex items-center gap-2 text-xs font-medium text-violet-600 dark:text-violet-400">
-											<Icon name="lucide:user-plus" class="w-3.5 h-3.5" />
-											Add a Codex account
+											<Icon name={codexReauthAccountId !== null ? 'lucide:key-round' : 'lucide:user-plus'} class="w-3.5 h-3.5" />
+											{codexReauthAccountId !== null ? 'Re-authenticate with ChatGPT' : 'Add a Codex account'}
 										</div>
-										<input
-											type="text"
-											bind:value={codexAddName}
-											placeholder="Account name (e.g. Personal, Work)"
-											class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500"
-										/>
+										{#if codexReauthAccountId === null}
+											<input
+												type="text"
+												bind:value={codexAddName}
+												placeholder="Account name (e.g. Personal, Work)"
+												class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40 focus:border-violet-500"
+											/>
 
-										<div class="space-y-2" role="radiogroup" aria-label="Authentication mode">
-											<button type="button" role="radio" aria-checked={codexAddMode === 'api_key'} onclick={() => { codexAddMode = 'api_key'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {codexAddMode === 'api_key' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
-												<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {codexAddMode === 'api_key' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
-													<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {codexAddMode === 'api_key' ? 'scale-100' : 'scale-0'}"></span>
-												</span>
-												<Icon name="lucide:key" class="w-3.5 h-3.5" />
-												<span>API key</span>
-											</button>
-											<button type="button" role="radio" aria-checked={codexAddMode === 'chatgpt'} onclick={() => { codexAddMode = 'chatgpt'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {codexAddMode === 'chatgpt' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
-												<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {codexAddMode === 'chatgpt' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
-													<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {codexAddMode === 'chatgpt' ? 'scale-100' : 'scale-0'}"></span>
-												</span>
-												<Icon name="lucide:user-round" class="w-3.5 h-3.5" />
-												<span>Sign in with ChatGPT</span>
-											</button>
-										</div>
+											<RadioCardGroup
+												label="Authentication mode"
+												bind:value={codexAddMode}
+												options={[
+													{ value: 'api_key', label: 'API key', icon: 'lucide:key' },
+													{ value: 'chatgpt', label: 'Sign in with ChatGPT', icon: 'lucide:user-round' },
+												]}
+											/>
+										{/if}
+
+										{#if codexAddMode === 'chatgpt'}
+											<div class="space-y-2">
+												<p class="text-xs font-medium text-slate-600 dark:text-slate-400">Login method</p>
+												<RadioCardGroup
+													label="Login method"
+													bind:value={codexLoginMethod}
+													options={[
+														{
+															value: 'browser',
+															label: 'Browser login',
+															icon: 'lucide:app-window',
+															disabled: !browserLoginAvailable,
+															description: browserLoginAvailable ? undefined : 'Only when Clopen is open on the machine it runs on',
+														},
+														{ value: 'device', label: 'Device code login', icon: 'lucide:hash' },
+													]}
+												/>
+											</div>
+										{/if}
 
 										<div class="flex gap-2">
 											<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" onclick={proceedCodexMode} disabled={!codexAddName.trim() || !codexAddMode}>
@@ -496,8 +530,12 @@
 									<div class="p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
 										<div class="flex items-center justify-center gap-2 text-sm text-slate-500">
 											<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
-											<span>Starting Codex device-auth…</span>
+											<span>{codexLoginMethod === 'device' ? 'Requesting a device code…' : 'Starting browser sign-in…'}</span>
 										</div>
+									</div>
+								{:else if codexAddStep === 'chatgpt-waiting' && codexAuthUrl}
+									<div class="p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
+										<OAuthBrowserStep url={codexAuthUrl} fallback={null} onSubmitFallback={() => {}} onCancel={cancelCodexAdd} />
 									</div>
 								{:else if codexAddStep === 'chatgpt-waiting' && codexDeviceCode}
 									<div class="space-y-3 p-4 rounded-lg border border-violet-200 dark:border-violet-800/50 bg-violet-50/50 dark:bg-violet-900/10">
@@ -595,7 +633,7 @@
 										</button>
 
 										<p class="text-2xs text-slate-400 dark:text-slate-500">
-											A background process is running. It will auto-close in 10 minutes if not completed.
+											A background process is running. It will auto-close in 15 minutes if not completed.
 										</p>
 									</div>
 								{:else if codexAddStep === 'saving'}

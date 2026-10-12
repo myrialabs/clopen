@@ -10,6 +10,8 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import AccountEditForm from '../AccountEditForm.svelte';
 	import AccountField from '../AccountField.svelte';
+	import OAuthBrowserStep from '../OAuthBrowserStep.svelte';
+	import RadioCardGroup from '../RadioCardGroup.svelte';
 	import type { ClineStatus } from './panel-types';
 
 	interface Props {
@@ -46,7 +48,7 @@
 	let clineLoginId = $state<string | null>(null);
 	let clineLoginMessages = $state<string[]>([]);
 	let clineLoginUrl = $state<string | null>(null);
-	let clineLoginPrompt = $state<{ message: string } | null>(null);
+	let clineLoginPrompt = $state<{ message: string; kind: 'text' | 'manual_code'; optional: boolean } | null>(null);
 	let clineLoginPromptValue = $state('');
 
 	// Inline edit-in-card state
@@ -65,25 +67,31 @@
 			ws.on('engine:cline-account-login-started', (data: { loginId: string }) => {
 				clineLoginId = data.loginId;
 			}),
+			// Every event is scoped to the login on screen, so a cancelled attempt
+			// still winding down can't paint over the next one.
 			ws.on('engine:cline-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string }) => {
+				if (data.loginId !== clineLoginId) return;
 				if (data.kind === 'auth_url' && data.url) {
+					// The browser step explains itself ("Continue … in your browser").
 					clineLoginUrl = data.url;
-					if (data.message) clineLoginMessages = [...clineLoginMessages, data.message];
 				} else if (data.message) {
 					clineLoginMessages = [...clineLoginMessages, data.message];
 				}
 			}),
-			ws.on('engine:cline-account-login-prompt', (data: { loginId: string; message: string }) => {
-				clineLoginPrompt = { message: data.message };
+			ws.on('engine:cline-account-login-prompt', (data: { loginId: string; message: string; kind: 'text' | 'manual_code'; optional: boolean }) => {
+				if (data.loginId !== clineLoginId) return;
+				clineLoginPrompt = { message: data.message, kind: data.kind, optional: data.optional };
 				clineLoginPromptValue = '';
 			}),
-			ws.on('engine:cline-account-login-complete', async (_data: { loginId: string; accountId: number }) => {
+			ws.on('engine:cline-account-login-complete', async (data: { loginId: string; accountId: number }) => {
+				if (data.loginId !== clineLoginId) return;
 				clineAddStep = 'success';
 				resetClineLoginState();
 				await refreshClineStatus();
 				await modelStore.refreshModels('cline');
 			}),
 			ws.on('engine:cline-account-login-error', (data: { loginId: string; message: string }) => {
+				if (data.loginId !== clineLoginId) return;
 				clineAddError = data.message;
 				clineAddStep = 'error';
 				resetClineLoginState();
@@ -195,9 +203,9 @@
 		});
 	}
 
-	function submitClineLoginPrompt() {
+	function submitClineLoginPrompt(value = clineLoginPromptValue) {
 		if (!clineLoginId || !clineLoginPrompt) return;
-		ws.emit('engine:cline-account-login-submit', { loginId: clineLoginId, value: clineLoginPromptValue });
+		ws.emit('engine:cline-account-login-submit', { loginId: clineLoginId, value });
 		clineLoginPrompt = null;
 		clineLoginPromptValue = '';
 	}
@@ -402,22 +410,14 @@
 								<Icon name="lucide:user-plus" class="w-3.5 h-3.5" />
 								How do you want to connect {clineSelectedPreset?.name}?
 							</div>
-							<div class="space-y-2" role="radiogroup" aria-label="Authentication mode">
-								<button type="button" role="radio" aria-checked={clineAddMode === 'api_key'} onclick={() => { clineAddMode = 'api_key'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {clineAddMode === 'api_key' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
-									<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {clineAddMode === 'api_key' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
-										<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {clineAddMode === 'api_key' ? 'scale-100' : 'scale-0'}"></span>
-									</span>
-									<Icon name="lucide:key" class="w-3.5 h-3.5" />
-									<span>API key</span>
-								</button>
-								<button type="button" role="radio" aria-checked={clineAddMode === 'oauth'} onclick={() => { clineAddMode = 'oauth'; }} class="w-full flex items-center gap-2.5 px-3 py-2 text-sm font-medium rounded-lg border cursor-pointer transition-colors text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-violet-500/40 {clineAddMode === 'oauth' ? 'border-violet-400 ring-1 ring-violet-500/40 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100' : 'border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 hover:border-violet-400'}">
-									<span class="relative flex items-center justify-center w-4 h-4 rounded-full border-2 transition-colors {clineAddMode === 'oauth' ? 'border-violet-500' : 'border-slate-300 dark:border-slate-500'}">
-										<span class="w-2 h-2 rounded-full bg-violet-500 transition-transform {clineAddMode === 'oauth' ? 'scale-100' : 'scale-0'}"></span>
-									</span>
-									<Icon name="lucide:log-in" class="w-3.5 h-3.5" />
-									<span>{clineSelectedPreset?.oauthLabel ?? 'Sign in'}</span>
-								</button>
-							</div>
+							<RadioCardGroup
+								label="Authentication mode"
+								bind:value={clineAddMode}
+								options={[
+									{ value: 'api_key', label: 'API key', icon: 'lucide:key' },
+									{ value: 'oauth', label: clineSelectedPreset?.oauthLabel ?? 'Sign in', icon: 'lucide:log-in' },
+								]}
+							/>
 							<div class="flex gap-2">
 								<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" onclick={proceedClineMode} disabled={!clineAddMode}>
 									<Icon name="lucide:arrow-right" class="w-4 h-4" />
@@ -464,37 +464,43 @@
 								<Icon name={clineReauthAccountId ? 'lucide:key-round' : 'lucide:log-in'} class="w-3.5 h-3.5" />
 								{clineReauthAccountId ? 'Re-authenticating account' : 'Authenticating'}
 							</div>
-							{#if clineLoginUrl}
-								<div class="space-y-1.5">
-									<p class="text-xs text-slate-600 dark:text-slate-400">Open this URL to authorize, then return here:</p>
-									<a href={clineLoginUrl} target="_blank" rel="noopener noreferrer" class="block text-xs text-violet-600 dark:text-violet-400 hover:underline break-all">{clineLoginUrl}</a>
-								</div>
-							{/if}
-							{#each clineLoginMessages as msg}
-								<p class="text-xs text-slate-500 dark:text-slate-400">{msg}</p>
-							{/each}
-							{#if clineLoginPrompt}
-								<div class="space-y-2">
-									<p class="text-xs font-medium text-slate-700 dark:text-slate-300">{clineLoginPrompt.message}</p>
-									<input type="text" bind:value={clineLoginPromptValue} class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
-								</div>
-								<div class="flex gap-2">
-									<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors" onclick={submitClineLoginPrompt}>
-										<Icon name="lucide:arrow-right" class="w-4 h-4" />
-										Submit
-									</button>
-									<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelClineAdd}>
+							{#if clineLoginUrl && (!clineLoginPrompt || clineLoginPrompt.kind === 'manual_code')}
+								<OAuthBrowserStep
+									url={clineLoginUrl}
+									fallback={clineLoginPrompt}
+									onSubmitFallback={(value) => submitClineLoginPrompt(value)}
+									onCancel={cancelClineAdd}
+								/>
+								{#each clineLoginMessages as msg}
+									<p class="text-xs text-slate-500 dark:text-slate-400">{msg}</p>
+								{/each}
+							{:else}
+								{#each clineLoginMessages as msg}
+									<p class="text-xs text-slate-500 dark:text-slate-400">{msg}</p>
+								{/each}
+								{#if clineLoginPrompt}
+									<div class="space-y-2">
+										<p class="text-xs font-medium text-slate-700 dark:text-slate-300">{clineLoginPrompt.message}</p>
+										<input type="text" bind:value={clineLoginPromptValue} class="w-full px-3 py-2 text-sm rounded-lg border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-violet-500/40" />
+									</div>
+									<div class="flex gap-2">
+										<button type="button" class="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium rounded-lg bg-violet-600 text-white hover:bg-violet-700 transition-colors" onclick={() => submitClineLoginPrompt()}>
+											<Icon name="lucide:arrow-right" class="w-4 h-4" />
+											Submit
+										</button>
+										<button type="button" class="px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelClineAdd}>
+											Cancel
+										</button>
+									</div>
+								{:else}
+									<div class="flex items-center gap-2 text-sm text-slate-500">
+										<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
+										<span>Waiting for authentication…</span>
+									</div>
+									<button type="button" class="w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelClineAdd}>
 										Cancel
 									</button>
-								</div>
-							{:else}
-								<div class="flex items-center gap-2 text-sm text-slate-500">
-									<Icon name="lucide:loader" class="w-4 h-4 animate-spin" />
-									<span>Waiting for authentication…</span>
-								</div>
-								<button type="button" class="w-full px-4 py-2 text-sm font-medium rounded-lg border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors" onclick={cancelClineAdd}>
-									Cancel
-								</button>
+								{/if}
 							{/if}
 						</div>
 					{:else if clineAddStep === 'success'}

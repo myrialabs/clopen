@@ -638,7 +638,7 @@ const mcpConfig = getOpenCodeMcpConfig();
 
 ##### Who is calling: the bridge URL carries the caller
 
-The in-process engines (Claude, Pi, Cline) wrap every tool handler in the
+The in-process engines (Claude, Cline) wrap every tool handler in the
 stream's `McpExecutionContext`, so a handler that asks "which project is this?"
 always gets the right answer. An HTTP request carries no such context, and the
 fallback — the most recently *started* stream anywhere in the app — is the
@@ -651,7 +651,7 @@ lifetime allows, and `handleMcpRequest` binds that for the MCP session:
 
 | Engine        | Query string                            | Why not more |
 | ------------- | --------------------------------------- | ------------ |
-| Copilot, Cursor, Qwen | `engine`, `project`, `session`  | — built per stream |
+| Copilot, Cursor, Pi, Qwen | `engine`, `project`, `session` | — built per stream |
 | Codex         | `engine`, `project`                     | one client per project, shared by its chat sessions |
 | Open Code     | `engine`                                | one pooled server per Profile, shared across projects |
 

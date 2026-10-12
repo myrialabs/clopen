@@ -149,6 +149,14 @@ export function getCursorMcpConfig(profileFilter?: Set<string>, context?: McpExe
 	};
 }
 
+/** Pi MCP config: internal `clopen-mcp` remote bridge + external servers. */
+export function getPiMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
+	return {
+		...internal.getPiMcpConfig(profileFilter, context),
+		...external.getPiExternalMcpConfig(profileFilter, context?.projectId)
+	};
+}
+
 /** Qwen Code MCP config. */
 export function getQwenMcpConfig(profileFilter?: Set<string>, context?: McpExecutionContext) {
 	return {
