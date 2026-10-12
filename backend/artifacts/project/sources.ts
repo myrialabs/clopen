@@ -15,7 +15,7 @@
  * project artifact reaches it through Clopen. Cline is in the same position
  * because Clopen drives its stateless `Agent`, not the rule-loading core.
  *
- * Verified against the installed engines (2026-10): Claude Code 0.3.284 reads
+ * Verified against the installed engines (2026-10): Claude Code 0.3.296 reads
  * `.claude/*`, `CLAUDE.md` and `.mcp.json` but NOT `.agents/skills` (the string
  * only appears in its config importer); Codex 0.159, OpenCode 1.18, Copilot and
  * Pi read `.agents/skills`; Copilot also reads `.github/skills`/`.claude/skills`.

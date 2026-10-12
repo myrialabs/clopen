@@ -7,7 +7,7 @@
  * query() is the only session entry point. The alternative this comment used to
  * weigh — the @alpha v2 API (unstable_v2_createSession / unstable_v2_prompt) —
  * was removed upstream in 0.3.142, before the version Clopen pins, so there is
- * no migration pending. prewarm() (0.3.284, @alpha) parks a spare process to
+ * no migration pending. prewarm() (@alpha since 0.3.284) parks a spare process to
  * take start-up cost off the first message, but everything Clopen varies per
  * stream is frozen at prewarm time — mcpServers (whose tool handlers are bound
  * to the project), hooks, canUseTool, env (git identity) — so a spare is only
@@ -42,7 +42,7 @@ import { resolvePermissionsFromDb, isToolAllowed, hasAnyRestriction, syncPermiss
 import type { AIEngine, EngineQueryOptions } from '../../types';
 import { EngineRuns } from '../run-registry';
 import type { EngineModel } from '$shared/types/unified';
-import { CLAUDE_CODE_MODELS } from './models';
+import { CLAUDE_CODE_MODELS, resolveClaudeReasoning } from './models';
 
 import { debug } from '$shared/utils/logger';
 
@@ -139,7 +139,6 @@ export class ClaudeCodeEngine implements AIEngine {
       resume,
       maxTurns = undefined,
       modelId,
-      reasoningEffort,
       includePartialMessages = false,
       abortController,
       accountId
@@ -147,7 +146,9 @@ export class ClaudeCodeEngine implements AIEngine {
 
     // Map the chosen reasoning level to Claude's knobs: `off` disables thinking
     // entirely, `auto`/unset keeps adaptive thinking (Claude decides how much),
-    // and an explicit effort level pairs adaptive thinking with `effort`.
+    // and an explicit effort level pairs adaptive thinking with `effort`. The
+    // level is first held to what this model offers (see models.ts).
+    const reasoningEffort = resolveClaudeReasoning(modelId, options.reasoningEffort);
     const claudeEffort = new Set<string>(['low', 'medium', 'high', 'xhigh', 'max']);
     const thinkingConfig: Options['thinking'] = reasoningEffort === 'off'
       ? { type: 'disabled' }

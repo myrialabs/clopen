@@ -64,8 +64,18 @@
 	];
 
 	function toggleCustomModel() {
+		// No custom model picked yet: start from the assistant model, as Artifacts does,
+		// rather than an engine with no model selected.
+		const seed = !useCustomModel && !commitGen.modelId
+			? {
+				engine: settings.selectedEngine,
+				provider: settings.selectedProvider,
+				modelId: settings.selectedModelId,
+				modelName: settings.selectedModelName
+			}
+			: {};
 		updateSettings({
-			commitGenerator: { ...commitGen, useCustomModel: !useCustomModel }
+			commitGenerator: { ...commitGen, ...seed, useCustomModel: !useCustomModel }
 		});
 	}
 

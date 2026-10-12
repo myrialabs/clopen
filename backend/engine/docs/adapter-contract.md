@@ -239,7 +239,7 @@ Where each engine's knob lives:
 
 | Engine        | SDK knob                                | Levels                                     |
 |---------------|-----------------------------------------|--------------------------------------------|
-| `claude-code` | `thinking` + `effort` on `query()`      | `off, auto, low, medium, high, xhigh, max` (static; `off` → `thinking: { type: 'disabled' }`, `auto` → adaptive with no `effort`) |
+| `claude-code` | `thinking` + `effort` on `query()`      | per model from the static catalog, out of `off, auto, low, medium, high, xhigh, max` — no `off` where the model rejects disabled thinking, no `xhigh` before Opus 4.7, no effort tiers on Opus 4.5 (`resolveClaudeReasoning` gates the value; `off` → `thinking: { type: 'disabled' }`, `auto` → adaptive with no `effort`) |
 | `codex`       | `modelReasoningEffort` (thread option)  | per model from the static catalog: `low…xhigh`, `low…max` or `low…ultra` (`resolveCodexEffort` gates the value) |
 | `copilot`     | `SessionConfig.reasoningEffort`         | from `ModelInfo.supportedReasoningEfforts` (dynamic) |
 | `pi`          | agent `thinkingLevel`                   | from `getSupportedThinkingLevels(model)` (dynamic; `clampThinkingLevel` on apply) |
