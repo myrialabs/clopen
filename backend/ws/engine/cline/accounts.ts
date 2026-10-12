@@ -28,10 +28,12 @@ import {
 	getClineProvider,
 	parseClineCredential,
 	serializeClineCredential,
+	writeClineAccountCredential,
 	type ClineCredential,
 } from '../../../engine/adapters/cline/credential';
 import { requireSetupSessionAccess } from '../access';
 import { debug } from '$shared/utils/logger';
+import { hasLoopbackCallbackListener } from '$backend/utils/port-utils';
 
 async function disposeClineEngines(): Promise<void> {
 	try {
@@ -51,6 +53,8 @@ interface ClineLoginSession {
 	/** When set, re-authenticate this existing account in place instead of creating one. */
 	reauthAccountId: number | null;
 	pendingPrompt: { resolve: (value: string) => void; reject: (error: Error) => void } | null;
+	/** The flow's latest authorization URL, to tell an optional redirect paste from a required one. */
+	authUrl: string | null;
 	timer: ReturnType<typeof setTimeout>;
 }
 
@@ -157,7 +161,7 @@ export const clineAccountsHandler = createRouter()
 
 		let accountId: number;
 		if (data.accountId != null && engineQueries.getAccount(data.accountId)) {
-			engineQueries.updateAccountCredential(data.accountId, serialized);
+			await writeClineAccountCredential(data.accountId, serialized);
 			engineQueries.renameAccount(data.accountId, data.name.trim());
 			accountId = data.accountId;
 		} else {
@@ -218,6 +222,7 @@ export const clineAccountsHandler = createRouter()
 			name: data.name.trim(), provider: data.provider,
 			reauthAccountId: data.reauthAccountId ?? null,
 			pendingPrompt: null,
+			authUrl: null,
 			timer: setTimeout(() => {
 				ws.emit.user(userId, 'engine:cline-account-login-error', { loginId, message: 'Login timed out after 15 minutes' });
 				cleanupLogin(loginId);
@@ -226,23 +231,35 @@ export const clineAccountsHandler = createRouter()
 		loginSessions.set(loginId, entry);
 		ws.emit.user(userId, 'engine:cline-account-login-started', { loginId });
 
-		const awaitPrompt = (message: string): Promise<string> =>
+		// `onManualCodeInput` is raced against the loopback callback, so it is
+		// optional while that callback is listening; `onPrompt` only follows a
+		// callback that came back empty, so it is always required.
+		const awaitPrompt = (message: string, kind: 'text' | 'manual_code'): Promise<string> =>
 			new Promise<string>((resolve, reject) => {
 				entry.pendingPrompt = { resolve, reject };
-				ws.emit.user(userId, 'engine:cline-account-login-prompt', { loginId, message });
+				const emitPrompt = (optional: boolean) =>
+					ws.emit.user(userId, 'engine:cline-account-login-prompt', { loginId, message, kind, optional });
+				if (kind === 'manual_code' && entry.authUrl) {
+					void hasLoopbackCallbackListener(entry.authUrl).then((listening) => {
+						if (entry.pendingPrompt?.resolve === resolve) emitPrompt(listening);
+					});
+				} else {
+					emitPrompt(false);
+				}
 			});
 
 		const callbacks: OAuthLoginCallbacks = {
 			onAuth: (info: { url: string; instructions?: string }) => {
+				entry.authUrl = info.url;
 				ws.emit.user(userId, 'engine:cline-account-login-event', {
 					loginId, kind: 'auth_url', message: info.instructions, url: info.url,
 				});
 			},
-			onPrompt: (prompt: OAuthPrompt) => awaitPrompt(prompt.message),
+			onPrompt: (prompt: OAuthPrompt) => awaitPrompt(prompt.message, 'text'),
 			onProgress: (message: string) => {
 				ws.emit.user(userId, 'engine:cline-account-login-event', { loginId, kind: 'progress', message });
 			},
-			onManualCodeInput: () => awaitPrompt('Paste the authorization code from your browser:'),
+			onManualCodeInput: () => awaitPrompt('Paste the authorization code from your browser:', 'manual_code'),
 		};
 
 		try {
@@ -252,7 +269,7 @@ export const clineAccountsHandler = createRouter()
 			const serialized = serializeClineCredential({ provider: data.provider, authMethod: 'oauth', oauth: credential });
 			let accountId: number;
 			if (entry.reauthAccountId != null && engineQueries.getAccount(entry.reauthAccountId)) {
-				engineQueries.updateAccountCredential(entry.reauthAccountId, serialized);
+				await writeClineAccountCredential(entry.reauthAccountId, serialized);
 				engineQueries.renameAccount(entry.reauthAccountId, entry.name);
 				accountId = entry.reauthAccountId;
 			} else {
@@ -313,6 +330,9 @@ export const clineAccountsHandler = createRouter()
 	.emit('engine:cline-account-login-prompt', t.Object({
 		loginId: t.String(),
 		message: t.String(),
+		kind: t.Union([t.Literal('text'), t.Literal('manual_code')]),
+		/** A manual fallback the flow can complete without (its loopback callback is listening). */
+		optional: t.Boolean(),
 	}))
 	.emit('engine:cline-account-login-complete', t.Object({ loginId: t.String(), accountId: t.Number() }))
 	.emit('engine:cline-account-login-error', t.Object({ loginId: t.String(), message: t.String() }));

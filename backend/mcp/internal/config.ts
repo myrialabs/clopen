@@ -10,6 +10,7 @@ import type { McpRemoteConfig } from '@opencode-ai/sdk';
 import type { MCPHTTPServerConfig } from '@github/copilot-sdk';
 import type { CLIMcpServerConfig as QwenMcpServerConfig } from '@qwen-code/sdk';
 import type { McpServerConfig as CursorMcpServerConfig } from '@cursor/sdk';
+import type { McpServerConfig as PiMcpServerConfig } from '@earendil-works/pi-coding-agent';
 import type { ServerConfig, ParsedMcpToolName, ServerName } from './types';
 import type { McpExecutionContext } from '../../engine/types';
 import type { EngineType } from '$shared/types/unified';
@@ -442,7 +443,7 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
 /**
  * Loopback URL of the internal `clopen-mcp` bridge, addressed to the caller.
  *
- * The in-process engines (Claude, Pi, Cline) bind `McpExecutionContext` around
+ * The in-process engines (Claude, Cline) bind `McpExecutionContext` around
  * every tool handler, so a tool call always knows which project asked. The
  * engines that reach the bridge over HTTP had no such thing: the request
  * carries no identity, so the handler fell back to "the most recently started
@@ -453,8 +454,8 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
  * The query string closes that. Each config says as much as its own lifetime
  * allows, and the bridge binds whatever it is told:
  *
- * - `project` + `session` — the caller named outright. Copilot, Cursor and Qwen
- *   build their config per stream, so both are true for the whole MCP session.
+ * - `project` + `session` — the caller named outright. Copilot, Cursor, Pi and
+ *   Qwen build their config per stream, so both are true for the whole MCP session.
  * - `project` alone — Codex, whose client (and therefore this URL) is built
  *   once per project and reused by every chat session in it.
  * - `engine` alone — Open Code, whose URL is baked into a server the pool shares
@@ -659,6 +660,44 @@ export function getCursorMcpConfig(
 		'clopen-mcp': {
 			type: 'http',
 			url,
+			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
+		},
+	};
+}
+
+// ============================================================================
+// Pi MCP Configuration
+// ============================================================================
+
+/**
+ * Get MCP configuration for the Pi engine.
+ *
+ * Pi runs in-process but connects MCP servers with its own client (the SDK's
+ * `createMcpExtension`), so it reaches the SAME `/mcp` bridge as the other
+ * engines instead of calling handlers directly. `exposure: 'direct'` declares
+ * the tools to the model like any other tool — Pi's default (`codemode`) would
+ * hide them behind a scripting tool. The bearer header also keeps Pi's own
+ * OAuth flow (and its `mcp-auth.json`) out of the loop; `timeout` is seconds.
+ */
+export function getPiMcpConfig(
+	profileFilter?: Set<string>,
+	context?: McpExecutionContext
+): Record<string, PiMcpServerConfig> {
+	const enabledServers = activeInternalServerNames(profileFilter);
+	if (enabledServers.length === 0) {
+		return {};
+	}
+
+	const url = internalBridgeUrl('pi', context);
+
+	debug.log('mcp', `📦 Pi MCP: remote server at ${url}`);
+
+	return {
+		'clopen-mcp': {
+			type: 'http',
+			url,
+			exposure: 'direct',
+			timeout: MCP_TOOL_CALL_TIMEOUT_MS / 1000,
 			headers: { Authorization: `Bearer ${getMcpServiceToken()}` },
 		},
 	};

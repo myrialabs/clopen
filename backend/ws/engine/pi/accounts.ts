@@ -20,8 +20,9 @@ import type { AuthEvent, AuthInteraction, AuthPrompt, AuthType, Credential } fro
 import { engineQueries } from '../../../database/queries';
 import { disposeAllProjectEnginesByType } from '../../../engine';
 import { createPiRuntime, getPiProviderFields } from '../../../engine/adapters/pi/presets';
-import { DbCredentialStore, serializePiCredential, parsePiCredential, getPiProvider } from '../../../engine/adapters/pi/credential';
+import { DbCredentialStore, serializePiCredential, parsePiCredential, getPiProvider, getPiDeviceId, writePiAccountCredential } from '../../../engine/adapters/pi/credential';
 import { requireSetupSessionAccess } from '../access';
+import { hasLoopbackCallbackListener } from '$backend/utils/port-utils';
 import { debug } from '$shared/utils/logger';
 
 async function disposePiEngines(): Promise<void> {
@@ -43,6 +44,8 @@ interface PiLoginSession {
 	/** When set, re-authenticate this existing account in place instead of creating one. */
 	reauthAccountId: number | null;
 	pendingPrompt: { resolve: (value: string) => void; reject: (error: Error) => void } | null;
+	/** The flow's latest authorization URL, to tell an optional redirect paste from a required one. */
+	authUrl: string | null;
 	timer: ReturnType<typeof setTimeout>;
 }
 
@@ -58,6 +61,32 @@ function cleanupLogin(loginId: string): void {
 	entry.pendingPrompt = null;
 	if (!entry.controller.signal.aborted) entry.controller.abort();
 	loginSessions.delete(loginId);
+}
+
+/**
+ * Turn a login failure into something the user can act on.
+ *
+ * - Sign in with ChatGPT holds 127.0.0.1:1455 for its callback and, since pi
+ *   1.0.1, fails outright when the port is taken instead of continuing into a
+ *   state mismatch. Codex's browser login listens there first and moves on when
+ *   it can't, so in Clopen the usual holder is a Codex or ChatGPT sign-in still
+ *   waiting in another panel — pi's own wording ("another pi session") doesn't
+ *   say that.
+ * - `invalid_grant` on the code exchange right after the browser reported
+ *   success was earendil-works/pi#10258 (closed upstream 2026-10-02); should it
+ *   recur, a fresh browser session is what cleared it.
+ */
+function explainLoginError(provider: string, type: string, error: unknown): string {
+	const message = error instanceof Error ? error.message : 'Login failed';
+	const port = message.match(/Port (\d+) is in use/)?.[1];
+	if (port) {
+		return `Another sign-in is still waiting on port ${port} — a Codex or ChatGPT login in Clopen, or the Codex CLI. Finish or cancel it, then try again.`;
+	}
+	if (provider === 'openai' && type === 'oauth' && message.includes('invalid_grant')) {
+		return 'OpenAI rejected the sign-in (invalid_grant). Sign out of chatgpt.com or use a private window, then try again. '
+			+ 'If it keeps failing, sign in through the "OpenAI Codex (legacy)" provider instead.';
+	}
+	return message;
 }
 
 export const piAccountsHandler = createRouter()
@@ -140,7 +169,7 @@ export const piAccountsHandler = createRouter()
 
 		let accountId: number;
 		if (data.accountId != null && engineQueries.getAccount(data.accountId)) {
-			engineQueries.updateAccountCredential(data.accountId, serialized);
+			await writePiAccountCredential(data.accountId, serialized);
 			engineQueries.renameAccount(data.accountId, data.name.trim());
 			accountId = data.accountId;
 		} else {
@@ -196,6 +225,7 @@ export const piAccountsHandler = createRouter()
 			name: data.name.trim(), provider: data.provider,
 			reauthAccountId: data.reauthAccountId ?? null,
 			pendingPrompt: null,
+			authUrl: null,
 			timer: setTimeout(() => {
 				ws.emit.user(userId, 'engine:pi-account-login-error', { loginId, message: 'Login timed out after 15 minutes' });
 				cleanupLogin(loginId);
@@ -207,6 +237,7 @@ export const piAccountsHandler = createRouter()
 		const interaction: AuthInteraction = {
 			signal: controller.signal,
 			notify: (event: AuthEvent) => {
+				if (event.type === 'auth_url') entry.authUrl = event.url;
 				ws.emit.user(userId, 'engine:pi-account-login-event', {
 					loginId,
 					kind: event.type,
@@ -215,12 +246,22 @@ export const piAccountsHandler = createRouter()
 					instructions: event.type === 'auth_url' ? event.instructions : undefined,
 					userCode: event.type === 'device_code' ? event.userCode : undefined,
 					verificationUri: event.type === 'device_code' ? event.verificationUri : undefined,
+					links: event.type === 'info' && event.links?.length ? [...event.links] : undefined,
 				});
 			},
 			prompt: (prompt: AuthPrompt) => {
 				return new Promise<string>((resolve, reject) => {
 					entry.pendingPrompt = { resolve, reject };
-					ws.emit.user(userId, 'engine:pi-account-login-prompt', {
+					// A manual fallback (paste the redirect URL) is raced against the
+					// browser callback; Pi aborts it once the callback wins, so take it
+					// off the screen instead of leaving a field nobody needs.
+					prompt.signal?.addEventListener('abort', () => {
+						if (entry.pendingPrompt?.resolve !== resolve) return;
+						entry.pendingPrompt = null;
+						reject(new Error('Prompt closed'));
+						ws.emit.user(userId, 'engine:pi-account-login-prompt-closed', { loginId });
+					}, { once: true });
+					const emitPrompt = (optional: boolean) => ws.emit.user(userId, 'engine:pi-account-login-prompt', {
 						loginId,
 						kind: prompt.type,
 						message: prompt.message,
@@ -228,14 +269,24 @@ export const piAccountsHandler = createRouter()
 						options: prompt.type === 'select'
 							? prompt.options.map(o => ({ id: o.id, label: o.label, description: o.description }))
 							: undefined,
+						optional,
 					});
+					// A pasted redirect is optional only while the flow's loopback
+					// callback can still complete the login by itself.
+					if (prompt.type === 'manual_code' && prompt.signal && entry.authUrl) {
+						void hasLoopbackCallbackListener(entry.authUrl).then((listening) => {
+							if (entry.pendingPrompt?.resolve === resolve) emitPrompt(listening);
+						});
+					} else {
+						emitPrompt(false);
+					}
 				});
 			},
 		};
 
 		try {
 			const runtime = await createPiRuntime(new DbCredentialStore([]));
-			const credential = await runtime.login(data.provider, data.type as AuthType, interaction);
+			const credential = await runtime.login(data.provider, data.type as AuthType, interaction, { getDeviceId: getPiDeviceId });
 			if (entry.disposed) return;
 
 			const serialized = serializePiCredential({ provider: data.provider, credential });
@@ -243,7 +294,7 @@ export const piAccountsHandler = createRouter()
 			if (entry.reauthAccountId != null && engineQueries.getAccount(entry.reauthAccountId)) {
 				// Re-authenticate in place — update the credential (and name) of the
 				// existing account rather than creating a duplicate.
-				engineQueries.updateAccountCredential(entry.reauthAccountId, serialized);
+				await writePiAccountCredential(entry.reauthAccountId, serialized);
 				engineQueries.renameAccount(entry.reauthAccountId, entry.name);
 				accountId = entry.reauthAccountId;
 			} else {
@@ -260,7 +311,7 @@ export const piAccountsHandler = createRouter()
 				debug.warn('engine', `Pi login failed: ${error instanceof Error ? error.message : String(error)}`);
 				ws.emit.user(userId, 'engine:pi-account-login-error', {
 					loginId,
-					message: error instanceof Error ? error.message : 'Login failed',
+					message: explainLoginError(data.provider, data.type, error),
 				});
 			}
 			cleanupLogin(loginId);
@@ -303,6 +354,7 @@ export const piAccountsHandler = createRouter()
 		instructions: t.Optional(t.String()),
 		userCode: t.Optional(t.String()),
 		verificationUri: t.Optional(t.String()),
+		links: t.Optional(t.Array(t.Object({ url: t.String(), label: t.Optional(t.String()) }))),
 	}))
 	.emit('engine:pi-account-login-prompt', t.Object({
 		loginId: t.String(),
@@ -314,6 +366,9 @@ export const piAccountsHandler = createRouter()
 			label: t.String(),
 			description: t.Optional(t.String()),
 		}))),
+		/** A manual fallback the flow can complete without (its loopback callback is listening). */
+		optional: t.Boolean(),
 	}))
+	.emit('engine:pi-account-login-prompt-closed', t.Object({ loginId: t.String() }))
 	.emit('engine:pi-account-login-complete', t.Object({ loginId: t.String(), accountId: t.Number() }))
 	.emit('engine:pi-account-login-error', t.Object({ loginId: t.String(), message: t.String() }));

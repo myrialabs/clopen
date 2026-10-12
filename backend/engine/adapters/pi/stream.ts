@@ -13,8 +13,9 @@
  *      `ModelRuntime` whose `CredentialStore` is served from `engine_accounts`
  *      (see ./credential.ts). OAuth refresh persists straight back to the DB — no
  *      dotfile swap, no `process.env` mutation.
- *   3. **No native MCP.** Clopen's MCP tools are bridged in-process as Pi custom
- *      tools (./mcp-tools.ts). AskUserQuestion is a custom blocking tool
+ *   3. **Pi's own MCP client, Clopen's servers.** Pi's MCP extension connects to
+ *      the same `/mcp` bridges the other engines use, fed a Clopen-built config
+ *      (./mcp.ts). AskUserQuestion is a custom blocking tool
  *      (./ask-question-tool.ts) since Pi's native `ask_question` has no headless
  *      answer path.
  */
@@ -43,12 +44,13 @@ import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
-import { DbCredentialStore, getPiAccountForProvider, parsePiCredential } from './credential';
+import { DbCredentialStore, canonicalPiProviderId, getPiAccountForProvider, parsePiCredential } from './credential';
 import { createPiRuntime } from './presets';
 import { getPiAgentDir } from './environment';
 import { fetchPiModels } from './models';
 import { resolvePiSessionManager } from './session-fork';
-import { buildPiMcpTools } from './mcp-tools';
+import { getPiMcpConfig } from '../../../mcp';
+import { createPiMcpExtension, resolvePiToolName } from './mcp';
 import { createAskUserQuestionTool, formatAnswers, type PendingAsk } from './ask-question-tool';
 import { createAgentDispatchTool, type SubagentInfo } from './agent-tool';
 import { createPiMessageConverter } from './message-converter';
@@ -149,7 +151,7 @@ export class PiEngine implements AIEngine {
 		if (!account) {
 			throw new Error(`Pi has no account for provider "${providerSlug}". Add one in Settings → Engines → Pi.`);
 		}
-		const provider = parsePiCredential(account.credential)?.provider ?? providerSlug;
+		const provider = parsePiCredential(account.credential)?.provider ?? canonicalPiProviderId(providerSlug);
 		const runtime = await createPiRuntime(new DbCredentialStore([account]));
 		const model = runtime.getModel(provider, modelId);
 		if (!model) {
@@ -177,11 +179,13 @@ export class PiEngine implements AIEngine {
 
 		// ── Permissions (enforced at the `tool_call` extension hook) ──
 		const permissions = resolvePermissionsFromDb('pi', options.mcpContext?.projectId, profileId);
+		// MCP rules name tools canonically; Pi's own MCP names are sanitized.
 		const permissionBlocker = (pi: ExtensionAPI) => {
 			pi.on('tool_call', async (event: { toolName: string }) => {
-				if (!isToolAllowed(permissions, event.toolName)) {
-					debug.log('permissions', `⛔ Pi blocked tool "${event.toolName}" (Clopen permission policy)`);
-					return { block: true, reason: `Blocked by Clopen permission policy: ${event.toolName}` };
+				const toolName = resolvePiToolName(run.session, event.toolName);
+				if (!isToolAllowed(permissions, toolName)) {
+					debug.log('permissions', `⛔ Pi blocked tool "${toolName}" (Clopen permission policy)`);
+					return { block: true, reason: `Blocked by Clopen permission policy: ${toolName}` };
 				}
 				return undefined;
 			});
@@ -191,15 +195,19 @@ export class PiEngine implements AIEngine {
 		// (built before the queue exists) can push sub-activity messages into it.
 		const queueHolder: { queue: EventQueue<EngineOutput> | null } = { queue: null };
 
-		// ── Tools: builtins (permission-filtered) + AskUserQuestion + MCP bridge + subagents ──
+		// ── Tools: builtins (permission-filtered) + AskUserQuestion + subagents; MCP via Pi's extension ──
+		// The builtins go in as the `defaultTools` setting, not a `tools` allowlist:
+		// an allowlist also filters every tool registered later, which would drop
+		// the MCP tools Pi registers once its servers connect.
 		const allowedBuiltins = PI_BUILTIN_TOOLS.filter((name) => isToolAllowed(permissions, name));
+		const deniedBuiltins = PI_BUILTIN_TOOLS.filter((name) => !allowedBuiltins.includes(name));
 		const askTool = createAskUserQuestionTool({
 			register: (id, entry) => this.pendingAsks.set(id, { ...entry, owner: run }),
 			unregister: (id) => this.pendingAsks.delete(id),
 		});
-		const mcpTools = await buildPiMcpTools(options.mcpContext, mcpProfileFilter);
-		const customTools: ToolDefinition[] = [askTool, ...mcpTools];
-		const toolAllowlist = [...allowedBuiltins, 'AskUserQuestion', ...mcpTools.map((t) => t.name)];
+		const customTools: ToolDefinition[] = [askTool];
+		const mcpServers = getPiMcpConfig(mcpProfileFilter, options.mcpContext);
+		const mcpExtension = await createPiMcpExtension(mcpServers);
 
 		// Subagent dispatch — Pi has no native Agent tool, so materialising the
 		// "Available Subagents" preamble isn't enough; expose a tool that actually
@@ -281,7 +289,6 @@ export class PiEngine implements AIEngine {
 				},
 			});
 			customTools.push(agentTool);
-			toolAllowlist.push('Agent');
 		}
 
 		// ── Resource loader (discovers synced skills/prompts/AGENTS.md) ──
@@ -293,7 +300,7 @@ export class PiEngine implements AIEngine {
 		const resourceLoader = new DefaultResourceLoader({
 			cwd: resolvedProjectPath,
 			agentDir,
-			extensionFactories: [permissionBlocker],
+			extensionFactories: [permissionBlocker, mcpExtension],
 			...(projectBridge.skills.length > 0 && { additionalSkillPaths: projectBridge.skills.map((s) => s.skillMd) }),
 			...(projectInstructions && { appendSystemPrompt: [projectInstructions] }),
 			skillsOverride: (base) => ({
@@ -314,13 +321,15 @@ export class PiEngine implements AIEngine {
 				? clampThinkingLevel(model, reasoningEffort as ModelThinkingLevel)
 				: (model.reasoning ? 'medium' : 'off'),
 			resourceLoader,
-			tools: toolAllowlist,
 			customTools,
-			excludeTools: ['ask_question'],
+			excludeTools: ['ask_question', ...deniedBuiltins],
 			sessionManager,
-			settingsManager: SettingsManager.inMemory({ retry: PI_RETRY }),
+			settingsManager: SettingsManager.inMemory({ retry: PI_RETRY, defaultTools: allowedBuiltins }),
 		});
 		run.session = session;
+		// Fires `session_start`, which connects the MCP servers; the first prompt
+		// waits (bounded) for their tools to be declared.
+		await session.bindExtensions({});
 
 		const engineMeta: MessageEngine = {
 			type: 'pi',
@@ -328,7 +337,11 @@ export class PiEngine implements AIEngine {
 			model: { id: modelId, name: model.name || modelId },
 			account: { id: account.id, name: account.name },
 		};
-		const converter = createPiMessageConverter({ engine: engineMeta, sessionId: session.sessionId });
+		const converter = createPiMessageConverter({
+			engine: engineMeta,
+			sessionId: session.sessionId,
+			resolveToolName: (name) => resolvePiToolName(session, name),
+		});
 		const queue = new EventQueue<EngineOutput>();
 		queueHolder.queue = queue;
 		const unsubscribe = session.subscribe((event) => {
@@ -351,34 +364,21 @@ export class PiEngine implements AIEngine {
 			.filter((b): b is Extract<typeof b, { type: 'image' }> => b.type === 'image')
 			.map((b) => ({ type: 'image', data: b.data, mimeType: b.mediaType }));
 
-		// system_init first — model + enabled tools (Pi bridges MCP as custom tools).
+		// system_init first — model + tools active so far (MCP tools join as their servers connect).
 		yield {
 			type: 'system_init',
 			sessionId: session.sessionId,
 			model: modelId,
 			engine: 'pi',
-			tools: toolAllowlist,
+			tools: session.getActiveToolNames().map((name) => resolvePiToolName(session, name)),
 			mcpServers: [],
 		};
 
 		// Close the queue when prompt() settles even if no `agent_end` ever fires
-		// (e.g. a slash command Pi rejects at preflight, or an empty expansion) —
-		// otherwise the drain loop would block forever and the stream would hang.
-		const promptOptions = {
-			...(images.length ? { images } : {}),
-			preflightResult: (success: boolean) => {
-				if (!success) {
-					queue.push({
-						type: 'notification',
-						sessionId: session.sessionId,
-						level: 'warning',
-						title: 'Prompt not accepted',
-						message: 'Pi did not accept this input (unknown command or empty prompt).',
-					});
-				}
-			},
-		};
-		const promptPromise = session.prompt(promptText, promptOptions)
+		// (e.g. an input an extension handled, or an empty expansion) — otherwise
+		// the drain loop would block forever and the stream would hang. A prompt
+		// Pi rejects throws, which reaches the caller through `queue.fail`.
+		const promptPromise = session.prompt(promptText, images.length ? { images } : undefined)
 			.then(() => queue.close())
 			.catch((error) => queue.fail(error));
 
@@ -390,6 +390,10 @@ export class PiEngine implements AIEngine {
 		} finally {
 			controller.signal.removeEventListener('abort', onAbort);
 			unsubscribe();
+			// `dispose()` alone never emits `session_shutdown`, which is what closes
+			// the MCP connections — without it every turn leaks one per server.
+			await session.extensionRunner.emit({ type: 'session_shutdown', reason: 'quit' })
+				.catch((error) => debug.warn('engine', 'Pi session shutdown hook failed:', error));
 			try { session.dispose(); } catch { /* already disposed */ }
 			// Retire THIS run only — another chat session of the same project may
 			// still be streaming on this instance.
@@ -467,7 +471,7 @@ export class PiEngine implements AIEngine {
 		const account = getPiAccountForProvider(providerSlug)
 			?? (accountId != null ? engineQueries.getAccount(accountId) : null);
 		if (!account) throw new Error(`Pi has no account for provider "${providerSlug}".`);
-		const provider = parsePiCredential(account.credential)?.provider ?? providerSlug;
+		const provider = parsePiCredential(account.credential)?.provider ?? canonicalPiProviderId(providerSlug);
 		const runtime = await createPiRuntime(new DbCredentialStore([account]));
 		const model = runtime.getModel(provider, modelId);
 		if (!model) throw new Error(`Pi could not resolve model "${modelId}" for provider "${provider}".`);
