@@ -1302,8 +1302,9 @@ over hardcoding; only static catalogs (Claude, Codex) spell it out.
 persisted on a session whose model has since changed, or restored from a
 `reasoningDefaults` entry written by an older catalog. Every adapter
 validates against its own set and falls back to the engine default
-instead of forwarding garbage to the SDK (`clampThinkingLevel` for Pi, a
-literal `Set` for Claude/Codex/Copilot, a `::`-shape check for Cursor).
+instead of forwarding garbage to the SDK (`clampThinkingLevel` for Pi,
+`resolveClaudeReasoning` / `resolveCodexEffort` against the model's own
+levels, a literal `Set` for Copilot, a `::`-shape check for Cursor).
 
 **Encode structure in the value, not in new fields.** Cursor needs a
 parameter *id* alongside the level, so its tokens are
@@ -1586,6 +1587,33 @@ If it is revisited: it needs a spare registry keyed on that tuple, a
 default-off setting, and a fallback that special-cases `option_not_applied` —
 that rejection means the session is **already running**, so the naive
 "fall back to `query()`" double-sends the prompt.
+
+**The October 2026 Claude pass (0.3.284 → 0.3.296) found the CLI rewriting
+reasoning levels behind the picker's back.** The upgrade itself was quiet —
+`SDKMessage` unchanged, every type change additive, and the one behaviour
+change (an omitted `permissionMode` now follows the CLI's default) does not
+reach Clopen, which always passes `bypassPermissions`. CLI 2.1.296 adds
+`claude-haiku-5-5`, and the `haiku` alias now resolves to it. The finding was in
+how the CLI builds the request from `thinking` and `effort`, read straight out of
+the binary because no doc describes it:
+
+- `thinking: { type: 'disabled' }` is sent only when the model's table entry
+  lacks `rejects_disabled_thinking`. Otherwise the field is omitted and the
+  model thinks adaptively. The API returns 400 for `disabled` on Opus 5.5,
+  Fable 5/5.1 and Sonnet 5.5, so the CLI is protecting the request — but
+  Clopen's picker kept offering "Off" on all of them, and it did nothing.
+- `effort` is deleted on a model without the `effort` capability (Opus 4.5),
+  and `xhigh` exists only from Opus 4.7 on.
+- `adaptive` on a model without `adaptive_thinking` becomes a `budget_tokens`
+  request.
+
+None of these errors, which is the trap: the catalog's single level list for
+every model compiled, ran, and showed options that changed nothing. The levels
+are per model now, read from the same table that decides which slugs work
+(`strings -a <cli> | grep -oE '\{id:"claude-[a-z0-9-]+",family.{0,1500}'`, then
+the `capabilities:[…]` array), and `resolveClaudeReasoning` holds a stored
+preference to them — the Codex shape. When the next CLI changes a model's
+capabilities, that table is what to diff, alongside the slug list.
 
 **The October 2026 Codex pass (0.147 → 0.159.3) hit both catalog traps and
 one quiet regression.** The SDK's `.d.ts` barely moved (`configOverrides`,

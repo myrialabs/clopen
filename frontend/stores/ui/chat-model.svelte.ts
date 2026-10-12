@@ -34,10 +34,10 @@ interface ChatModelState {
 // Initialized from Settings on each new session via initChatModel().
 export const chatModelState = $state<ChatModelState>({
 	engine: DEFAULT_ENGINE,
-	provider: 'anthropic',
+	provider: '',
 	modelId: DEFAULT_MODEL_ID,
 	modelName: DEFAULT_MODEL_NAME,
-	engineModelMemory: { 'claude-code': { provider: 'anthropic', id: DEFAULT_MODEL_ID, name: DEFAULT_MODEL_NAME } },
+	engineModelMemory: {},
 	accountId: null,
 	accountName: null,
 	profileId: null,
