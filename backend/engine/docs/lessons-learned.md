@@ -1291,11 +1291,12 @@ Three consequences worth internalizing:
 **The model advertises, the UI obeys.** `EngineModel.capabilities.
 reasoningControl` (`{ levels, default }`) is the entire contract. The
 picker renders a pill when it's present and nothing when it's absent —
-which is how OpenCode and Cline (and Qwen on endpoints that publish no
-capabilities) stay knob-less without a single engine name appearing in the
+which is how OpenCode (and Qwen on endpoints that publish no
+capabilities) stays knob-less without a single engine name appearing in the
 frontend. Prefer deriving the level list from the SDK's own payload
 (Copilot's `supportedReasoningEfforts`, Pi's `getSupportedThinkingLevels`,
-Cursor's `ModelParameterDefinition`, Qwen's `/models` `supported_parameters`)
+Cursor's `ModelParameterDefinition`, Qwen's `/models` `supported_parameters`,
+Cline's catalog `reasoningOptions`)
 over hardcoding; only static catalogs (Claude, Codex) spell it out.
 
 **Clamp on the way in.** The token reaching `streamQuery` may be stale —
@@ -1826,6 +1827,39 @@ breaking changes (`TranscriptContext`, canonical `SessionManager` context,
   codemode only when activated, and `pi-telemetry` is type contracts. `chord`
   pulls an `esbuild` whose postinstall Bun blocks, but no file in
   `pi-coding-agent/dist` imports `chord` at all.
+
+**The October 2026 Cline pass (0.0.74 → 0.0.92) compiled clean on the first
+try** — every change to the public types is additive, and the five `@cline/*`
+packages still release in lockstep with exact pins on each other, so only
+`@cline/sdk` and `@cline/agents` need bumping. What the compile hid:
+
+- **The catalog is no longer chat-only.** `ModelInfo` grew `operation`
+  (`language`, `transcription`, `image-generation`, …) and `modalities`;
+  `vercel-ai-gateway` alone lists 46 transcription / image / video models, and
+  ElevenLabs is a provider with nothing but speech-to-text. The SDK filters its
+  own pickers with `supportsChatModalities`, which `@cline/sdk` does not
+  re-export, so `isClineChatModel` (`cline/models.ts`) mirrors it and gates both
+  the model list and the provider presets.
+- **Reasoning became catalog data.** Each model carries `reasoningOptions`
+  (`toggle`, `effort` with its own tier list, `budget_tokens`), and the `Agent`
+  snaps `reasoningEffort` to the nearest advertised tier itself. Cline's
+  selector is now built from that: `off` only where there is a toggle or a
+  `none` effort, `auto` sends nothing, `on` for toggle-only models, and
+  budget-only models (Claude Sonnet/Haiku 4.5) get no selector — there is no
+  level to map a budget to.
+- **The finish-reason union grew `content-filter` and `unknown`.** A filtered
+  turn with no output now fails the run with an actionable SDK message; one cut
+  short mid-answer finishes normally, so the converter adds a notification.
+  `unknown` is never treated as a completed turn by the SDK.
+- **New message parts can't render yet.** `media` (generated images) and
+  provider-executed `tool-call`s (`execution: 'provider'`, from `modelTools`)
+  have no unified block. Media becomes a text trace; provider tool calls are
+  skipped, since no local result ever arrives to close them. Clopen passes no
+  `modelTools`, so the latter only matters if that changes.
+- **Retries moved into the SDK.** The run loop now retries transient provider
+  errors (429, 5xx, network) with backoff when the failed attempt emitted
+  nothing, and compacts + retries a turn truncated at the output limit. The
+  adapter's error mapping only sees what survives those retries.
 
 ---
 

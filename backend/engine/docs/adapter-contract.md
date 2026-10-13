@@ -245,7 +245,8 @@ Where each engine's knob lives:
 | `pi`          | agent `thinkingLevel`                   | from `getSupportedThinkingLevels(model)` (dynamic; `clampThinkingLevel` on apply) |
 | `cursor`      | `ModelSelection.params[]`               | from the model's reasoning-ish `ModelParameterDefinition` (dynamic) |
 | `qwen`        | `effort` on `query()`                   | `low…xhigh` only when the `/models` entry lists `reasoning_effort` in `supported_parameters` (OpenRouter); hidden on DashScope/Fireworks |
-| `opencode`, `cline` | — (none exposed)                  | no `reasoningControl` → selector hidden    |
+| `cline`       | `thinking` + `reasoningEffort` on `Agent` | per model from the catalog's `reasoningOptions` (dynamic): `off` (toggle or `none` effort), `auto`, the advertised `minimal…max` tiers, `on` for toggle-only; budget-only models get none (`resolveClineReasoning` gates the value) |
+| `opencode`    | — (none exposed)                        | no `reasoningControl` → selector hidden    |
 
 Cursor is the one engine whose token is **not** a bare level: it encodes the
 model-parameter id as `"<paramId>::<value>"` so `stream.ts` can rebuild a
