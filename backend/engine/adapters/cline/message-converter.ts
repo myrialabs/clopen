@@ -158,6 +158,9 @@ function mapFinishReason(raw: AgentModelFinishReason | null | undefined): StopRe
 		case 'max-tokens': return 'max_tokens';
 		case 'aborted': return 'interrupted';
 		case 'error': return 'end_turn';
+		case 'content-filter': return 'end_turn';
+		// The SDK never treats `unknown` as a completed turn (it may be cut off).
+		case 'unknown': return null;
 		default: return null;
 	}
 }
@@ -234,7 +237,18 @@ export function createClineMessageConverter(options: ClineConverterOptions): Cli
 				if (part.text) reasoning += (reasoning ? '\n' : '') + part.text;
 			} else if (part.type === 'text') {
 				if (part.text.trim()) blocks.push({ type: 'text', text: part.text });
+			} else if (part.type === 'media') {
+				// Model-generated media (image-output models). The unified assistant
+				// blocks carry no media type, so keep a visible trace instead of
+				// dropping it silently.
+				const { media } = part;
+				const label = `${media.modality} (${media.mediaType})`;
+				blocks.push({ type: 'text', text: media.source.type === 'url' ? `[Generated ${label}](${media.source.url})` : `[Generated ${label} not shown]` });
 			} else if (part.type === 'tool-call') {
+				// Provider-executed tools (web search, image generation) run inside the
+				// model request and never get a local tool result, so a tool_use block
+				// would sit pending forever. Clopen passes no `modelTools`; skip them.
+				if (part.execution === 'provider') continue;
 				const call = part as AgentToolCallPart;
 				const canonical = canonicaliseToolName(call.toolName);
 				const finalName = toCanonicalToolName(canonical);
@@ -254,7 +268,7 @@ export function createClineMessageConverter(options: ClineConverterOptions): Cli
 		return { reasoning, blocks };
 	}
 
-	function convertAssistantMessage(msg: AgentMessage, finishReason: AgentModelFinishReason): EngineOutput[] {
+	function convertAssistantContent(msg: AgentMessage, finishReason: AgentModelFinishReason): EngineOutput[] {
 		const outputs: EngineOutput[] = [];
 		const { reasoning, blocks } = mapAssistantContent(msg.content);
 		const usage = msg.metrics ? mapUsage(msg.metrics) : null;
@@ -303,6 +317,22 @@ export function createClineMessageConverter(options: ClineConverterOptions): Cli
 					usage: idx === blocks.length - 1 ? usage : null,
 				} as AssistantMessage);
 			});
+		}
+		return outputs;
+	}
+
+	function convertAssistantMessage(msg: AgentMessage, finishReason: AgentModelFinishReason): EngineOutput[] {
+		const outputs = convertAssistantContent(msg, finishReason);
+		if (finishReason === 'content-filter') {
+			// A filtered turn that produced nothing fails the run with the SDK's own
+			// message; one that produced part of an answer lands here, cut short.
+			outputs.push({
+				type: 'notification',
+				sessionId,
+				level: 'warning',
+				title: 'Response filtered',
+				message: 'The provider\'s content filter stopped this response early. Retrying is unlikely to help — try rephrasing the request.',
+			} as NotificationEvent);
 		}
 		return outputs;
 	}

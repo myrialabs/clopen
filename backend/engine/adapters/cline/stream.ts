@@ -39,7 +39,7 @@ import { EngineRuns } from '../run-registry';
 import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
 import { getClineAccountForProvider, parseClineCredential, resolveClineAuth } from './credential';
-import { fetchClineModels } from './models';
+import { fetchClineModels, getClineModelInfo, resolveClineReasoning } from './models';
 import { buildClineMcpTools } from './mcp-tools';
 import { createAskUserQuestionTool, formatAnswers, type PendingAsk } from './ask-question-tool';
 import { createAgentDispatchTool, type SubagentInfo } from './agent-tool';
@@ -147,7 +147,7 @@ export class ClineEngine implements AIEngine {
 	}
 
 	async *streamQuery(options: EngineQueryOptions): AsyncGenerator<EngineOutput, void, unknown> {
-		const { projectPath, prompt, resume, providerSlug, modelId, abortController, accountId } = options;
+		const { projectPath, prompt, resume, providerSlug, modelId, reasoningEffort, abortController, accountId } = options;
 		debug.log('chat', 'Cline - Stream Query', { providerSlug, modelId, resume });
 
 		// ── Resolve account + credential for the model's provider ──
@@ -158,6 +158,11 @@ export class ClineEngine implements AIEngine {
 		}
 		const provider = parseClineCredential(account.credential)?.provider ?? providerSlug;
 		const auth = await resolveClineAuth(account);
+		// Reasoning level → `thinking` / `reasoningEffort`, gated by the model's
+		// catalog options. Shared with the subagent so delegated work thinks alike.
+		const reasoning = reasoningEffort
+			? resolveClineReasoning(reasoningEffort, (await getClineModelInfo(provider, modelId))?.reasoningOptions)
+			: {};
 
 		const controller = abortController || new AbortController();
 		const run: ClineRun = { controller, agent: null };
@@ -238,6 +243,7 @@ export class ClineEngine implements AIEngine {
 						...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
 						...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}),
 						...(auth.options ? { options: auth.options } : {}),
+						...reasoning,
 						systemPrompt: `${base}\n\n# Subagent: ${subagent.name}\n\n${instructions}`,
 						tools: builtinTools,
 						toolPolicies,
@@ -302,6 +308,7 @@ export class ClineEngine implements AIEngine {
 			...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
 			...(auth.baseUrl ? { baseUrl: auth.baseUrl } : {}),
 			...(auth.options ? { options: auth.options } : {}),
+			...reasoning,
 			systemPrompt,
 			tools,
 			toolPolicies,

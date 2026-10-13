@@ -15,6 +15,7 @@
 import type { ClineAuthMode, ClineCredentialField, ClineProviderPreset } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
+import { isClineChatModel } from './models';
 
 export type { ClineAuthMode, ClineCredentialField, ClineProviderPreset };
 
@@ -101,6 +102,10 @@ export async function getClineProviderPresets(): Promise<ClineProviderPreset[]> 
 		const { Llms, getProviderConfigFields, isOAuthProvider } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		const presets: ClineProviderPreset[] = [];
 		for (const provider of await Llms.getAllProviders()) {
+			// Speech/media-only providers (e.g. ElevenLabs) list models but none a
+			// chat turn can use — an account there would leave the picker empty.
+			const models = Object.values(await Llms.getModelsForProvider(provider.id).catch(() => ({})));
+			if (models.length > 0 && !models.some(isClineChatModel)) continue;
 			const config = getProviderConfigFields(provider.id);
 			const oauth = isOAuthProvider(provider.id) || config.authMethod === 'oauth';
 			const fields = await getClineProviderFields(provider.id);
