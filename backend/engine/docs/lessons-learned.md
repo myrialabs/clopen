@@ -1183,6 +1183,17 @@ UNSAFE** — 45+ files (`@anthropic-ai/sdk`, `openai`, `elysia`, `mongodb`,
 `@google/genai`) platform-detect on `Deno` and would break. Map `plan_required`
 and socket errors to clear user messages in `error-handler.ts`.
 
+Since 1.0.37 the package carries a `"bun"` export condition, so
+`Bun.resolveSync('@cursor/sdk', …)` in `sdk-loader.ts` loads the flat
+single-file build (`dist/bundled/index.js`) instead of the lazily-chunked ESM
+build, and `@connectrpc/connect-node` is no longer a dependency. The flat build
+is Cursor's supported Bun path (agent streams default to HTTP/1.1 under Bun).
+Its SQLite store uses `bun:sqlite`, but keep `JsonlLocalAgentStore`: the store
+location is Clopen's isolation choice (§10.19), not a runtime workaround.
+Ripgrep and the sandbox helper still come from the native
+`@cursor/sdk-<os>-<arch>` package; without it, search falls back to `rg` on
+`PATH`.
+
 > **Global fixes that came out of this** (apply to ALL engines, not just Cursor):
 > the List tool renders its directory listing with `CodeBlock` (monospace), not
 > `TextMessage` (markdown); `AgentTool.svelte` hides an empty description line;

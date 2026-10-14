@@ -275,10 +275,12 @@ export class CursorEngine implements AIEngine {
 
 		// Build the user turn (text + image attachments).
 		//
-		// The artifact context rides the user message because `@cursor/sdk` has no
-		// system-prompt option — `AgentOptions` exposes model/tools/mcpServers/agents
-		// and nothing else. It is rebuilt per turn on purpose: the active Profile can
-		// change mid-session, and a stale advertisement is worse than a repeated one.
+		// The artifact context rides the user message, as on every prompt-scoped
+		// engine. `systemPrompt` (1.0.37+) is not used: it replaces Cursor's whole
+		// harness prompt, is server-gated (`InvalidArgument` without access) and
+		// must be re-passed on every resume — revisit if it becomes additive and
+		// generally available. It is rebuilt per turn on purpose: the active Profile
+		// can change mid-session, and a stale advertisement is worse than a repeated one.
 		const promptText = prompt.content.filter(b => b.type === 'text').map(b => (b.type === 'text' ? b.text : '')).join('\n');
 		const artifacts = buildArtifactsPromptContext('cursor', profileId, projectBridge);
 		const text = artifacts ? `${artifacts}\n\n${promptText}` : promptText;
@@ -309,6 +311,8 @@ export class CursorEngine implements AIEngine {
 				},
 			});
 			runState.run = run;
+			// `run.steer(text)` (1.0.37+, local only) can inject a message into this
+			// turn; unused until Clopen has a mid-turn steering flow across engines.
 
 			// Abort wiring: cancelling the stream cancels the Cursor run.
 			onAbort = () => { run.cancel().catch(() => { /* already terminal */ }); };
