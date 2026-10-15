@@ -231,6 +231,12 @@
 							bind:value={customInputs[idx]}
 							onclick={(e) => e.stopPropagation()}
 							onfocus={() => { if (!question.multiSelect) selections[idx] = new Set(); otherActive[idx] = true; }}
+							onkeydown={(e) => {
+								if (e.key === 'Enter') {
+									e.preventDefault();
+									submitAnswers();
+								}
+							}}
 						/>
 					</div>
 				</div>
