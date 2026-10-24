@@ -27,6 +27,31 @@ export interface ModelsDevProvider {
 }
 
 /**
+ * OpenAI-compatible providers that models.dev doesn't list. They ride the same
+ * path as catalog providers with an `api` URL: stored with `api_url`, the
+ * account key becomes the bearer, and models are discovered from `/models`.
+ * A models.dev entry with the same id wins, so these retire themselves once
+ * upstream adds them.
+ */
+const CURATED_PROVIDERS: ModelsDevProvider[] = [
+	{
+		id: 'vikey',
+		name: 'Vikey',
+		npm: '@ai-sdk/openai-compatible',
+		env: ['VIKEY_API_KEY'],
+		api: 'https://api.vikey.ai/v1',
+	},
+];
+
+/** Merge curated providers into a models.dev catalog, keeping it name-sorted. */
+export function withCuratedProviders(catalog: ModelsDevProvider[]): ModelsDevProvider[] {
+	const ids = new Set(catalog.map(c => c.id));
+	const extras = CURATED_PROVIDERS.filter(c => !ids.has(c.id));
+	if (extras.length === 0) return catalog;
+	return [...catalog, ...extras].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
  * Fetch models.dev/api.json and cache a minimal provider catalog in the DB.
  * Returns the parsed catalog.
  */
@@ -68,7 +93,7 @@ export async function fetchAndCacheModelsDevCatalog(): Promise<ModelsDevProvider
 	settingsQueries.set(CACHE_TS_KEY, new Date().toISOString());
 
 	debug.log('engine', `Cached ${catalog.length} providers from models.dev`);
-	return catalog;
+	return withCuratedProviders(catalog);
 }
 
 /**
@@ -82,7 +107,7 @@ export function getCachedModelsDevCatalog(): { catalog: ModelsDevProvider[]; cac
 
 	try {
 		return {
-			catalog: JSON.parse(cached.value) as ModelsDevProvider[],
+			catalog: withCuratedProviders(JSON.parse(cached.value) as ModelsDevProvider[]),
 			cachedAt: cachedAt.value,
 		};
 	} catch {

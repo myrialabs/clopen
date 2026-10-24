@@ -551,9 +551,11 @@ async function buildProviderSection(): Promise<Record<string, unknown>> {
 			// malformed options — proceed to auto-discover
 		}
 
-		const addModel = (id: string) => {
+		// `advertisedContext` comes from discovery: many OpenAI-compatible
+		// gateways report `context_window`/`context_length` on /models.
+		const addModel = (id: string, advertisedContext?: number) => {
 			const lim = modelLimits[id];
-			models[id] = { name: modelNames[id] || id, limit: { context: lim?.context || defaultContext, output: lim?.output || defaultOutput } };
+			models[id] = { name: modelNames[id] || id, limit: { context: lim?.context || advertisedContext || defaultContext, output: lim?.output || defaultOutput } };
 		};
 
 		for (const id of storedModels) {
@@ -569,9 +571,9 @@ async function buildProviderSection(): Promise<Record<string, unknown>> {
 					signal: AbortSignal.timeout(3000),
 				});
 				if (res.ok) {
-					const body = await res.json() as { data?: { id: string }[] };
+					const body = await res.json() as { data?: { id: string; context_window?: number; context_length?: number }[] };
 					for (const m of body.data ?? []) {
-						addModel(m.id);
+						addModel(m.id, m.context_window || m.context_length);
 					}
 				}
 			} catch {

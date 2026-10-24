@@ -10,6 +10,7 @@ import { engineQueries } from '../../../database/queries';
 import {
 	fetchAndCacheModelsDevCatalog,
 	getCachedModelsDevCatalog,
+	withCuratedProviders,
 } from '../../../engine/adapters/opencode/presets';
 import { debug } from '$shared/utils/logger';
 
@@ -268,7 +269,7 @@ export const openCodeProviderHandler = createRouter()
 			return { catalog, cachedAt: new Date().toISOString() };
 		} catch (error) {
 			debug.error('engine', 'Failed to fetch models.dev catalog:', error);
-			return { catalog: [], cachedAt: null };
+			return { catalog: withCuratedProviders([]), cachedAt: null };
 		}
 	})
 
