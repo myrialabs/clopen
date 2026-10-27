@@ -12,6 +12,7 @@ import firecrawl from './providers/firecrawl';
 import github from './providers/github';
 import neon from './providers/neon';
 import supabase from './providers/supabase';
+import telegram from './providers/telegram';
 import vercel from './providers/vercel';
 import type { IntegrationProvider } from './types';
 import type { IntegrationProviderInfo } from '$shared/types/integrations';
@@ -26,6 +27,7 @@ export const PROVIDERS: readonly IntegrationProvider[] = [
 	github,
 	neon,
 	supabase,
+	telegram,
 	vercel
 ];
 

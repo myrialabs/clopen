@@ -24,6 +24,7 @@ export type SettingsSection =
 	| 'profiles'
 	| 'appearance'
 	| 'notifications'
+	| 'chat-apps'
 	| 'tunnel'
 	| 'account'
 	| 'team'
@@ -231,6 +232,13 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Notifications',
 		icon: 'lucide:bell',
 		description: 'Sound and push notifications',
+		group: 'preferences'
+	},
+	{
+		id: 'chat-apps',
+		label: 'Chat Apps',
+		icon: 'lucide:send',
+		description: 'Control Clopen from Telegram',
 		group: 'preferences'
 	},
 	{

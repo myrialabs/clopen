@@ -16,6 +16,7 @@
 	import { initializeMCPPreview } from '$frontend/services/preview';
 	import { initPreviewTabSync } from '$frontend/stores/features/preview-tabs-workspace.svelte';
 	import { globalStreamMonitor } from '$frontend/services/notification/global-stream-monitor';
+	import { initSessionDeepLink } from '$frontend/services/navigation/session-deep-link';
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
 	import { remoteAccessStore } from '$frontend/stores/features/remote-access.svelte';
 	import { portsStore } from '$frontend/stores/features/ports.svelte';
@@ -83,6 +84,11 @@
 					[{ label: 'Set project access', action: () => openTeamForUser(payload.userId) }]
 				);
 			});
+
+			// `#session/<project>/<session>` — the "Open in Clopen" link a
+			// notification channel sends. Applied once signed in, so the project
+			// list it resolves against exists.
+			initSessionDeepLink();
 
 			// Start periodic update checker
 			startUpdateChecker();

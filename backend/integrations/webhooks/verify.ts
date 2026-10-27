@@ -50,6 +50,10 @@ export function verifySignature(
 		return { ok: false, reason: `missing ${spec.signatureHeader}` };
 	}
 
+	if (spec.scheme === 'header-token') {
+		return safeEqual(presented, secret) ? { ok: true } : { ok: false, reason: 'token mismatch' };
+	}
+
 	const prefix = spec.signaturePrefix ?? '';
 	if (prefix && !presented.startsWith(prefix)) {
 		return { ok: false, reason: 'signature prefix mismatch' };

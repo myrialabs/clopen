@@ -12,8 +12,8 @@
  * is computed over raw bytes, and replay rejection is a unique-constraint
  * insert rather than a read-then-write.
  *
- * It ships with no subscriber. Registering one is `Task 7`'s job; until then a
- * verified delivery is accepted, counted and dropped.
+ * Subscribers register per provider with `onWebhook()`. A verified delivery
+ * nobody subscribed to is accepted, counted and dropped.
  */
 
 import { integrationAccountQueries, integrationWebhookQueries } from '$backend/database/queries';
@@ -102,15 +102,16 @@ export async function handleInboundDelivery(
 
 	if (rateLimited(providerId)) return reject(providerId, 'rate limit exceeded');
 
-	// Every enabled account for this provider that opted into inbound events.
+	// Every enabled account for this provider that opted into deliveries.
 	// More than one is legitimate: two projects, two orgs, one endpoint.
+	const spec = provider.webhook;
+	const gates = spec.capabilities ?? ['inbound-events'];
 	const accounts = integrationAccountQueries
 		.getEnabledForProvider(providerId)
-		.filter((row) => integrationAccountQueries.capabilitiesOf(row).includes('inbound-events'));
+		.filter((row) => integrationAccountQueries.capabilitiesOf(row).some((capability) => gates.includes(capability)));
 
-	if (accounts.length === 0) return reject(providerId, 'no enabled account accepts inbound events');
+	if (accounts.length === 0) return reject(providerId, `no enabled account has ${gates.join(' or ')} on`);
 
-	const spec = provider.webhook;
 	const matched = accounts.find((account) => {
 		const secret = integrationAccountQueries.credentialsOf(account)[spec.secretField] ?? '';
 		return verifySignature(spec, secret, rawBody, headers).ok;

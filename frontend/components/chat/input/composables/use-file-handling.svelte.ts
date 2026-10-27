@@ -1,8 +1,10 @@
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { debug } from '$shared/utils/logger';
+import { MAX_ATTACHMENT_BYTES } from '$shared/constants/attachments';
 
 // ── File attachment type ──────────────────────────────────────
-export type FileCategory = 'image' | 'pdf' | 'audio' | 'video';
+/** `file` is anything the model does not read inline — it is saved and named in the prompt. */
+export type FileCategory = 'image' | 'pdf' | 'audio' | 'video' | 'file';
 
 export interface FileAttachment {
 	id: string;
@@ -13,28 +15,19 @@ export interface FileAttachment {
 }
 
 // ── MIME types per input modality ─────────────────────────────
-export const MIME_BY_MODALITY: Record<FileCategory, readonly string[]> = {
+export const MIME_BY_MODALITY: Record<Exclude<FileCategory, 'file'>, readonly string[]> = {
 	image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
 	pdf: ['application/pdf'],
 	audio: ['audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/webm', 'audio/mp4'],
 	video: ['video/mp4', 'video/webm', 'video/ogg'],
 };
 
-/** Build a flat list of allowed MIME types from model input modalities */
-export function buildAcceptedMimeTypes(modalities: { image: boolean; pdf: boolean; audio: boolean; video: boolean }): string[] {
-	const types: string[] = [];
-	for (const key of Object.keys(MIME_BY_MODALITY) as FileCategory[]) {
-		if (modalities[key]) types.push(...MIME_BY_MODALITY[key]);
-	}
-	return types;
-}
-
-/** Category of a MIME type; unknown types are treated as documents. */
+/** Category of a MIME type; anything unknown is a plain file. */
 export function categoryForMime(mimeType: string): FileCategory {
 	for (const [category, mimes] of Object.entries(MIME_BY_MODALITY)) {
 		if ((mimes as readonly string[]).includes(mimeType)) return category as FileCategory;
 	}
-	return mimeType.startsWith('image/') ? 'image' : 'pdf';
+	return mimeType.startsWith('image/') ? 'image' : 'file';
 }
 
 /**
@@ -69,8 +62,7 @@ export function attachmentFromBase64(source: {
 }
 
 // ── Constants ─────────────────────────────────────────────────
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
-const ALL_MIME_TYPES = Object.values(MIME_BY_MODALITY).flat();
+const MAX_FILE_SIZE = MAX_ATTACHMENT_BYTES;
 
 // ── Composable ────────────────────────────────────────────────
 export function useFileHandling() {
@@ -79,9 +71,6 @@ export function useFileHandling() {
 	// A count, not a flag: a paste landing while a drop is still being read
 	// must not mark processing as finished when the first batch is.
 	let processingCount = $state(0);
-
-	/** Currently allowed MIME types — updated by ChatInput based on the active model */
-	let allowedTypes = $state<string[]>(ALL_MIME_TYPES);
 
 	async function fileToBase64(file: File): Promise<string> {
 		return new Promise((resolve, reject) => {
@@ -105,18 +94,8 @@ export function useFileHandling() {
 				addNotification({
 					type: 'error',
 					title: 'File Too Large',
-					message: `${file.name} exceeds the 10MB limit`,
+					message: `${file.name} exceeds the ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`,
 					duration: 3000
-				});
-				continue;
-			}
-
-			if (!allowedTypes.includes(file.type)) {
-				addNotification({
-					type: 'error',
-					title: 'Unsupported File Type',
-					message: `${file.name} is not supported by the current model.`,
-					duration: 4000
 				});
 				continue;
 			}
@@ -239,8 +218,6 @@ export function useFileHandling() {
 		get isProcessingFiles() { return processingCount > 0; },
 
 		/** Set allowed MIME types (call when model changes) */
-		set allowedTypes(types: string[]) { allowedTypes = types; },
-		get allowedTypes() { return allowedTypes; },
 
 		processFiles,
 		removeAttachment,

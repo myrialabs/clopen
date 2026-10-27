@@ -17,8 +17,53 @@ import type {
 	IntegrationStatus
 } from '$shared/types/integrations';
 import { defaultCapabilitiesOf, getProvider, type IntegrationProvider } from './registry';
+import { randomBytes } from 'crypto';
 import { reproject, releaseAll } from './projections';
 import { debug } from '$shared/utils/logger';
+
+/**
+ * Told after any account is connected, reconfigured, toggled, rebound or
+ * disconnected — with the id, which may no longer exist.
+ *
+ * Projections cover surfaces whose state is a ROW. A surface whose state is a
+ * live connection instead (a chat channel's bot, held open by the backend)
+ * has nothing to project and needs to know when to reconnect; this is how.
+ * Listeners must be cheap and must not throw — they run inside the mutation.
+ */
+export type AccountsChangedListener = (accountId: string) => void;
+
+const changeListeners = new Set<AccountsChangedListener>();
+
+export function onAccountsChanged(listener: AccountsChangedListener): () => void {
+	changeListeners.add(listener);
+	return () => changeListeners.delete(listener);
+}
+
+function notifyChanged(accountId: string): void {
+	for (const listener of changeListeners) {
+		try {
+			listener(accountId);
+		} catch (error) {
+			debug.error('integrations', 'Account change listener failed:', error);
+		}
+	}
+}
+
+/**
+ * Fill every credential the provider mints itself. 32 random bytes in
+ * base64url fits every secret alphabet seen so far — Telegram's secret token
+ * allows only `A-Za-z0-9_-`, up to 256 characters.
+ */
+export function withGeneratedCredentials(
+	provider: IntegrationProvider,
+	credentials: Record<string, string>
+): Record<string, string> {
+	const filled = { ...credentials };
+	for (const field of provider.generatedCredentials ?? []) {
+		if (!(filled[field] ?? '').trim()) filled[field] = randomBytes(32).toString('base64url');
+	}
+	return filled;
+}
 
 export interface ConnectInput {
 	provider: string;
@@ -49,6 +94,11 @@ function assertRequiredFields(provider: IntegrationProvider, credentials: Record
 	if (missing.length > 0) {
 		throw new Error(`${provider.name} needs ${missing.join(', ')}`);
 	}
+}
+
+function stripGenerated(provider: IntegrationProvider, credentials: Record<string, string>): Record<string, string> {
+	const generated = new Set(provider.generatedCredentials ?? []);
+	return Object.fromEntries(Object.entries(credentials).filter(([field]) => !generated.has(field)));
 }
 
 function assertKnownCapabilities(provider: IntegrationProvider, capabilities: IntegrationCapability[]): void {
@@ -130,7 +180,9 @@ export const integrationAccounts = {
 			label: (input.label ?? '').trim() || defaultLabel(provider),
 			projectId: input.projectId ?? null,
 			authMethod: provider.authMethod,
-			credentials: input.credentials,
+			// Generated fields are Clopen's, not the form's: whatever a client sent
+			// for one is dropped rather than trusted as a secret.
+			credentials: withGeneratedCredentials(provider, stripGenerated(provider, input.credentials)),
 			capabilities
 		});
 
@@ -145,6 +197,7 @@ export const integrationAccounts = {
 		}
 
 		debug.log('integrations', `Connected ${provider.id} account "${row.label}"`);
+		notifyChanged(row.id);
 		return this.get(row.id)!;
 	},
 
@@ -161,15 +214,16 @@ export const integrationAccounts = {
 		const provider = requireProvider(row.provider);
 
 		const merged = { ...integrationAccountQueries.credentialsOf(row) };
-		for (const [field, value] of Object.entries(patch)) {
+		for (const [field, value] of Object.entries(stripGenerated(provider, patch))) {
 			if (value === '') continue;
 			merged[field] = value;
 		}
 		assertRequiredFields(provider, merged);
 
-		integrationAccountQueries.setCredentials(id, merged);
+		integrationAccountQueries.setCredentials(id, withGeneratedCredentials(provider, merged));
 		integrationAccountQueries.setStatus(id, 'unknown', null);
 		reproject(id);
+		notifyChanged(id);
 		return this.get(id)!;
 	},
 
@@ -197,6 +251,7 @@ export const integrationAccounts = {
 
 		integrationAccountQueries.setCapabilities(id, capabilities);
 		reproject(id);
+		notifyChanged(id);
 		return this.get(id)!;
 	},
 
@@ -204,6 +259,7 @@ export const integrationAccounts = {
 		if (!integrationAccountQueries.getById(id)) throw new Error('Integration account not found');
 		integrationAccountQueries.setEnabled(id, enabled);
 		reproject(id);
+		notifyChanged(id);
 		return this.get(id)!;
 	},
 
@@ -211,6 +267,7 @@ export const integrationAccounts = {
 		if (!integrationAccountQueries.getById(id)) throw new Error('Integration account not found');
 		integrationAccountQueries.setProject(id, projectId);
 		reproject(id);
+		notifyChanged(id);
 		return this.get(id)!;
 	},
 
@@ -225,5 +282,6 @@ export const integrationAccounts = {
 		releaseAll(id);
 		integrationAccountQueries.remove(id);
 		debug.log('integrations', `Disconnected ${row.provider} account "${row.label}"`);
+		notifyChanged(id);
 	}
 };

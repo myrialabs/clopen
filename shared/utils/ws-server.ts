@@ -515,6 +515,35 @@ export class WSRouter<
 	}
 
 	/**
+	 * Run a route in-process for a connection, through the same auth gate and
+	 * request validation as a message from a browser — and return what the
+	 * handler returned instead of sending it. The rate limiter is skipped: an
+	 * in-process caller is not a flood, and it pays its own limits upstream.
+	 *
+	 * This is what lets the control catalog (`backend/control/`) drive
+	 * everything the web UI can, with the web UI's own permission rules,
+	 * without a second implementation of any of it.
+	 */
+	async invoke(conn: WSConnection, action: string, data: unknown = {}): Promise<unknown> {
+		if (this.authMiddleware) {
+			const auth = await this.authMiddleware(conn, action);
+			if (!auth.allowed) throw new Error(auth.error || 'Access denied');
+		}
+		const httpRoute = this.httpRoutes.get(action);
+		const route = httpRoute ?? this.routes.get(action);
+		if (!route || action === 'ws:set-context') throw new Error(`Unknown action: ${action}`);
+		let validated: unknown = {};
+		if (route.dataSchema) {
+			try {
+				validated = Value.Decode(route.dataSchema, data ?? {});
+			} catch (err) {
+				throw new Error(`Request validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+			}
+		}
+		return route.handler({ conn, data: validated } as any);
+	}
+
+	/**
 	 * Handle HTTP-like request-response message
 	 * @internal
 	 */

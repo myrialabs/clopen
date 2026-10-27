@@ -23,6 +23,8 @@ import { debug } from '$shared/utils/logger';
 import { requireProjectAccess } from '../access';
 import { runProjectCleanups } from '../../projects/project-cleanup-registry';
 import '../../projects/project-cleanup';
+import { ensureHomeProject } from '../../projects/home';
+import { homeFirst, isHomeProject } from '$shared/utils/home-project';
 
 export const crudHandler = createRouter()
 	// List all projects for the current user
@@ -32,8 +34,10 @@ export const crudHandler = createRouter()
 	}, async ({ conn }) => {
 		await initializeDatabase();
 		const userId = ws.getUserId(conn);
-		const projects = projectQueries.getAllForUser(userId);
-		return projects;
+		// Every user has a Home, listed first — the place a chat with no
+		// project selected lives, and where someone with no projects lands.
+		ensureHomeProject(userId);
+		return homeFirst(projectQueries.getAllForUser(userId));
 	})
 
 	// Create new project (or return an existing project already joined by the user)
@@ -53,6 +57,9 @@ export const crudHandler = createRouter()
 		// covers re-adding a project that was previously removed (mode='remove')
 		// which preserves the project row for session restoration.
 		const existing = projectQueries.getByPath(path);
+		// Someone's Home is theirs alone; adding its folder as a project would
+		// be a back door into another user's chats.
+		if (existing && isHomeProject(existing)) throw new Error('That folder is a Home workspace and cannot be added as a project');
 		if (existing) {
 			if (!projectQueries.userHasProject(userId, existing.id)) {
 				projectQueries.addUserProject(userId, existing.id);
@@ -102,7 +109,8 @@ export const crudHandler = createRouter()
 		})
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
-		requireProjectAccess(conn, data.id);
+		const target = requireProjectAccess(conn, data.id);
+		if (isHomeProject(target)) throw new Error('Home cannot be removed');
 
 		const mode = data.mode ?? 'remove';
 

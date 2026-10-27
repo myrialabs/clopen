@@ -1,6 +1,9 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
+	import HomeProjectEntry from './HomeProjectEntry.svelte';
+	import HomeMark from './HomeMark.svelte';
+	import { isHomeProject } from '$shared/utils/home-project';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { projectState, removeProject } from '$frontend/stores/core/projects.svelte';
 	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
@@ -89,6 +92,8 @@
 	let contextMenuArchived = $state(false);
 
 	const canManageProjects = $derived(authStore.isAdmin);
+	// Home is always there and listed on its own, so "no projects" means none besides it.
+	const realProjectCount = $derived(projectState.projects.filter((project) => !isHomeProject(project)).length);
 	const selectionActive = $derived(projectSelectionState.active);
 	const selectionCount = $derived(projectSelectionState.selectedIds.length);
 
@@ -389,7 +394,7 @@
 		aria-expanded={showProjectMenu}
 		aria-haspopup="menu"
 	>
-		<div class="relative shrink-0"><Icon name="lucide:folder-open" class="w-4 h-4" /><span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-100 dark:border-slate-800 {getProjectStatusColor(projectState.currentProject?.id ?? '')}"></span></div>
+		<div class="relative shrink-0">{#if isHomeProject(projectState.currentProject)}<HomeMark class="w-4.5 h-4.5 rounded" />{:else}<Icon name="lucide:folder-open" class="w-4 h-4" />{/if}<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-100 dark:border-slate-800 {getProjectStatusColor(projectState.currentProject?.id ?? '')}"></span></div>
 		<span class="flex-1 text-left overflow-hidden text-ellipsis whitespace-nowrap">
 			{projectState.currentProject?.name ?? 'No Project'}
 		</span>
@@ -486,8 +491,18 @@
 	{/snippet}
 
 	{#snippet children()}
+		<!-- Home: chat without a project. Always first, never part of the list below. -->
+		<div class="mb-3">
+			<HomeProjectEntry
+				onSelect={(project) => {
+					import('$frontend/stores/core/projects.svelte').then((m) => m.setCurrentProject(project));
+					closeProjectMenu();
+				}}
+			/>
+		</div>
+
 		<!-- Search Box -->
-		{#if projectState.projects.length > 0}
+		{#if realProjectCount > 0}
 			<div class="mb-3">
 				<div
 					class="flex items-center gap-2 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-colors focus-within:border-violet-400/60 focus-within:bg-white dark:focus-within:bg-slate-800 focus-within:ring-2 focus-within:ring-violet-500/15"
@@ -567,7 +582,7 @@
 			</div>
 		{/if}
 
-		{#if projectState.projects.length === 0}
+		{#if realProjectCount === 0}
 			<div class="flex flex-col items-center gap-3 py-8 text-slate-600 dark:text-slate-500 text-sm">
 				<Icon name="lucide:folder-x" class="w-12 h-12 text-slate-400 opacity-40" />
 				{#if canManageProjects}

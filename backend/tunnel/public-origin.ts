@@ -28,7 +28,7 @@ export interface PublicOrigin {
 }
 
 /** Hostnames that are not reachable by another device — force a tunnel. */
-function isLocalHostname(hostname: string): boolean {
+export function isLocalHostname(hostname: string): boolean {
 	const h = hostname.toLowerCase();
 	if (h === 'localhost' || h.endsWith('.localhost')) return true;
 	if (h === '127.0.0.1' || h === '::1' || h === '0.0.0.0') return true;
@@ -66,19 +66,22 @@ function findQuickTunnelForPort(port: number): string | null {
 	return null;
 }
 
-/**
- * Resolve a public origin for Remote Access share links. `requestOrigin` is the
- * browser's own `window.location.origin` (passed by the client), used to detect
- * the already-public `domain` case.
- */
-export async function resolvePublicOrigin(requestOrigin?: string): Promise<PublicOrigin> {
-	// 1. Explicitly configured public URL wins.
-	const configured = getConfiguredPublicBaseUrl();
-	if (configured) {
-		return { origin: configured, source: 'configured' };
-	}
+/** The port another device must reach: Vite's in dev (it proxies to the backend), the server's in production. */
+export function getClopenPublicPort(): number {
+	return SERVER_ENV.isDevelopment ? SERVER_ENV.PORT_FRONTEND : SERVER_ENV.PORT;
+}
 
-	// 2. Already served on a real (non-local) origin — reuse it.
+/**
+ * The public origin that already exists, if any — never starts anything.
+ *
+ * Same order as {@link resolvePublicOrigin}, minus the side effect. A caller
+ * reacting to a tunnel going away needs to know whether something is still
+ * reachable without restarting the very tunnel the user may just have stopped.
+ */
+export function findPublicOrigin(requestOrigin?: string): PublicOrigin | null {
+	const configured = getConfiguredPublicBaseUrl();
+	if (configured) return { origin: configured, source: 'configured' };
+
 	if (requestOrigin) {
 		try {
 			const url = new URL(requestOrigin);
@@ -90,15 +93,23 @@ export async function resolvePublicOrigin(requestOrigin?: string): Promise<Publi
 		}
 	}
 
-	// 3. Local install — tunnel Clopen's own port. In dev the app is served by
+	const existing = findQuickTunnelForPort(getClopenPublicPort());
+	return existing ? { origin: existing, source: 'tunnel' } : null;
+}
+
+/**
+ * Resolve a public origin for Remote Access share links. `requestOrigin` is the
+ * browser's own `window.location.origin` (passed by the client), used to detect
+ * the already-public `domain` case.
+ */
+export async function resolvePublicOrigin(requestOrigin?: string): Promise<PublicOrigin> {
+	const found = findPublicOrigin(requestOrigin);
+	if (found) return found;
+
+	// Local install — tunnel Clopen's own port. In dev the app is served by
 	// Vite on PORT_FRONTEND (which proxies to the backend), so tunnel that; in
 	// production frontend and backend share PORT.
-	const port = SERVER_ENV.isDevelopment ? SERVER_ENV.PORT_FRONTEND : SERVER_ENV.PORT;
-
-	const existing = findQuickTunnelForPort(port);
-	if (existing) {
-		return { origin: existing, source: 'tunnel' };
-	}
+	const port = getClopenPublicPort();
 
 	debug.log('tunnel', `[remote-access] Starting quick tunnel for Clopen port ${port}`);
 	await tunnelKit.bin.ensure();

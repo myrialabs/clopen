@@ -43,7 +43,7 @@ integration actually *does* lives in the surface that owns that kind of work:
 | Deployments, build logs | Deployments panel | Task 3 |
 | Database connection | DB Client | Task 4 |
 | Worktree lifecycle | worktree manager | Task 5 |
-| Notifications and approvals | notification channels | Task 6 |
+| Control from chat apps | chat apps over the control catalog | Task 6 |
 | Inbound events | webhook gateway | Task 1 |
 
 **Surface rows are projections.** An account with the agent-tools capability
@@ -1231,8 +1231,255 @@ session id so multi-project users never get crossed wires, and surface
 `chat.health()` per account. Telegram ships first: webhook, no ban risk, simplest
 pairing.
 
-- [ ] Done
-- Notes: —
+- [x] Done
+- Notes:
+  - **It is a remote control, not a notifier.** The first pass shipped
+    `notifications` + `chat` capabilities, a per-chat "chat control" switch,
+    and its settings under Notifications. Using it showed that this was the
+    wrong shape: "This bot is set up for notifications only" was a dead end
+    nobody could find the way out of. Now:
+    - the provider offers ONE capability, `control` ("Control Clopen");
+    - `allow_chat` is gone and `notification_channel_links` became
+      `channel_links` (migration 087, which also moves existing Telegram
+      accounts to `control`);
+    - the module is `backend/chat-apps/`;
+    - the settings live in their own section, Settings → Chat Apps.
+
+    Questions and finished runs still reach the chat, but as part of the
+    conversation. A chat can be paused, which tells it nothing unprompted.
+    `notifications` stays in the capability enum for a future send-only
+    provider.
+  - **One SSOT for remote control: the control catalog
+    (`backend/control/`).** Every operation a remote surface offers is a
+    declared action with:
+    - an id (`group.verb`);
+    - a TypeBox argument schema;
+    - member/admin access;
+    - an optional confirmation;
+    - a `run` that returns Markdown, follow-up choices and an optional new
+      target.
+
+    The chat app GENERATES its commands, `/` menu (`setMyCommands`), buttons
+    and `/help` from it, and Settings shows the command reference by reading
+    it (`chat-apps:commands`). `describeControlActions()` is the schema the
+    planned "control Clopen" MCP server will publish, so that server will be
+    a renderer over the same catalog, not a second implementation. Adding a
+    remote capability means adding an action, never a handler in a surface.
+  - **Actions call the web UI's own routes.** `WSRouter.invoke()` runs any
+    WebSocket route in-process through a virtual connection
+    (`ws.openVirtualConnection`) carrying the user's id and role. The same
+    auth gate (`auth/permissions.ts`), request validation and handler run as
+    for a tab, and the handler's return value comes back. Virtual
+    connections join no room, never count as online and never receive
+    broadcasts, and session revalidation skips them (their identity is
+    vouched for per call). So an engine-account switch from a chat writes
+    the same credential files and is admin-only for the same reason as in
+    Settings, and nothing was reimplemented. `/api <route> [json]` exposes
+    every route under the same rules, which is the literal "full access"
+    (anything that looks destructive is confirmed first). `/routes` lists
+    them.
+  - **"Approve, reject or reply" means AskUserQuestion.** Clopen bypasses
+    every tool permission, so the only thing a session waits on is
+    `AskUserQuestion`. There is no tool or plan approval flow to route.
+    - Each question is one message with its options as buttons.
+    - Multi-select options tick in place and are sent with Submit.
+    - A reply gives a custom ("Other") answer.
+    - Answers go through `streamManager.resolveUserAnswer()` in the exact
+      shape the web form builds, so the engine cannot tell which side
+      answered.
+
+    Sync runs both ways. A Telegram answer lands as the normal `tool_result`
+    the web UI already renders. A web answer, or the run ending, re-renders
+    the Telegram message as settled and removes its buttons.
+  - **The conversation model: an active target per chat, a mapping per
+    message.** A chat app has one thread and Clopen has many sessions, so
+    each link stores `active_project_id` / `active_session_id` (migration
+    086). How a message is routed:
+    - Plain text continues the active session, queued if busy. If a question
+      is waiting, it answers the one question; with several waiting, it asks
+      for a reply.
+    - No session yet: the first message starts one.
+    - No project picked: the chat is in Home.
+
+    `channel_messages` (086, replacing 084's `notification_prompts`) maps
+    every message in both directions to the Clopen message it stands for:
+    questions, answers, "finished" notices, the user's own prompts, menus and
+    confirmations. This is what makes the next three bullets possible.
+    Migration 084 was left untouched and 086 transforms it, because 084 had
+    already run on local dev/test databases.
+  - **Reply = continue from that checkpoint; edit = Edit Message.**
+    - **Reply to any earlier message.** If that point is HEAD, it is just the
+      next turn. If it is older, Clopen restores to it and the new turn
+      branches from there.
+    - **Edit a message sent from the chat.** Clopen restores to just before
+      it (its parent, or `__initial__`) and sends the new text, exactly like
+      the web's Edit Message. ChatKit gained a universal `edited` flag for
+      this.
+    - **`/retry`.** Re-asks the active session's last user message the same
+      way.
+
+    Restoring rewrites FILES, so from a phone it is never silent. A
+    confirmation names the session, the file conflicts and the text it will
+    send. Files another session changed since are kept (`keep`), because
+    there is no conflict dialog on a phone. To share this, the restore logic
+    moved out of the `snapshot:restore` handler into
+    `backend/snapshot/restore.ts` (`restoreSessionTo`,
+    `checkSessionRestoreConflicts`, `restoreTargetEnd`). The web and the bot
+    now call the same code; the WS routes only check access.
+  - **Home: chatting with no project selected (v0.5 groundwork).** Every
+    user gets one Home: a real project row (`kind = 'home'`,
+    `owner_user_id`, migration 085) on a real directory,
+    `~/.clopen/home/<userId>`. Every path that needs a project (engine cwd,
+    snapshots, queue, notifications) therefore works unchanged, where truly
+    projectless sessions would have meant a `chat_sessions` rebuild and about
+    15 call sites that fail silently. Rules:
+    - created on demand by `projects:list` and `/home`;
+    - one per user (partial unique index);
+    - never shareable (`assignProjectToUser`), deletable, or addable by path
+      as someone else's project.
+
+    In the web UI, Home sits on its own above the project list in both
+    navigators, styled differently. It is excluded from
+    pin/archive/select/delete, and its empty chat greets differently with an
+    "Add a project" shortcut. A user with no other project lands in it.
+    `owner_user_id` has no FK, because SQLite cannot drop such a column in
+    `down()`; a removed user's Home stays orphaned and unreachable. The v0.5
+    orchestrator is meant to start from here, plus an internal "control
+    Clopen" MCP server. Not built yet, and the MCP execution context still
+    carries no user id.
+  - **What the catalog offers today.**
+    - Sessions: `/status`, `/new` and `/clear` (fresh, non-destructive),
+      `/sessions`, `/rename`, `/stop`, `/open`, `/deletesession` (confirmed).
+    - Projects: `/projects`, `/home`, `/newproject <path>` (admin;
+      `~`-expanded, must exist).
+    - Models: `/model` (every engine, then EVERY model it offers, searchable
+      and paged via `/models <engine> [search]`) and `/reasoning` (the
+      model's own levels).
+    - Engine accounts (admin): `/accounts [engine]` (list and switch,
+      OpenCode's provider accounts included) and
+      `/addaccount <engine> <name> <key>` for the key-based engines (Codex,
+      Copilot, Cursor). The message carrying the key is deleted from the
+      chat; browser sign-in engines point to Settings.
+    - MCP servers and skills (admin): `/mcp` and `/skills`, tap to toggle.
+    - System: `/system`, `/update` (admin, confirmed).
+    - Raw access: `/routes`, `/api`.
+    - The chat's own commands: `/help`, `/retry`, `/unlink`; the former
+      unlink `/stop` is now `/unlink`.
+
+    A new session's model comes from:
+    1. the project's latest session;
+    2. else the user's selected model;
+    3. else any session they used.
+
+    `/model` with no session starts one with the chosen model.
+  - **What the chat receives, and how it looks.**
+    - **Turns the chat started** (`turns.ts` maps them by text when the user
+      message is saved, which survives the composer queue). They get the
+      full answer as a reply, formatted and split across messages as needed.
+      While they run, "typing…" stays on, and after 15s one progress line
+      appears, edited at most every 10s with the current tool. They also get
+      their questions whatever the notification preferences say.
+    - **Turns started in the web UI.** These stay notifications under each
+      chat's preferences ("waiting" and "failed" always; "finished" past the
+      chat's minimum run length; "cancelled" never) and quote the start of
+      the answer.
+    - **Answer text.** Comes from the last assistant message of the turn
+      (`answers.ts`), not the 200-char `head_summary`.
+    - **Formatting.** Cards are built as rich runs, never Markdown strings,
+      so a title with asterisks is shown as typed. The header leads with the
+      project (`📁 Project · session`) and is dropped inside the conversation
+      the chat is already in.
+  - **Delivery: webhook first, adaptive like Share Link, polling as the
+    fallback.** One `ChatKit`. Every add, remove and `setWebhook` is
+    serialised on one promise chain. The origin is chosen in this order:
+    1. the configured URL;
+    2. the last non-local origin a browser reached Clopen on (persisted);
+    3. a quick tunnel started for it.
+
+    When the tunnel's URL moves, the webhook is re-registered. If the tunnel
+    disappears, the bot drops to long polling rather than restarting a tunnel
+    the user stopped. Health is `getMe` + `getWebhookInfo` (only a recent
+    error counts). `bootstrapAfterDbInit()` reconciles so that Clear All Data
+    does not leave bots running.
+  - **The account, through Task 1's rails.** `generatedCredentials`: the
+    webhook secret is minted at connect, sealed, never shown and never
+    accepted from a client. A `header-token` webhook scheme was added, and
+    `WebhookSpec.capabilities` (any-of) gates deliveries, so a chat-only bot
+    still receives. `onAccountsChanged()` exists because a live bot is a
+    connection, not a projectable row.
+  - **A bug in the waiting-input path, fixed at its root.** Waiting-input
+    detection and its Web Push lived on the per-tab bridge, which closes with
+    the tab. A question arriving after the tab closed therefore reached
+    nobody, and it fired twice with two tabs open. A global `stream:message`
+    now fires once per message, and `stream:lifecycle` carries `durationMs`.
+    Web Push also links to the session now (`#session/<project>/<session>`)
+    instead of `/`.
+  - **Every inbound action is re-checked.** Before anything reaches a
+    session:
+    - the chat must be paired and in private;
+    - the sender must be the user who paired it;
+    - the row must be this chat's;
+    - the user must still have the project;
+    - `control` must be on for the bot;
+    - a row must settle exactly once (`UPDATE … WHERE state = 'open'`), so a
+      tap racing a web answer, or a confirm pressed twice, acts once.
+
+    Catalog actions add the user's role and each route's own permission
+    rule. Pairing codes are single-use, last 10 minutes, are held in memory,
+    and are burned if they reach the wrong bot.
+  - **ChatKit fixed upstream, generically.**
+    - **0.0.2.** Dedup keyed only on `message_id`, which Telegram numbers per
+      chat; it now keys on `event_id` or the conversation-scoped id. Postback
+      titles carry the button label, the 64-byte `callback_data` guard was
+      added, as was `telegramEditMessage`. The adapter gained `getMe`,
+      `setWebhook`, `deleteWebhook`, `getWebhookInfo` and `api`. Polling now
+      clears the webhook first, sends `allowed_updates`, persists its offset
+      and aborts on stop. Async handler errors are caught. Platform SDKs
+      became optional peer dependencies.
+    - **0.0.3.** A zero-dependency `markdownToRuns` (GFM subset; headings to
+      bold, lists to bullets, tables to aligned monospace). A run-aware
+      `splitRuns` that keeps formatting across a split. `blockquote` and a
+      `pre` `language` in the run model, rendered on every platform. The
+      `edited` flag, and `setMyCommands`.
+
+    The ChatKit state store is sealed with a key derived from Clopen's
+    master key.
+  - **Deliberately out of scope.**
+    - Tool and plan approval: no such flow exists.
+    - A toast on button press: the edited message is the feedback.
+    - Group chats.
+    - Codex questions: announced, but not answerable from the phone, because
+      Codex has no `resolveUserAnswer`.
+    - Attachments sent from the chat: text only.
+    - The orchestrator itself, and the MCP server over the catalog: the
+      catalog is shaped for it, but no server is built.
+    - Browser sign-in flows for engine accounts.
+    - The other platforms (Task 14).
+  - **Distribution.** Clopen depends on ChatKit as `file:../chatkit` (bump
+    its version after each rebuild, or Bun keeps the stale build). A `file:`
+    dependency cannot resolve in a published global install, so how ChatKit
+    ships with a Clopen release has to be settled before one. Locally, Bun
+    also installs a `file:` dependency's devDependencies, so the optional
+    SDKs appear in `node_modules`.
+  - **Status.** `bun run check` and `bun run lint` are clean. The full suite
+    passes except two `git/identity/scope-config` cases that fail
+    identically on a clean tree (they read the machine's global git
+    identity). Tests cover:
+    - the catalog: unique ids and commands, argument parsing and validation,
+      role-filtered help and descriptions, a menu every chat app accepts,
+      confirmations on destructive actions;
+    - in-process route calls through the auth gate and schema;
+    - virtual connections staying out of presence;
+    - wording and the button protocol, pairing, the `header-token` verifier;
+    - DB-backed: secrets, gateway routing, re-pairing, settle-once,
+      reply/edit lookups, cascade, Home;
+    - ChatKit: dedup, polling, helpers, Markdown, splitting, renderers.
+
+    Runtime QA against a real bot is still pending: pairing, webhook via
+    tunnel, the polling fallback, multi-select, reply-to-branch and edit
+    with file restore, `/model` over a large catalog, `/accounts` switching,
+    `/mcp`/`/skills` toggles, `/api`, the progress line, Home in the web UI,
+    and the deep link on a phone.
 
 ---
 
@@ -1323,6 +1570,33 @@ through the `Task 6` code path, which is the point — if any of them needs
 platform-specific handling inside Clopen, the gap belongs in ChatKit. Discord and
 Slack (Socket Mode) come nearly free. WhatsApp via Baileys ships last, off by
 default, with its ban-risk warning shown in the connect dialog.
+
+`Task 6` turned the channel into a full chat client, so each platform inherits
+the whole conversation model, not just notifications:
+- an active project/session per chat, with Home when none is picked;
+- reply-to-checkpoint branching, with confirmation;
+- edit-to-resend;
+- the command set;
+- full Markdown answers, split across messages;
+- the progress line;
+- the single `control` capability;
+- and the entire control catalog (`backend/control/`), since commands, menus
+  and help are generated from it.
+
+A platform is one file implementing `ChannelPlatform`
+(`backend/chat-apps/platforms/types.ts`): adapter construction,
+webhook registration, the command menu, card rendering and re-rendering, max
+message length, pairing link and probe. What a platform lacks should degrade
+rather than branch Clopen. Unverified expectations:
+- WhatsApp has no command menu and its edits may not reach a bot, so
+  edit-to-resend may not exist there.
+- Discord replies and edits look like they map directly.
+- Slack threads may need mapping onto reply-to.
+
+Before starting, check what ChatKit's Discord/Slack/WhatsApp adapters emit for
+an edited message and a reply (`edited`, `reply_to`), and whether each can
+delete a message (the progress line) and set typing. Their SDKs are optional
+peer dependencies now, so Clopen must add the ones it ships.
 
 - [ ] Done
 - Notes: —

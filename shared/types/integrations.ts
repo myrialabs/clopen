@@ -23,6 +23,13 @@ export const INTEGRATION_CAPABILITIES = [
 	'database',
 	'worktree-branching',
 	'notifications',
+	/**
+	 * Control Clopen from a chat app — sessions, projects, models, engine
+	 * accounts, MCP servers, skills and the rest of the control catalog
+	 * (`backend/control/`), with questions and finished runs reported back to
+	 * the chat. Distinct from `notifications`, which only sends.
+	 */
+	'control',
 	'inbound-events'
 ] as const;
 
