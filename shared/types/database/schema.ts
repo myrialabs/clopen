@@ -12,7 +12,16 @@ export interface Project {
 	created_at: string;
 	last_opened_at: string;
 	default_profile_id?: number | null; // Shared per-project default Profile (null = none)
+	/**
+	 * `home` is a user's own workspace for chatting with no project selected —
+	 * one per user, never shared, never deleted. Everything else is `project`.
+	 */
+	kind?: ProjectKind;
+	/** The user a `home` workspace belongs to; null for ordinary projects. */
+	owner_user_id?: string | null;
 }
+
+export type ProjectKind = 'project' | 'home';
 
 /** Isolation status of a worktree copy. */
 export type WorktreeStatus = 'active' | 'applied' | 'archived';

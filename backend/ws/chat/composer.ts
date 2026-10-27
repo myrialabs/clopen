@@ -26,6 +26,7 @@ import { messageQueries } from '../../database/queries';
 import { INITIAL_NODE_ID } from '../../snapshot/helpers';
 import { requireSessionAccess } from '../access';
 import { bridgeStreamToRoom, startChatStream } from './stream';
+import { registerComposer } from '../../chat-apps';
 
 // ============================================================================
 // State
@@ -159,6 +160,57 @@ async function startPrepared(item: QueuedMessage): Promise<void> {
 	// No connection owns this stream, so the bridge lives until the turn ends.
 	bridgeStreamToRoom(streamId, request.chatSessionId, request.projectId);
 }
+
+/**
+ * Send a message the way the composer does: start it now if the session is
+ * idle and nothing is queued ahead of it, otherwise queue it behind the turn.
+ * Shared by `chat:queue-add` and anything server-side that speaks for a user
+ * — a reply from a chat app arrives with no tab open at all.
+ */
+export async function submitPrompt(input: {
+	userId: string;
+	userName: string;
+	request: StreamRequest;
+}): Promise<{ outcome: 'started' | 'queued'; queueId: string }> {
+	const { chatSessionId, projectId } = input.request;
+	const item: QueuedMessage = {
+		id: crypto.randomUUID(),
+		userId: input.userId,
+		userName: input.userName,
+		createdAt: new Date().toISOString(),
+		text: promptText(input.request.prompt),
+		attachmentCount: promptAttachmentCount(input.request.prompt),
+		request: input.request
+	};
+
+	if (!isSessionBusy(chatSessionId, projectId) && !queues.get(chatSessionId)?.length) {
+		await startQueued(item);
+		return { outcome: 'started', queueId: item.id };
+	}
+
+	const queue = queues.get(chatSessionId) ?? [];
+	queue.push(item);
+	queues.set(chatSessionId, queue);
+	broadcastQueue(chatSessionId);
+	return { outcome: 'queued', queueId: item.id };
+}
+
+/**
+ * Replace the content of a message still waiting in the queue — editing it
+ * before it ran. Only its author can, and only while it is still queued.
+ * Returns false when it already started (or was dropped).
+ */
+export function replaceQueuedPrompt(chatSessionId: string, queueId: string, userId: string, content: unknown[]): boolean {
+	const item = queues.get(chatSessionId)?.find((entry) => entry.id === queueId);
+	if (!item || item.userId !== userId) return false;
+	item.request = { ...item.request, prompt: { ...item.request.prompt, content } as StreamRequest['prompt'] };
+	item.text = promptText(item.request.prompt);
+	item.attachmentCount = promptAttachmentCount(item.request.prompt);
+	broadcastQueue(chatSessionId);
+	return true;
+}
+
+registerComposer({ submit: submitPrompt, replaceQueued: replaceQueuedPrompt });
 
 // ============================================================================
 // Lifecycle
@@ -373,13 +425,9 @@ export const composerHandler = createRouter()
 		const userId = ws.getUserId(conn);
 		const projectId = ws.getProjectId(conn);
 
-		const item: QueuedMessage = {
-			id: crypto.randomUUID(),
+		await submitPrompt({
 			userId,
 			userName: data.sender.name,
-			createdAt: new Date().toISOString(),
-			text: promptText(data.prompt),
-			attachmentCount: promptAttachmentCount(data.prompt),
 			request: {
 				projectPath: data.projectPath,
 				projectId,
@@ -391,17 +439,7 @@ export const composerHandler = createRouter()
 				reasoningEffort: data.reasoningEffort,
 				requestedByUserId: userId
 			}
-		};
-
-		if (!isSessionBusy(data.chatSessionId, projectId) && !queues.get(data.chatSessionId)?.length) {
-			await startQueued(item);
-			return;
-		}
-
-		const queue = queues.get(data.chatSessionId) ?? [];
-		queue.push(item);
-		queues.set(data.chatSessionId, queue);
-		broadcastQueue(data.chatSessionId);
+		});
 	})
 
 	// Drop a queued message. Only its author can.

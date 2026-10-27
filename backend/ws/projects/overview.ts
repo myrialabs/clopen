@@ -294,7 +294,11 @@ export const overviewHandler = createRouter().http(
 		// list endpoint has to apply the same rule to the whole list.
 		const userId = ws.getUserId(conn);
 		const isAdmin = ws.getRole(conn) === 'admin';
-		const projects = isAdmin ? projectQueries.getAll() : projectQueries.getAllForUser(userId);
+		// A Home is its owner's alone — an admin sees every project, but not
+		// everyone else's Home (they would all read "Home").
+		const projects = isAdmin
+			? projectQueries.getAll().filter((project) => project.kind !== 'home' || project.owner_user_id === userId)
+			: projectQueries.getAllForUser(userId);
 		return getOverview(isAdmin ? 'admin' : `user:${userId}`, projects);
 	}
 );

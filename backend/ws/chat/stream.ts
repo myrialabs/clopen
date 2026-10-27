@@ -24,6 +24,7 @@ import {
 } from '$shared/constants/notification-messages';
 import { requireSessionAccess } from '../access';
 import { resolveSessionPath } from '../../worktrees';
+import { normalizeAttachments } from '../../chat/attachments';
 
 /**
  * Where a notification-worthy event happened, resolved once on the server.
@@ -49,14 +50,25 @@ function resolveNotificationContext(
 }
 
 /**
+ * Where tapping a notification lands: the session it is about, through the
+ * `#session/<project>/<session>` route, instead of whatever was open last.
+ */
+function sessionLinkPath(projectId: string, chatSessionId: string): string {
+	return `/#session/${encodeURIComponent(projectId)}/${encodeURIComponent(chatSessionId)}`;
+}
+
+/**
  * Broadcast presence + notify project members when a chat message may flip the
  * stream's waiting-for-input state (an AskUserQuestion tool_use arrives, or a
  * tool_result answers it). `event.data.message` IS the UnifiedMessage, so its
  * blocks live at `.content` — reading `.message.content` (one level too deep)
  * silently yields `[]` and the status indicators never update until refresh.
  *
- * Shared by the initial-stream and reconnect message handlers so the two paths
- * cannot drift apart again.
+ * Driven by the stream manager's global `stream:message`, NOT by the per-room
+ * bridge. A bridge lives only as long as the connection that opened it, so a
+ * question arriving after the user closed the tab used to reach nobody — no
+ * presence, no push — which is exactly when a notification matters. It also
+ * fired once per attached tab; the global event fires once per message.
  */
 function handleWaitingInputChange(
 	event: StreamEvent,
@@ -65,6 +77,7 @@ function handleWaitingInputChange(
 ): void {
 	const message = event.data?.message;
 	const msgContent = Array.isArray(message?.content) ? message.content : [];
+	if (!projectId) return;
 
 	const askToolUse = msgContent.find(
 		(item: any) => item.type === 'tool_use' && item.name === 'AskUserQuestion'
@@ -80,7 +93,7 @@ function handleWaitingInputChange(
 	}
 
 	// Notify all project members when AskUserQuestion arrives (sound + push)
-	if (askToolUse && projectId) {
+	if (askToolUse) {
 		const context = resolveNotificationContext(projectId, chatSessionId);
 
 		ws.emit.projectMembers(projectId, 'chat:waiting-input', {
@@ -101,13 +114,22 @@ function handleWaitingInputChange(
 		if (requestedByUserId) {
 			void sendPushToUser(requestedByUserId, {
 				...chatNotificationMessage('waiting-input', context),
-				tag: waitingInputPushTag(askToolUse.id)
+				tag: waitingInputPushTag(askToolUse.id),
+				url: sessionLinkPath(projectId, chatSessionId)
 			}).catch((error) => {
 				debug.warn('notification', 'Background waiting-input push failed:', error);
 			});
 		}
 	}
 }
+
+streamManager.on('stream:message', (payload: { event: StreamEvent; chatSessionId: string; projectId?: string }) => {
+	try {
+		handleWaitingInputChange(payload.event, payload.chatSessionId, payload.projectId);
+	} catch (err) {
+		debug.error('chat', 'Waiting-input handling failed:', err);
+	}
+});
 
 // ============================================================================
 // Global stream lifecycle handler (module-level, not per-connection)
@@ -158,7 +180,8 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 			status === 'error' ? 'error' : status === 'cancelled' ? 'cancelled' : 'completed';
 		void sendPushToUser(requestedByUserId, {
 			...chatNotificationMessage(notificationEvent, context),
-			tag: chatStreamPushTag(streamId)
+			tag: chatStreamPushTag(streamId),
+			...(chatSessionId ? { url: sessionLinkPath(projectId, chatSessionId) } : {})
 		}).catch((error) => {
 			debug.warn('notification', 'Background stream-finished push failed:', error);
 		});
@@ -231,8 +254,8 @@ export function bridgeStreamToRoom(
 						engine: event.data.engine,
 						seq: event.seq
 					});
-					// Broadcast presence + notify when waiting-input state may change
-					handleWaitingInputChange(event, chatSessionId, projectId);
+					// Waiting-input presence and notifications are handled once per
+					// message by the global `stream:message` listener above.
 					break;
 				}
 
@@ -336,7 +359,10 @@ export async function startChatStream(request: StreamRequest): Promise<string | 
 			workingRoot
 		});
 
-		const streamId = await streamManager.startStream({ ...request, projectPath: workingRoot });
+		// One attachment rule for the web and every chat app: what the model
+		// reads inline stays inline, anything else is saved and named.
+		const prepared = await normalizeAttachments(request, workingRoot);
+		const streamId = await streamManager.startStream({ ...prepared, projectPath: workingRoot });
 		debug.log('chat', 'Stream started with ID:', streamId);
 
 		// The connection event from startStream() fires before anyone subscribes,

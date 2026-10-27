@@ -82,6 +82,8 @@ import * as migration080 from './080_create_file_shares';
 import * as migration081 from './081_create_push_subscriptions';
 import * as migration082 from './082_create_git_identities';
 import * as migration083 from './083_create_project_mcp_trust';
+import * as migration084 from './084_create_channel_links';
+import * as migration085 from './085_add_home_projects';
 
 // Export all migrations in order
 export const migrations = [
@@ -582,6 +584,18 @@ export const migrations = [
 		description: migration083.description,
 		up: migration083.up,
 		down: migration083.down
+	},
+	{
+		id: '084',
+		description: migration084.description,
+		up: migration084.up,
+		down: migration084.down
+	},
+	{
+		id: '085',
+		description: migration085.description,
+		up: migration085.up,
+		down: migration085.down
 	}
 ];
 

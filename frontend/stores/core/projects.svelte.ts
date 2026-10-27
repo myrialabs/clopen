@@ -8,6 +8,7 @@
 
 import ws from '$frontend/utils/ws';
 import type { Project } from '$shared/types/database/schema';
+import { homeFirst, isHomeProject } from '$shared/utils/home-project';
 
 import { debug } from '$shared/utils/logger';
 import { cleanupProjectState } from '$frontend/utils/project-state-cleanup';
@@ -387,7 +388,16 @@ function persistProjectOrder() {
 	});
 }
 
+/**
+ * The user's order, with Home pinned first: it is not a project among
+ * projects but the place a chat with none selected lives, so no drag or
+ * stored order moves it.
+ */
 function applyProjectOrder(projects: Project[], order: string[]): Project[] {
+	return homeFirst(applyStoredOrder(projects, order));
+}
+
+function applyStoredOrder(projects: Project[], order: string[]): Project[] {
 	if (order.length === 0) return projects;
 
 	const projectMap = new Map(projects.map((project) => [project.id, project]));
@@ -428,7 +438,7 @@ export function reorderProjects(sourceProjectId: string, targetProjectId: string
 	const [movedProject] = projects.splice(sourceIndex, 1);
 	projects.splice(targetIndex, 0, movedProject);
 
-	projectState.projects = projects;
+	projectState.projects = homeFirst(projects);
 	projectState.projectOrder = projects.map((project) => project.id);
 	persistProjectOrder();
 	updateRecentProjects();
@@ -504,8 +514,19 @@ export async function loadProjects(restoreProjectId?: string | null) {
 				} else {
 					debug.log('project', 'Saved project no longer exists on server');
 				}
-			} else if (!projectState.currentProject) {
-				debug.log('project', 'No saved project to restore');
+			}
+
+			// Nothing to restore and nothing else to open: land in Home, so the
+			// first screen is a chat that works rather than "No project selected".
+			if (!projectState.currentProject) {
+				const home = projectState.projects.find(isHomeProject);
+				const hasOtherProjects = projectState.projects.some((project) => !isHomeProject(project));
+				if (home && !hasOtherProjects) {
+					debug.log('project', 'No projects yet — opening Home');
+					await setCurrentProject(home);
+				} else {
+					debug.log('project', 'No saved project to restore');
+				}
 			} else {
 				debug.log('project', 'Project already set, skipping restoration');
 			}

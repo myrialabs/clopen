@@ -17,6 +17,7 @@ export const CAPABILITY_LABELS: Record<IntegrationCapability, string> = {
 	database: 'Database',
 	'worktree-branching': 'Worktree branching',
 	notifications: 'Notifications',
+	control: 'Control Clopen',
 	'inbound-events': 'Inbound events'
 };
 
@@ -28,6 +29,7 @@ export const CAPABILITY_SURFACES: Record<IntegrationCapability, string> = {
 	database: 'DB Client',
 	'worktree-branching': 'The worktree switcher → Database branching',
 	notifications: 'Notification channels',
+	control: 'Pair a chat in Settings → Chat Apps, then control Clopen from it',
 	'inbound-events': 'Inbound webhook gateway'
 };
 

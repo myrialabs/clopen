@@ -23,7 +23,8 @@
 	});
 
 	function openPreview(attachment: FileAttachment) {
-		if (!attachment.base64) return;
+		// Only images and PDFs have a viewer; any other file is just its chip.
+		if (!attachment.base64 || attachment.type === 'file') return;
 		preview = {
 			type: attachment.type === 'image' ? 'image' : 'document',
 			mediaType: attachment.file.type,

@@ -22,8 +22,8 @@ export {
 } from './registry';
 export type { IntegrationProvider, McpPreset, WebhookSpec } from './registry';
 
-export { integrationAccounts, toAccountInfo } from './accounts';
-export type { ConnectInput } from './accounts';
+export { integrationAccounts, toAccountInfo, onAccountsChanged, withGeneratedCredentials } from './accounts';
+export type { ConnectInput, AccountsChangedListener } from './accounts';
 
 export { reproject, releaseAll, registerProjector, projectableCapabilities } from './projections';
 export type { Projector, ProjectionContext, ProjectionResult } from './projections';

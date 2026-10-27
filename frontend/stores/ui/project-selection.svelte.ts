@@ -25,6 +25,7 @@ import {
 } from '$frontend/utils/project-list';
 import { debug } from '$shared/utils/logger';
 import type { Project } from '$shared/types/database/schema';
+import { isHomeProject } from '$shared/utils/home-project';
 
 interface ProjectSelectionState {
 	active: boolean;
@@ -174,15 +175,19 @@ export function pruneProject(projectId: string | undefined): void {
 	}
 }
 
-/** Main list: archived projects are excluded, pinned stay on top (stored order kept). */
+/**
+ * Main list: archived projects are excluded, pinned stay on top (stored order
+ * kept). Home is never in it — the navigators render it on its own above the
+ * list, so it cannot be selected, pinned, archived or deleted with the rest.
+ */
 export function visibleProjects(projects: Project[]): Project[] {
 	return sortPinnedFirst(
-		projects.filter((p) => !isProjectArchived(p.id)),
+		projects.filter((p) => !isHomeProject(p) && !isProjectArchived(p.id)),
 		projectSelectionState.pinnedIds
 	);
 }
 
 /** Archived section content, in stored order. */
 export function archivedProjects(projects: Project[]): Project[] {
-	return projects.filter((p) => isProjectArchived(p.id));
+	return projects.filter((p) => !isHomeProject(p) && isProjectArchived(p.id));
 }

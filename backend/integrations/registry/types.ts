@@ -60,10 +60,15 @@ export interface WebhookSpec {
 	/**
 	 * Signature scheme.
 	 *   - `hmac-sha256`: hex or base64 HMAC of the raw body, in `signatureHeader`.
+	 *   - `header-token`: the shared secret itself, echoed verbatim in
+	 *     `signatureHeader` (Telegram's `X-Telegram-Bot-Api-Secret-Token`). It
+	 *     proves the sender knows the secret, not that the body is untouched —
+	 *     which is all such a provider offers, and still enough to tell two
+	 *     connected accounts' deliveries apart.
 	 *   - `none`: no signature — only valid for providers that offer none, and
 	 *     the gateway still requires the account to be connected and enabled.
 	 */
-	scheme: 'hmac-sha256' | 'none';
+	scheme: 'hmac-sha256' | 'header-token' | 'none';
 	/** Header carrying the signature. */
 	signatureHeader?: string;
 	/** Optional prefix the provider puts in front of the digest, e.g. `sha256=`. */
@@ -74,6 +79,14 @@ export interface WebhookSpec {
 	deliveryIdHeader?: string;
 	/** Credential field holding the shared secret. */
 	secretField: string;
+	/**
+	 * The capabilities that turn deliveries on for an account — ANY one of them
+	 * is enough. Defaults to `['inbound-events']`. A provider whose webhook IS
+	 * the transport of other capabilities — a chat channel's button presses and
+	 * messages — names those instead, so receiving them does not depend on a
+	 * further toggle the user would have no reason to understand.
+	 */
+	capabilities?: IntegrationCapability[];
 }
 
 export interface IntegrationProvider {
@@ -95,4 +108,11 @@ export interface IntegrationProvider {
 	mcp?: McpPreset;
 	/** Required when `capabilities` includes `inbound-events`. */
 	webhook?: WebhookSpec;
+	/**
+	 * Credential fields Clopen mints itself at connect time — a webhook secret
+	 * the provider is TOLD rather than one the user copies out of a console.
+	 * Never rendered in the connect form and never reported as configured, but
+	 * stored, sealed and read exactly like any other credential.
+	 */
+	generatedCredentials?: string[];
 }

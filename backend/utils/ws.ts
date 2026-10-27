@@ -105,6 +105,15 @@ class WSServer {
 	/** Room-based: Chat Session ID → Map<wsId, WSConnection> */
 	private chatSessionRooms = new Map<string, Map<string, WSConnection>>();
 
+	/**
+	 * Virtual connections — an identity with no socket behind it, so a caller
+	 * that is not a browser (a chat app, later an MCP client) can run a route
+	 * through the SAME router, auth gate and validation a tab goes through.
+	 * Kept out of `connections` and every room on purpose: a virtual caller is
+	 * not "online", must not show in presence, and must not receive broadcasts.
+	 */
+	private virtualIds = new Set<string>();
+
 	/** Project membership: Project ID → Set<userId> (persists across project switches) */
 	private projectMembers = new Map<string, Set<string>>();
 
@@ -165,6 +174,7 @@ class WSServer {
 	 */
 	private ensureRegistered(conn: WSConnection): string {
 		const existingId = this.resolveId(conn);
+		if (existingId && this.virtualIds.has(existingId)) return existingId;
 		if (existingId && this.connections.has(existingId)) {
 			this.connections.set(existingId, conn);
 			return existingId;
@@ -581,6 +591,53 @@ class WSServer {
 		debug.log('websocket', `Connection ${wsId} authenticated: userId=${userId}, role=${role}`);
 		// A device just came online — refresh Remote Access counts/lists everywhere.
 		this.notifyPresenceChanged();
+	}
+
+	/**
+	 * Open a virtual connection acting as `userId` with `role`, viewing
+	 * `projectId`. Authenticated by construction — the caller vouches for the
+	 * identity (a chat app proved it by pairing) — and never registered in any
+	 * room. Always pair with `closeVirtualConnection()`.
+	 */
+	openVirtualConnection(identity: { userId: string; role: 'admin' | 'member'; projectId?: string | null }): WSConnection {
+		const raw = {};
+		const id = `virtual-${crypto.randomUUID()}`;
+		const conn = { raw, readyState: 1, send: () => {}, close: () => {} } as unknown as WSConnection;
+		this.rawToId.set(raw, id);
+		this.virtualIds.add(id);
+		this.connectionState.set(id, {
+			userId: identity.userId,
+			projectId: identity.projectId ?? null,
+			worktreeId: null,
+			chatSessionIds: new Set(),
+			cleanups: new Set(),
+			authenticated: true,
+			role: identity.role,
+			sessionTokenHash: null,
+			lastSessionCheck: Date.now()
+		});
+		return conn;
+	}
+
+	/** Run a virtual connection's cleanups and forget it. */
+	closeVirtualConnection(conn: WSConnection): void {
+		const id = this.resolveId(conn);
+		if (!id || !this.virtualIds.has(id)) return;
+		const state = this.connectionState.get(id);
+		for (const cleanup of state?.cleanups ?? []) {
+			try {
+				cleanup();
+			} catch (err) {
+				debug.warn('websocket', `Cleanup error for virtual connection ${id}:`, err);
+			}
+		}
+		this.connectionState.delete(id);
+		this.virtualIds.delete(id);
+	}
+
+	isVirtual(conn: WSConnection): boolean {
+		const id = this.resolveId(conn);
+		return Boolean(id && this.virtualIds.has(id));
 	}
 
 	/**

@@ -32,6 +32,7 @@
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
+	import ChatAppsSettings from './chat-apps/ChatAppsSettings.svelte';
 	import TeamSettings from './admin/UserManagement.svelte';
 	import InviteManagement from './admin/InviteManagement.svelte';
 	import SecuritySettings from './security/SecuritySettings.svelte';
@@ -314,6 +315,10 @@
 					{:else if activeSection === 'notifications'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<NotificationSettings />
+						</div>
+					{:else if activeSection === 'chat-apps'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<ChatAppsSettings />
 						</div>
 					{:else if activeSection === 'tunnel' && isAdmin}
 						<div in:fly={{ x: 20, duration: 200 }}>

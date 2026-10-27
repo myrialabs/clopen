@@ -21,6 +21,7 @@ import { SERVER_ENV } from './utils/env';
 import { ensureDefaultEngineInstalled } from './engine/bootstrap-default-engine';
 import { bootstrapMemoryGraph } from './memory/bootstrap';
 import { ensureMemoryModel } from './memory/model';
+import { channelRuntime } from './chat-apps/runtime';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -67,6 +68,12 @@ export function bootstrapAfterDbInit(): void {
 	// Recall is gated on the artifact, but recording is not, so nothing here
 	// blocks startup.
 	bootstrapMemoryGraph();
+
+	// Chat-channel bots are held open by the process, not by a row, so a data
+	// wipe leaves them running for accounts that no longer exist. Re-align them
+	// with the (now empty) accounts table. A no-op at startup: the runtime is
+	// not started yet, and starts — and reconciles — once the server listens.
+	void channelRuntime.reconcile();
 
 	debug.log('server', '✅ Post-DB bootstrap complete');
 }

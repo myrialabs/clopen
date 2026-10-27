@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import HomeProjectEntry from './HomeProjectEntry.svelte';
 	import {
 		projectState,
 		setCurrentProject,
@@ -524,6 +525,11 @@
 				{/if}
 			</div>
 
+			<!-- Home: chat without a project. Always first, never part of the list below. -->
+			<div class="px-3 pb-1" in:fade={{ duration: 150 }}>
+				<HomeProjectEntry onSelect={selectProject} />
+			</div>
+
 			<!-- Projects List -->
 			<div class="flex-1 flex flex-col min-h-0 px-3" in:fade={{ duration: 150 }}>
 				{#if !selectionActive}
@@ -810,6 +816,7 @@
 			{/if}
 
 			<div class="flex-1 flex flex-col items-center gap-2 px-2 pb-4 min-h-0 overflow-y-auto" bind:this={collapsedListEl}>
+				<HomeProjectEntry collapsed onSelect={selectProject} />
 				<!-- Same pinned-first order as the expanded list: width never reorders. -->
 				{#each visibleProjects(projectState.projects) as project (project.id)}
 					{@const projectStatus = presenceState.statuses.get(project.id ?? '')}

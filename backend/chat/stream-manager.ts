@@ -519,6 +519,22 @@ class StreamManager extends EventEmitter {
 		// Emit to stream-specific channel only
 		// (session channel removed to prevent duplicate dispatches)
 		this.emit(`stream:${streamState.streamId}`, event);
+
+		// Messages also go out on one GLOBAL channel, exactly once per message.
+		// The per-stream channel above is only heard while some connection has
+		// bridged the stream into a room — and a bridge closes with its
+		// connection — so anything that must react to a message whether or not
+		// a tab is open (a question arriving after the user closed the browser
+		// is the whole point of a notification) listens here instead.
+		if (type === 'message') {
+			this.emit('stream:message', {
+				event,
+				streamId: streamState.streamId,
+				projectId: streamState.projectId,
+				chatSessionId: streamState.chatSessionId,
+				requestedByUserId: streamState.requestedByUserId
+			});
+		}
 	}
 
 	/**

@@ -647,6 +647,10 @@ export function assignProjectToUser(userId: string, projectId: string): boolean 
 	if (!project) {
 		throw new Error('Access denied');
 	}
+	// A Home workspace belongs to one user and is never shared.
+	if (project.kind === 'home') {
+		throw new Error('A Home workspace cannot be shared');
+	}
 	if (projectQueries.userHasProject(userId, projectId)) {
 		return false;
 	}

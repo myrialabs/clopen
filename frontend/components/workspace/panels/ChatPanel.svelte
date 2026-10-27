@@ -14,6 +14,11 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { isHomeProject } from '$shared/utils/home-project';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
+	import { openNewProjectDialog } from '$frontend/stores/ui/quick-panels.svelte';
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import HomeMark from '$frontend/components/workspace/HomeMark.svelte';
 	import ws from '$frontend/utils/ws';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
@@ -37,6 +42,8 @@
 
 	// Project-aware state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
+	const isHome = $derived(isHomeProject(projectState.currentProject));
+	const hasOtherProjects = $derived(projectState.projects.some((project) => !isHomeProject(project)));
 
 	// Scroll container
 	const scrollContainer: HTMLElement | undefined = $state();
@@ -213,17 +220,57 @@
 				<div class="flex-1 overflow-y-auto overflow-x-hidden">
 					<div class="min-h-full flex items-center justify-center p-4">
 						<div class="w-full max-w-4xl space-y-6 md:space-y-8 lg:space-y-10">
-							<!-- Modern hero section -->
-							<div class="text-center space-y-3 md:space-y-4 px-6">
-								<div class="space-y-3 md:space-y-4">
-									<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">
-										Build apps & websites with AI
-									</h1>
-									<p class="md:text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
-										Describe your idea. Get production-ready code.
-									</p>
+							{#if isHome}
+								<!--
+									Home greets differently on purpose: a chat here is about
+									everything rather than one repository, and the way into a
+									repository is one click away.
+								-->
+								<div class="text-center space-y-4 md:space-y-5 px-6">
+									<HomeMark class="mx-auto w-16 h-16 rounded-2xl shadow-lg! shadow-violet-500/25!" />
+									<div class="space-y-2 md:space-y-3">
+										<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">Home</h1>
+										<p class="md:text-lg text-slate-600 dark:text-slate-400 max-w-xl mx-auto">
+											Ask anything, plan across projects, or start something new. No project needed.
+										</p>
+									</div>
+									<div class="flex flex-wrap items-center justify-center gap-2 text-sm">
+										{#if authStore.isAdmin}
+											<button
+												type="button"
+												class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300 font-medium cursor-pointer transition-colors hover:bg-violet-500/20"
+												onclick={openNewProjectDialog}
+											>
+												<Icon name="lucide:folder-plus" class="w-4 h-4" />
+												<span>Add a project</span>
+											</button>
+										{/if}
+										<button
+											type="button"
+											class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-medium cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
+											onclick={() => openSettingsModal('chat-apps')}
+										>
+											<Icon name="lucide:send" class="w-4 h-4" />
+											<span>Chat from Telegram</span>
+										</button>
+									</div>
+									{#if !authStore.isAdmin && !hasOtherProjects}
+										<p class="text-sm text-slate-500 dark:text-slate-400">Ask an admin for a project to work on one.</p>
+									{/if}
 								</div>
-							</div>
+							{:else}
+								<!-- Modern hero section -->
+								<div class="text-center space-y-3 md:space-y-4 px-6">
+									<div class="space-y-3 md:space-y-4">
+										<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">
+											Build apps & websites with AI
+										</h1>
+										<p class="md:text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
+											Describe your idea. Get production-ready code.
+										</p>
+									</div>
+								</div>
+							{/if}
 
 							<!-- Input area integrated in welcome state -->
 							{#if showInput}

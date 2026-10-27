@@ -47,14 +47,22 @@ export const projectQueries = {
 	create(project: Omit<Project, 'id'>): Project {
 		const db = getDatabase();
 		const id = crypto.randomUUID();
-		const newProject = { id, ...project };
+		const newProject: Project = { id, kind: 'project', owner_user_id: null, ...project };
 
 		db.prepare(`
-			INSERT INTO projects (id, name, path, created_at, last_opened_at)
-			VALUES (?, ?, ?, ?, ?)
-		`).run(id, project.name, project.path, project.created_at, project.last_opened_at);
+			INSERT INTO projects (id, name, path, created_at, last_opened_at, kind, owner_user_id)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
+		`).run(id, project.name, project.path, project.created_at, project.last_opened_at, newProject.kind ?? 'project', newProject.owner_user_id ?? null);
 
 		return newProject;
+	},
+
+	/** A user's Home workspace, if it has been created. */
+	getHomeForUser(userId: string): Project | null {
+		const db = getDatabase();
+		return db.prepare(`
+			SELECT * FROM projects WHERE kind = 'home' AND owner_user_id = ?
+		`).get(userId) as Project | null;
 	},
 
 	updateLastOpened(id: string): void {

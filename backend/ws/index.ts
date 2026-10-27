@@ -48,6 +48,7 @@ import { worktreesRouter } from './worktrees';
 import { notesRouter } from './notes';
 import { workRouter } from './work';
 import { deploymentsRouter } from './deployments';
+import { chatAppsRouter } from './chat-apps';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -130,7 +131,10 @@ export const wsRouter = createRouter()
 	.merge(workRouter)
 
 	// Deployments surface — builds, logs and what is live, for the current project
-	.merge(deploymentsRouter);
+	.merge(deploymentsRouter)
+
+	// Notification channels — pairing a chat with a connected bot, per user
+	.merge(chatAppsRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

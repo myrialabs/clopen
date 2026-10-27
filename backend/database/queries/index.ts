@@ -51,5 +51,18 @@ export {
 export { gitIdentityQueries, gitIdentityBindingQueries, parseHosts } from './git-identity-queries';
 export type { GitIdentityRow, GitIdentityBindingRow, GitIdentityWrite } from './git-identity-queries';
 export { pushSubscriptionQueries } from './push-subscription-queries';
+export {
+	channelLinkQueries,
+	channelMessageQueries,
+	newChannelMessageId
+} from './channel-queries';
+export type {
+	ChannelLinkStatus,
+	ChannelLinkRow,
+	ChannelMessageRow,
+	ChannelMessageKind,
+	ChannelMessageState,
+	ChannelMessageInput
+} from './channel-queries';
 export type { PushSubscription, PushSubscriptionInput } from './push-subscription-queries';
 export type { WorktreeBranchBindingRow, WorktreeBranchRow } from './worktree-branch-queries';

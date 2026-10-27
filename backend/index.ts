@@ -91,6 +91,8 @@ import { portMonitor } from './ports/monitor';
 import { containerMonitor } from './containers/monitor';
 import { stopAllLogStreams as stopAllContainerLogStreams } from './containers/logs';
 import { stopAllBuildLogStreams } from './deployments/log-streams';
+import { startChatApps, stopChatApps } from './chat-apps';
+import { registerControlRouter } from './control';
 import { uploadTempCleanup } from './http/upload-temp-cleanup';
 import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
@@ -112,7 +114,9 @@ wsRouter.setAuthMiddleware(async (conn, action) => {
 	// from another device, admin removal, expiry), the live socket would otherwise
 	// keep full access until it reconnects. Periodically re-confirm the session
 	// still exists in the DB and kick the connection the moment it doesn't.
-	if (isAuth && getAuthMode() === 'required' && !PUBLIC_ROUTES.has(action)) {
+	// A virtual connection has no session token: its identity is vouched for by
+	// whoever opened it (a paired chat app), per call, so there is nothing to revalidate.
+	if (isAuth && getAuthMode() === 'required' && !PUBLIC_ROUTES.has(action) && !wsServer.isVirtual(conn)) {
 		if (wsServer.dueForSessionCheck(conn, SESSION_REVALIDATE_MS)) {
 			const hash = wsServer.getSessionTokenHash(conn);
 			const session = hash ? authQueries.getSessionByTokenHash(hash) : null;
@@ -126,6 +130,10 @@ wsRouter.setAuthMiddleware(async (conn, action) => {
 
 	return result;
 });
+
+// The control catalog runs routes in-process through this router, so remote
+// control (chat apps, later MCP) obeys the same auth gate as the web UI.
+registerControlRouter(wsRouter);
 
 // Register message rate limiter on WebSocket router — prevents DoS via message spam
 wsRouter.setRateLimiter((conn, action, isRequest) => {
@@ -351,6 +359,10 @@ async function startServer() {
 				console.log(`🌐 Network access: http://${ip}:${PORT}`);
 			}
 		}
+		// Chat apps open only once the server can answer: registering a
+		// webhook makes the platform deliver to it right away, and a tunnel
+		// started for it forwards to this port.
+		void startChatApps();
 	});
 }
 
@@ -405,6 +417,9 @@ async function gracefulShutdown() {
 		// Build-log follows are open HTTPS responses against a provider; nothing
 		// closes them but us.
 		stopAllBuildLogStreams();
+		// Chat-app bots: abort long-polls and close ChatKit's state store
+		// before the database (and the process) goes.
+		await stopChatApps();
 		// Close MCP remote server (before engines, as they may still reference it)
 		await closeMcpServer();
 		// Cleanup browser preview sessions

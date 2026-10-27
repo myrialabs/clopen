@@ -8,7 +8,6 @@
 		hasActiveProject: boolean;
 		attachmentCount: number;
 		isProcessingFiles: boolean;
-		modelSupportsAttachments: boolean;
 		/** What the submit button does right now. */
 		submitMode: 'send' | 'queue' | 'edit';
 		/** Whether there is anything to submit. */
@@ -26,7 +25,6 @@
 		hasActiveProject,
 		attachmentCount,
 		isProcessingFiles,
-		modelSupportsAttachments,
 		submitMode,
 		hasContent,
 		submitBlockedReason,
@@ -36,14 +34,10 @@
 	}: Props = $props();
 
 	const attachDisabled = $derived(
-		isProcessingFiles || !hasActiveProject || !modelSupportsAttachments
+		isProcessingFiles || !hasActiveProject
 	);
 
-	const attachTitle = $derived(
-		!modelSupportsAttachments
-			? 'File attachments are not supported by this model'
-			: 'Attach files'
-	);
+	const attachTitle = 'Attach files';
 
 	const submitLabel = $derived(
 		submitMode === 'queue' ? 'Queue message' : submitMode === 'edit' ? 'Send edited message' : 'Send message'

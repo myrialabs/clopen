@@ -41,7 +41,6 @@
 	// Composables
 	import {
 		useFileHandling,
-		buildAcceptedMimeTypes,
 		attachmentFromBase64,
 		type FileAttachment
 	} from './composables/use-file-handling.svelte';
@@ -216,21 +215,8 @@
 
 	// --- Attachments ---
 
-	// Accepted MIME types based on the selected model's input modalities
-	const acceptedMimeTypes = $derived.by(() => {
-		const model = chatModelState.modelId
-			? modelStore.getForEngine(chatModelState.engine, chatModelState.modelId)
-			: undefined;
-		if (!model) return buildAcceptedMimeTypes({ image: true, pdf: true, audio: false, video: false });
-		return buildAcceptedMimeTypes(model.modalities.input);
-	});
-
-	const modelSupportsAttachments = $derived(acceptedMimeTypes.length > 0);
-
-	// Sync allowed types to the file handling composable when model changes
-	$effect(() => {
-		fileHandling.allowedTypes = acceptedMimeTypes;
-	});
+	// Any file can be attached: the server sends what the model reads inline
+	// and saves the rest into the session's folder, naming it in the prompt.
 
 	// Every change to the attachments is saved to the draft right after it.
 	async function afterAttachmentChange(change: Promise<void> | void) {
@@ -540,7 +526,6 @@
 		bind:this={fileInputElement}
 		type="file"
 		multiple
-		accept={acceptedMimeTypes.join(',')}
 		onchange={handleFileInputChange}
 		class="hidden"
 	/>
@@ -623,7 +608,6 @@
 						{hasActiveProject}
 						attachmentCount={fileHandling.attachedFiles.length}
 						isProcessingFiles={fileHandling.isProcessingFiles}
-						{modelSupportsAttachments}
 						{submitMode}
 						{hasContent}
 						{submitBlockedReason}

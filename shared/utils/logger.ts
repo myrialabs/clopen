@@ -40,6 +40,8 @@ export type LogLabel =
 	| 'permissions'
 	| 'profiles'
 	| 'notification'
+	| 'control'
+	| 'chat-apps'
 	| 'rate-limit'
 	
 	// Configuration
