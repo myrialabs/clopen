@@ -47,8 +47,6 @@ const sessionSchema = t.Object({
 	// Isolation
 	worktree_id: t.Optional(t.Union([t.String(), t.Null()])),
 	// Activity tracking
-	sender_id: t.Optional(t.String()),
-	sender_name: t.Optional(t.String()),
 	message_count: t.Optional(t.Number()),
 	user_count: t.Optional(t.Number()),
 	last_message_at: t.Optional(t.String()),
@@ -73,8 +71,6 @@ function serializeSession(session: ChatSession) {
 		head_message_id: session.head_message_id ?? undefined,
 		head_session_id: session.head_session_id ?? undefined,
 		ended_at: session.ended_at ?? undefined,
-		sender_id: session.sender_id ?? undefined,
-		sender_name: session.sender_name ?? undefined,
 		head_title: session.head_title ?? undefined,
 		head_summary: session.head_summary ?? undefined,
 		message_count: session.message_count ?? undefined,
@@ -104,15 +100,14 @@ export const crudHandler = createRouter()
 			}))
 		})
 	}, async ({ conn }) => {
-		const { projectId, userId } = requireCurrentProjectAccess(conn);
+		const { projectId } = requireCurrentProjectAccess(conn);
 		const sessions = sessionQueries.getByProjectId(projectId);
 
-		// Get the user's saved current session for this project
-		const currentSessionId = projectQueries.getCurrentSessionId(userId, projectId);
+		// The saved current session for this project
+		const currentSessionId = projectQueries.getCurrentSessionId(projectId);
 
-		// Get unread sessions for this user/project
-		const unreadRows = sessionQueries.getUnreadSessions(userId, projectId);
-		debug.log('session', `[unread] sessions:list — user=${userId}, project=${projectId}, unreadCount=${unreadRows.length}`, unreadRows);
+		const unreadRows = sessionQueries.getUnreadSessions(projectId);
+		debug.log('session', `[unread] sessions:list — project=${projectId}, unreadCount=${unreadRows.length}`, unreadRows);
 
 		return {
 			sessions: sessions.map(serializeSession),
@@ -163,8 +158,8 @@ export const crudHandler = createRouter()
 			session: sessionSchema,
 			messages: t.Array(t.Any())
 		})
-	}, async ({ data, conn }) => {
-		const session = requireSessionAccess(conn, data.id);
+	}, async ({ data }) => {
+		const session = requireSessionAccess(data.id);
 
 		// Also get messages for this session
 		const messages = messageQueries.getBySessionId(data.id);
@@ -222,8 +217,8 @@ export const crudHandler = createRouter()
 			end_session: t.Optional(t.Boolean())
 		}),
 		response: sessionSchema
-	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.id);
+	}, async ({ data }) => {
+		requireSessionAccess(data.id);
 
 		if (data.title) {
 			sessionQueries.updateTitle(data.id, data.title);
@@ -249,8 +244,8 @@ export const crudHandler = createRouter()
 		response: t.Object({
 			message: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const session = requireSessionAccess(conn, data.id);
+	}, async ({ data }) => {
+		const session = requireSessionAccess(data.id);
 
 		const projectId = session.project_id;
 
@@ -293,7 +288,7 @@ export const crudHandler = createRouter()
 			}
 		}
 
-		// Broadcast to all project members so other users see the deletion
+		// Broadcast to the project so other devices see the deletion
 		debug.log('session', `Broadcasting session deleted: ${data.id} in project: ${projectId}`);
 		ws.emit.project(projectId, 'sessions:session-deleted', {
 			sessionId: data.id,
@@ -394,57 +389,52 @@ export const crudHandler = createRouter()
 		};
 	})
 
-	// Persist user's current session choice (for refresh restore)
+	// Persist the current session choice (for refresh restore)
 	.on('sessions:set-current', {
 		data: t.Object({
 			sessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { projectId, userId } = requireCurrentProjectAccess(conn);
-		requireSessionAccess(conn, data.sessionId);
-		projectQueries.setCurrentSessionId(userId, projectId, data.sessionId);
-		debug.log('session', `User ${userId} set current session to ${data.sessionId} in project ${projectId}`);
+		const { projectId } = requireCurrentProjectAccess(conn);
+		requireSessionAccess(data.sessionId);
+		projectQueries.setCurrentSessionId(projectId, data.sessionId);
+		debug.log('session', `Current session set to ${data.sessionId} in project ${projectId}`);
 	})
 
-	// Mark a session as read for the current user
 	.on('sessions:mark-read', {
 		data: t.Object({
 			sessionId: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		requireSessionAccess(conn, data.sessionId);
-		sessionQueries.markRead(userId, data.sessionId);
-		debug.log('session', `[unread] Marked session ${data.sessionId} as READ for user ${userId}`);
+	}, async ({ data }) => {
+		requireSessionAccess(data.sessionId);
+		sessionQueries.markRead(data.sessionId);
+		debug.log('session', `[unread] Marked session ${data.sessionId} as READ`);
 	})
 
-	// Mark a session as unread for the current user
 	.on('sessions:mark-unread', {
 		data: t.Object({
 			sessionId: t.String(),
 			projectId: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		const session = requireSessionAccess(conn, data.sessionId);
-		requireProjectAccess(conn, data.projectId);
+	}, async ({ data }) => {
+		const session = requireSessionAccess(data.sessionId);
+		requireProjectAccess(data.projectId);
 		if (session.project_id !== data.projectId) {
 			throw new Error('Access denied');
 		}
-		sessionQueries.markUnread(userId, data.sessionId, data.projectId);
-		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD for user ${userId} in project ${data.projectId}`);
+		sessionQueries.markUnread(data.sessionId, data.projectId);
+		debug.log('session', `[unread] Marked session ${data.sessionId} as UNREAD in project ${data.projectId}`);
 	})
 
-	// Mark every session in a project as read for the current user
+	// Mark every session in a project as read
 	.on('sessions:mark-all-read', {
 		data: t.Object({
 			projectId: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		requireProjectAccess(conn, data.projectId);
-		sessionQueries.markAllRead(userId, data.projectId);
-		debug.log('session', `[unread] Marked ALL sessions as READ for user ${userId} in project ${data.projectId}`);
+	}, async ({ data }) => {
+		requireProjectAccess(data.projectId);
+		sessionQueries.markAllRead(data.projectId);
+		debug.log('session', `[unread] Marked ALL sessions as READ in project ${data.projectId}`);
 	})
 
 	// Search sessions by message content within the current project (deep search)
@@ -464,7 +454,7 @@ export const crudHandler = createRouter()
 		return { results };
 	})
 
-	// Search sessions across every project the user has access to (Command Palette)
+	// Search sessions across every project in the workspace list (Command Palette)
 	.http('sessions:search-global', {
 		data: t.Object({
 			query: t.String({ minLength: 1 })
@@ -472,9 +462,8 @@ export const crudHandler = createRouter()
 		response: t.Object({
 			sessions: t.Array(sessionSearchResultSchema)
 		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		const results = sessionQueries.searchGlobal(userId, data.query);
+	}, async ({ data }) => {
+		const results = sessionQueries.searchGlobal(data.query);
 		return {
 			sessions: results.map(r => ({ ...serializeSession(r), matchSnippet: r.matchSnippet }))
 		};

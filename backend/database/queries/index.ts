@@ -17,7 +17,7 @@ export { sshPortForwardQueries } from './ssh-port-forward-queries';
 export { auditLogQueries } from './audit-log-queries';
 export { fileAuditLogQueries } from './file-audit-log-queries';
 export { fileShareQueries } from './file-share-queries';
-export type { FileShareRow, FileShareListRow } from './file-share-queries';
+export type { FileShareRow } from './file-share-queries';
 export { mcpServerQueries } from './mcp-server-queries';
 export type { McpServerRow, McpServerInput, McpTransport, McpSource, McpConfigField, McpToolOverride, McpToolOverrides } from './mcp-server-queries';
 export { skillQueries, parseTriggers, stringifyTriggers, parseUses, stringifyUses, SKILL_TRIGGERS } from './skill-queries';
@@ -57,7 +57,6 @@ export {
 	newChannelMessageId
 } from './channel-queries';
 export type {
-	ChannelLinkStatus,
 	ChannelLinkRow,
 	ChannelMessageRow,
 	ChannelMessageKind,

@@ -95,7 +95,7 @@ export interface PermissionInventory {
 }
 
 export const permissionService = {
-	/** All stored global/project permission sets for the admin listing. Profile
+	/** All stored global/project permission sets for the Settings listing. Profile
 	 *  overlays are excluded — they are managed in the profile editor. */
 	list(projectId?: string): PermissionSetDTO[] {
 		const rows = projectId

@@ -17,7 +17,7 @@ import { filesDownloadRoute } from './files-download';
 import { authQueries } from '../database/queries';
 import { hashToken } from '../auth/tokens';
 import { projectQueries } from '../database/queries/project-queries';
-import { initializeDatabase, closeDatabase } from '../database';
+import { initializeDatabase, closeDatabase, getDatabase } from '../database';
 
 const TEST_DIR = join(import.meta.dir, '.test-download-integration');
 const TEST_WORKSPACE = join(TEST_DIR, 'workspace');
@@ -49,7 +49,6 @@ beforeAll(async () => {
 		name: 'Test User',
 		color: '#000000',
 		avatar: 'test',
-		role: 'member',
 		personal_access_token_hash: null,
 		created_at: new Date().toISOString()
 	});
@@ -74,12 +73,11 @@ beforeAll(async () => {
 		last_opened_at: new Date().toISOString()
 	});
 	testProjectId = project.id;
-	projectQueries.addUserProject(testUserId, testProjectId);
+	projectQueries.list(testProjectId);
 });
 
 afterAll(async () => {
-	authQueries.deleteSessionsByUserId(testUserId);
-	authQueries.deleteUser(testUserId);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(testUserId);
 	projectQueries.deleteProject(testProjectId);
 	closeDatabase();
 	await rm(TEST_DIR, { recursive: true, force: true });
@@ -114,13 +112,14 @@ describe('File download route', () => {
 		expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 	});
 
-	it('rejects a path outside the caller projects', async () => {
-		const filePath = join(OUTSIDE_DIR, 'secret.txt');
-		await writeFile(filePath, 'secret');
+	it('serves a path outside every project', async () => {
+		const filePath = join(OUTSIDE_DIR, 'loose.txt');
+		await writeFile(filePath, 'anywhere on the machine');
 
 		const response = await filesDownloadRoute.handle(createMockDownloadRequest(filePath, testToken));
 
-		expect(response.status).toBe(403);
+		expect(response.status).toBe(200);
+		expect(await response.text()).toBe('anywhere on the machine');
 	});
 
 	it('rejects an unauthenticated request', async () => {

@@ -38,9 +38,9 @@
 				return `${name} will be deleted. Its image and its volumes stay, so an identical container can be created again — anything written inside the container itself and not into a volume is lost.`;
 			case 'force-remove':
 				// Worth its own sentence: this one stops a running container first.
-				return `${name} is still running. It will be stopped and then deleted, taking down whatever it serves for everyone. Its volumes are kept.`;
+				return `${name} is still running. It will be stopped and then deleted, taking down whatever it serves. Its volumes are kept.`;
 			default:
-				return `${name} will be asked to stop. Anything it serves — for every member, not just you — goes down with it.`;
+				return `${name} will be asked to stop. Anything it serves goes down with it.`;
 		}
 	});
 

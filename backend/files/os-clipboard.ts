@@ -24,8 +24,8 @@ import { debug } from '$shared/utils/logger';
  * Ctrl+V/⌘V keeps using the `paste` event fast path in the frontend.
  *
  * Both directions are HOST-MACHINE operations: they read and write the
- * clipboard of the machine the server runs on, not the viewer's. The WS
- * routes therefore restrict them to admins (see `backend/ws/files/clipboard.ts`).
+ * clipboard of the machine the server runs on, not the viewer's (see
+ * `backend/ws/files/clipboard.ts`).
  */
 
 export const OS_CLIPBOARD_ENV_VAR = 'CLOPEN_OS_CLIP_PATHS_B64';

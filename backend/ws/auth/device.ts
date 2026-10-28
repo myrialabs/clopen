@@ -4,10 +4,10 @@
  * - auth:create-device-code — authenticated user mints a one-time code for a new
  *   device. The raw code is embedded in a share link; only its hash is stored.
  * - auth:claim-device-code — PUBLIC. The scanning device exchanges the code for
- *   a session as the owning user. Single-use + short TTL, so a leaked link dies
- *   after one use. Rate-limited like other credential endpoints.
- * - auth:list-sessions / auth:revoke-session — a user manages their own signed-in
- *   devices (sessions).
+ *   a session as the owner. Single-use + short TTL, so a leaked link dies after
+ *   one use. Rate-limited like other credential endpoints.
+ * - auth:list-sessions / auth:revoke-session — manage the signed-in devices
+ *   (sessions).
  */
 
 import { t } from 'elysia';
@@ -16,10 +16,8 @@ import {
 	createDeviceCode,
 	claimDeviceCode,
 	revokeDeviceCode,
-	listUserSessions,
-	listAllSessions,
-	revokeUserSession,
-	revokeAnySession,
+	listSessions,
+	revokeSession,
 	getRemoteAccessSummary
 } from '$backend/auth/auth-service';
 import { auditLogQueries } from '$backend/database/queries';
@@ -30,7 +28,6 @@ import { clientIpFromConnection } from '$backend/utils/client-ip';
 const authUserSchema = t.Object({
 	id: t.String(),
 	name: t.String(),
-	role: t.Union([t.Literal('admin'), t.Literal('member')]),
 	color: t.String(),
 	avatar: t.String(),
 	createdAt: t.String()
@@ -58,7 +55,7 @@ export const deviceHandler = createRouter()
 			ipAddress: clientIpFromConnection(conn)
 		});
 
-		// Refresh the sharer's Remote Access views on their other devices.
+		// Refresh the Remote Access views on the other devices.
 		ws.emit.user(userId, 'remote-access:changed', { kind: 'device-created' });
 
 		return result;
@@ -99,10 +96,10 @@ export const deviceHandler = createRouter()
 				ipAddress: clientIpFromConnection(conn)
 			});
 
-			ws.setAuth(conn, result.user.id, result.user.role, result.tokenHash);
+			ws.setAuth(conn, result.user.id, result.tokenHash);
 
-			// Notify the account's other devices: a device connected — refresh their
-			// device list and close the now-consumed link/QR.
+			// Notify the other devices: a device connected — refresh their device
+			// list and close the now-consumed link/QR.
 			ws.emit.user(result.user.id, 'remote-access:changed', { kind: 'device-claimed' });
 
 			return {
@@ -131,7 +128,7 @@ export const deviceHandler = createRouter()
 		return { success };
 	})
 
-	// List the current user's active sessions (devices)
+	// List the signed-in devices
 	.http('auth:list-sessions', {
 		data: t.Object({}),
 		response: t.Array(t.Object({
@@ -146,31 +143,7 @@ export const deviceHandler = createRouter()
 			source: t.Union([t.String(), t.Null()])
 		}))
 	}, async ({ conn }) => {
-		const userId = ws.getUserId(conn);
-		return listUserSessions(userId, ws.getSessionTokenHash(conn) ?? undefined, ws.getOnlineSessionHashes());
-	})
-
-	// List every device signed in across the team (admin only) — the unified
-	// "Connected devices" view with owner + provenance.
-	.http('auth:list-all-sessions', {
-		data: t.Object({}),
-		response: t.Array(t.Object({
-			id: t.String(),
-			createdAt: t.String(),
-			lastActiveAt: t.String(),
-			expiresAt: t.String(),
-			current: t.Boolean(),
-			online: t.Boolean(),
-			userAgent: t.Union([t.String(), t.Null()]),
-			ipAddress: t.Union([t.String(), t.Null()]),
-			source: t.Union([t.String(), t.Null()]),
-			userId: t.String(),
-			userName: t.String(),
-			userColor: t.String(),
-			userRole: t.Union([t.Literal('admin'), t.Literal('member')])
-		}))
-	}, async ({ conn }) => {
-		return listAllSessions(ws.getSessionTokenHash(conn) ?? undefined, ws.getOnlineSessionHashes());
+		return listSessions(ws.getSessionTokenHash(conn) ?? undefined, ws.getOnlineSessionHashes());
 	})
 
 	// Remote Access summary — backs the sidebar indicator/count (online devices)
@@ -180,12 +153,10 @@ export const deviceHandler = createRouter()
 			activeConnections: t.Number()
 		})
 	}, async ({ conn }) => {
-		const userId = ws.getUserId(conn);
-		const isAdmin = ws.getRole(conn) === 'admin';
-		return getRemoteAccessSummary(userId, isAdmin, ws.getOnlineSessionHashes(), ws.getSessionTokenHash(conn) ?? undefined);
+		return getRemoteAccessSummary(ws.getOnlineSessionHashes(), ws.getSessionTokenHash(conn) ?? undefined);
 	})
 
-	// Revoke one of the current user's own sessions (sign out a device)
+	// Sign out a device
 	.http('auth:revoke-session', {
 		data: t.Object({
 			id: t.String({ minLength: 1 })
@@ -193,7 +164,7 @@ export const deviceHandler = createRouter()
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data, conn }) => {
 		const userId = ws.getUserId(conn);
-		const result = revokeUserSession(userId, data.id);
+		const result = revokeSession(data.id);
 		if (result.success) {
 			// Kick the live connection bound to that session immediately, so the
 			// signed-out device loses access now instead of at its next reconnect.
@@ -208,32 +179,6 @@ export const deviceHandler = createRouter()
 				ipAddress: clientIpFromConnection(conn)
 			});
 			ws.emit.user(userId, 'remote-access:changed', { kind: 'session-revoked' });
-		}
-		return { success: result.success };
-	})
-
-	// Revoke any user's session (admin only — sign out a device from the unified
-	// "Connected devices" list).
-	.http('auth:revoke-any-session', {
-		data: t.Object({
-			id: t.String({ minLength: 1 })
-		}),
-		response: t.Object({ success: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const adminId = ws.getUserId(conn);
-		const result = revokeAnySession(data.id);
-		if (result.success) {
-			if (result.tokenHash) {
-				ws.invalidateSessionByHash(result.tokenHash, 'This device was signed out by an admin');
-			}
-			auditLogQueries.logEvent({
-				userId: adminId,
-				actorUserId: adminId,
-				eventType: 'auth:revoke-any-session',
-				eventDetails: `Admin revoked session ${data.id}`,
-				ipAddress: clientIpFromConnection(conn)
-			});
-			ws.emit.global('remote-access:changed', { kind: 'session-revoked' });
 		}
 		return { success: result.success };
 	});

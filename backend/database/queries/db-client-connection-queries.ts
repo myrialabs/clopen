@@ -90,14 +90,6 @@ function redactConnectionSecrets(connection: DbClientConnection): DbClientConnec
 	};
 }
 
-function hasConnectionAccess(
-	row: DBDbClientConnectionRow,
-	userId: string,
-	isAdmin: boolean
-): boolean {
-	if (isAdmin) return true;
-	return row.owner_user_id === userId;
-}
 
 function preserveExistingSecret(
 	patchValue: string | undefined,
@@ -120,10 +112,9 @@ interface InsertParams {
 	ssh: DbClientSshConfig;
 	options: Record<string, unknown>;
 	color: string | null;
-	ownerUserId: string | null;
 }
 
-function normalizeInput(input: DbClientConnectionInput, ownerUserId: string | null): InsertParams {
+function normalizeInput(input: DbClientConnectionInput): InsertParams {
 	const ssh: DbClientSshConfig = {
 		...DEFAULT_SSH,
 		...(input.ssh ?? {})
@@ -140,8 +131,7 @@ function normalizeInput(input: DbClientConnectionInput, ownerUserId: string | nu
 		sslCa: input.sslCa ?? null,
 		ssh,
 		options: input.options ?? {},
-		color: input.color ?? null,
-		ownerUserId
+		color: input.color ?? null
 	};
 }
 
@@ -152,11 +142,11 @@ function getRowById(id: string): DBDbClientConnectionRow | null {
 	`).get(id) as DBDbClientConnectionRow | null);
 }
 
-function insertConnection(input: DbClientConnectionInput, ownerUserId: string | null): DbClientConnection {
+function insertConnection(input: DbClientConnectionInput): DbClientConnection {
 	const db = getDatabase();
 	const id = crypto.randomUUID();
 	const now = new Date().toISOString();
-	const params = normalizeInput(input, ownerUserId);
+	const params = normalizeInput(input);
 
 	db.prepare(`
 		INSERT INTO db_client_connections (
@@ -166,7 +156,6 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 			ssh_enabled, ssh_host, ssh_port, ssh_username, ssh_auth_method,
 			ssh_password, ssh_private_key, ssh_passphrase, ssh_connection_id,
 			options_json, color,
-			owner_user_id,
 			created_at, updated_at, last_used_at
 		) VALUES (
 			?, ?, ?,
@@ -175,7 +164,6 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
 			?, ?,
-			?,
 			?, ?, ?
 		)
 	`).run(
@@ -193,7 +181,6 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 		params.ssh.connectionId || null,
 		JSON.stringify(params.options),
 		params.color,
-		params.ownerUserId,
 		now, now, null
 	);
 
@@ -205,33 +192,20 @@ function insertConnection(input: DbClientConnectionInput, ownerUserId: string | 
 }
 
 export const dbClientConnectionQueries = {
-	listForUser(userId: string, isAdmin: boolean): DbClientConnection[] {
-		const db = getDatabase();
-		const rows = (isAdmin
-			? db.prepare(`
-				SELECT * FROM db_client_connections
-				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
-			`).all()
-			: db.prepare(`
-				SELECT * FROM db_client_connections
-				WHERE owner_user_id = ?
-				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
-			`).all(userId)) as DBDbClientConnectionRow[];
-
-		return rows.map((row) => redactConnectionSecrets(rowToConnection(openConnectionRow(row))));
+	/** Every connection with its secrets removed — what a client is sent. */
+	listRedacted(): DbClientConnection[] {
+		return this.list().map(redactConnectionSecrets);
 	},
 
-	getForUser(id: string, userId: string, isAdmin: boolean): DbClientConnection | null {
+	getRedacted(id: string): DbClientConnection | null {
 		const row = getRowById(id);
-		if (!row || !hasConnectionAccess(row, userId, isAdmin)) {
-			return null;
-		}
-		return redactConnectionSecrets(rowToConnection(row));
+		return row ? redactConnectionSecrets(rowToConnection(row)) : null;
 	},
 
-	ensureAccess(id: string, userId: string, isAdmin: boolean): DbClientConnection {
+	/** The connection, or an error when it does not exist. */
+	require(id: string): DbClientConnection {
 		const row = getRowById(id);
-		if (!row || !hasConnectionAccess(row, userId, isAdmin)) {
+		if (!row) {
 			throw new Error('db-client connection not found');
 		}
 		return rowToConnection(row);
@@ -252,12 +226,11 @@ export const dbClientConnectionQueries = {
 	},
 
 	create(input: DbClientConnectionInput): DbClientConnection {
-		return insertConnection(input, null);
+		return insertConnection(input);
 	},
 
-	createForUser(input: DbClientConnectionInput, ownerUserId: string): DbClientConnection {
-		const connection = insertConnection(input, ownerUserId);
-		return redactConnectionSecrets(connection);
+	createRedacted(input: DbClientConnectionInput): DbClientConnection {
+		return redactConnectionSecrets(insertConnection(input));
 	},
 
 	update(id: string, patch: Partial<DbClientConnectionInput>): DbClientConnection {
@@ -330,15 +303,9 @@ export const dbClientConnectionQueries = {
 		return rowToConnection(row);
 	},
 
-	updateForUser(
-		id: string,
-		patch: Partial<DbClientConnectionInput>,
-		userId: string,
-		isAdmin: boolean
-	): DbClientConnection {
-		this.ensureAccess(id, userId, isAdmin);
-		const updated = this.update(id, patch);
-		return redactConnectionSecrets(updated);
+	updateRedacted(id: string, patch: Partial<DbClientConnectionInput>): DbClientConnection {
+		this.require(id);
+		return redactConnectionSecrets(this.update(id, patch));
 	},
 
 	/**
@@ -363,11 +330,6 @@ export const dbClientConnectionQueries = {
 	delete(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM db_client_connections WHERE id = ?').run(id);
-	},
-
-	deleteForUser(id: string, userId: string, isAdmin: boolean): void {
-		this.ensureAccess(id, userId, isAdmin);
-		this.delete(id);
 	},
 
 	markUsed(id: string): void {

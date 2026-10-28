@@ -168,7 +168,7 @@ export const conflictHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		return await gitService.continueOperation(cwd, identityEnvFor(conn, data.projectId));
+		return await gitService.continueOperation(cwd, identityEnvFor(data.projectId));
 	})
 
 	.http('git:skip-operation', {
@@ -180,7 +180,7 @@ export const conflictHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		return await gitService.skipOperation(cwd, identityEnvFor(conn, data.projectId));
+		return await gitService.skipOperation(cwd, identityEnvFor(data.projectId));
 	})
 
 	.http('git:abort-operation', {

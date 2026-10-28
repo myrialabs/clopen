@@ -1,13 +1,13 @@
 /**
  * Auth Service
  *
- * Core authentication logic: user creation, session management, invite handling.
+ * Core authentication logic. Clopen has exactly one account — the owner — who
+ * signs in from any number of devices; every device is an auth session.
  */
 
-import { authQueries, projectQueries } from '$backend/database/queries';
+import { authQueries } from '$backend/database/queries';
 import { readSystemSettings, writeSystemSettings } from '$backend/settings/system-settings';
-import type { Project } from '$shared/types/database/schema';
-import { generateSessionToken, generatePAT, generateInviteToken, generateDeviceCode, hashToken, getTokenType } from './tokens';
+import { generateSessionToken, generatePAT, generateDeviceCode, hashToken, getTokenType } from './tokens';
 import { generateColorFromString, getInitials } from '$backend/utils/user-helpers';
 import { debug } from '$shared/utils/logger';
 
@@ -22,7 +22,6 @@ export interface AuthUser {
 	name: string;
 	color: string;
 	avatar: string;
-	role: 'admin' | 'member';
 	createdAt: string;
 }
 
@@ -36,13 +35,12 @@ export interface SetupResult extends AuthResult {
 	personalAccessToken: string;
 }
 
-function toAuthUser(dbUser: { id: string; name: string; color: string; avatar: string; role: 'admin' | 'member'; created_at: string }): AuthUser {
+function toAuthUser(dbUser: { id: string; name: string; color: string; avatar: string; created_at: string }): AuthUser {
 	return {
 		id: dbUser.id,
 		name: dbUser.name,
 		color: dbUser.color,
 		avatar: dbUser.avatar,
-		role: dbUser.role,
 		createdAt: dbUser.created_at
 	};
 }
@@ -53,8 +51,8 @@ export interface SessionMeta {
 	ipAddress?: string;
 }
 
-/** How a session was created — surfaced in the admin "Connected devices" view. */
-export type SessionSource = 'setup' | 'invite' | 'device-link' | 'login' | 'pat' | 'no-auth';
+/** How a session was created — surfaced in the "Your devices" list. */
+export type SessionSource = 'setup' | 'device-link' | 'login' | 'pat' | 'no-auth';
 
 function createSessionForUser(userId: string, source: SessionSource, meta?: SessionMeta, sessionDays?: number): { sessionToken: string; expiresAt: string; tokenHash: string } {
 	const days = sessionDays ?? DEFAULT_SESSION_DAYS;
@@ -79,7 +77,7 @@ function createSessionForUser(userId: string, source: SessionSource, meta?: Sess
 }
 
 /**
- * Check if the system needs initial setup (no users exist)
+ * Check if the system needs initial setup (the owner does not exist yet)
  */
 export function needsSetup(): boolean {
 	return authQueries.countUsers() === 0;
@@ -109,12 +107,12 @@ export function getOnboardingState(): OnboardingState {
 	if (stored.onboarding === 'complete' || stored.onboardingComplete === true) return 'complete';
 	if (stored.onboarding === 'pending') return 'pending';
 
-	// No marker at all. An install that already has users has, by definition,
-	// been through setup — the wizard is what created them. Record that so a
+	// No marker at all. An install that already has an owner has, by
+	// definition, been through setup — the wizard is what created it. Record that so a
 	// single missing key can never flap the whole instance back to setup.
 	if (!needsSetup()) {
 		markOnboardingComplete();
-		debug.log('auth', 'Onboarding marker missing but users exist — recorded as complete');
+		debug.log('auth', 'Onboarding marker missing but the owner exists — recorded as complete');
 		return 'complete';
 	}
 
@@ -140,42 +138,37 @@ export function markOnboardingComplete(): void {
 }
 
 /**
- * Create a default admin user for no-auth mode.
- * Does not generate a PAT (not needed for no-auth).
- * If users already exist, returns the first admin.
+ * Sign in for no-auth mode: reuse the owner, creating a default one on a fresh
+ * install. Does not generate a PAT (not needed for no-auth).
  */
-export function createOrGetNoAuthAdmin(): AuthResult {
-	// If users already exist, return the first admin
-	const existingUsers = authQueries.getAllUsers();
-	const existingAdmin = existingUsers.find(u => u.role === 'admin');
-	if (existingAdmin) {
-		const { sessionToken, expiresAt } = createSessionForUser(existingAdmin.id, 'no-auth');
-		debug.log('auth', `No-auth mode: reusing existing admin: ${existingAdmin.name} (${existingAdmin.id})`);
+export function createOrGetNoAuthOwner(): AuthResult {
+	const existing = authQueries.getOwner();
+	if (existing) {
+		const { sessionToken, expiresAt } = createSessionForUser(existing.id, 'no-auth');
+		debug.log('auth', `No-auth mode: reusing owner: ${existing.name} (${existing.id})`);
 		return {
-			user: toAuthUser(existingAdmin),
+			user: toAuthUser(existing),
 			sessionToken,
 			expiresAt
 		};
 	}
 
-	// Create default admin
 	const userId = `user-${crypto.randomUUID()}`;
 	const now = new Date().toISOString();
-	const defaultName = 'Admin';
+	const defaultName = 'Owner';
 
 	const dbUser = authQueries.createUser({
 		id: userId,
 		name: defaultName,
 		color: generateColorFromString(defaultName),
 		avatar: getInitials(defaultName),
-		role: 'admin',
 		personal_access_token_hash: '', // No PAT for no-auth mode
 		created_at: now
 	});
 
 	const { sessionToken, expiresAt } = createSessionForUser(userId, 'no-auth');
 
-	debug.log('auth', `No-auth mode: created default admin: ${defaultName} (${userId})`);
+	debug.log('auth', `No-auth mode: created default owner: ${defaultName} (${userId})`);
 
 	return {
 		user: toAuthUser(dbUser),
@@ -185,12 +178,11 @@ export function createOrGetNoAuthAdmin(): AuthResult {
 }
 
 /**
- * Create the first admin user (setup flow)
- * Only works when no users exist.
+ * Create the owner account (setup flow). Only works before setup.
  */
-export function createAdmin(name: string, meta?: SessionMeta): SetupResult {
+export function createOwner(name: string, meta?: SessionMeta): SetupResult {
 	if (!needsSetup()) {
-		throw new Error('Setup already completed. Admin account exists.');
+		throw new Error('Setup already completed. The owner account exists.');
 	}
 
 	const trimmedName = name.trim();
@@ -208,88 +200,13 @@ export function createAdmin(name: string, meta?: SessionMeta): SetupResult {
 		name: trimmedName,
 		color: generateColorFromString(trimmedName),
 		avatar: getInitials(trimmedName),
-		role: 'admin',
 		personal_access_token_hash: patHash,
 		created_at: now
 	});
 
 	const { sessionToken, expiresAt } = createSessionForUser(userId, 'setup', meta);
 
-	debug.log('auth', `Admin account created: ${trimmedName} (${userId})`);
-
-	return {
-		user: toAuthUser(dbUser),
-		sessionToken,
-		expiresAt,
-		personalAccessToken: pat
-	};
-}
-
-/**
- * Create a user from an invite token
- */
-export function createUserFromInvite(rawInviteToken: string, name: string, meta?: SessionMeta): SetupResult {
-	const trimmedName = name.trim();
-	if (trimmedName.length === 0) {
-		throw new Error('Name cannot be empty');
-	}
-
-	const inviteHash = hashToken(rawInviteToken);
-	const invite = authQueries.getInviteByTokenHash(inviteHash);
-
-	if (!invite) {
-		throw new Error('Invalid invite token');
-	}
-
-	// Check expiry
-	if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
-		throw new Error('Invite token has expired');
-	}
-
-	// Check max uses
-	if (invite.max_uses > 0 && invite.use_count >= invite.max_uses) {
-		throw new Error('Invite token has reached maximum uses');
-	}
-
-	// Only allow creating member role from invite (single admin policy)
-	const role: 'admin' | 'member' = 'member';
-
-	const userId = `user-${crypto.randomUUID()}`;
-	const now = new Date().toISOString();
-	const pat = generatePAT();
-	const patHash = hashToken(pat);
-
-	const dbUser = authQueries.createUser({
-		id: userId,
-		name: trimmedName,
-		color: generateColorFromString(trimmedName),
-		avatar: getInitials(trimmedName),
-		role,
-		personal_access_token_hash: patHash,
-		created_at: now
-	});
-
-	// Increment invite use count
-	authQueries.incrementUseCount(invite.id);
-
-	// Apply any projects the admin pre-selected when creating the invite, so the
-	// new member has access the moment they join (no separate assignment trip).
-	if (invite.project_ids) {
-		try {
-			const projectIds: string[] = JSON.parse(invite.project_ids);
-			for (const projectId of projectIds) {
-				if (projectQueries.getById(projectId) && !projectQueries.userHasProject(userId, projectId)) {
-					projectQueries.addUserProject(userId, projectId);
-				}
-			}
-		} catch (err) {
-			debug.warn('auth', 'Failed to apply invite project pre-assignment:', err);
-		}
-	}
-
-	const { sessionToken, expiresAt } = createSessionForUser(userId, 'invite', meta);
-
-	debug.log('auth', `User created from invite: ${trimmedName} (${userId}), role: ${role}`);
+	debug.log('auth', `Owner account created: ${trimmedName} (${userId})`);
 
 	return {
 		user: toAuthUser(dbUser),
@@ -376,104 +293,11 @@ export function getUserById(id: string): AuthUser | null {
 }
 
 /**
- * List all users
+ * The owner account, or null before setup.
  */
-export function listUsers(): AuthUser[] {
-	return authQueries.getAllUsers().map(toAuthUser);
-}
-
-/**
- * Remove a user (prevents removing the last admin)
- */
-export function removeUser(userId: string): void {
-	const user = authQueries.getUserById(userId);
-	if (!user) {
-		throw new Error('User not found');
-	}
-
-	if (user.role === 'admin' && authQueries.countAdmins() <= 1) {
-		throw new Error('Cannot remove the last admin');
-	}
-
-	// Delete all sessions for this user
-	authQueries.deleteSessionsByUserId(userId);
-	// Delete the user (cascade will handle invite_tokens.created_by)
-	authQueries.deleteUser(userId);
-
-	debug.log('auth', `User removed: ${user.name} (${userId})`);
-}
-
-/**
- * Create an invite token
- */
-export function createInvite(
-	createdBy: string,
-	options: { label?: string; maxUses?: number; expiresInMinutes?: number; projectIds?: string[] }
-): { inviteToken: string; invite: ReturnType<typeof authQueries.getInviteByTokenHash> } {
-	const rawToken = generateInviteToken();
-	const tokenHash = hashToken(rawToken);
-	const now = new Date().toISOString();
-
-	const expiresAt = options.expiresInMinutes
-		? new Date(Date.now() + options.expiresInMinutes * 60 * 1000).toISOString()
-		: null;
-
-	// Keep only project ids that actually exist so a stale pick can't wedge the join.
-	const validProjectIds = (options.projectIds ?? []).filter((id) => projectQueries.getById(id));
-
-	const invite = authQueries.createInvite({
-		id: `invite-${crypto.randomUUID()}`,
-		token_hash: tokenHash,
-		role: 'member',
-		label: options.label ?? null,
-		created_by: createdBy,
-		max_uses: options.maxUses ?? 1,
-		use_count: 0,
-		expires_at: expiresAt,
-		created_at: now,
-		project_ids: validProjectIds.length ? JSON.stringify(validProjectIds) : null
-	});
-
-	debug.log('auth', `Invite created by ${createdBy}: ${invite.id}`);
-
-	return { inviteToken: rawToken, invite };
-}
-
-/**
- * Validate an invite token (without using it)
- */
-export function validateInviteToken(rawToken: string): { valid: boolean; role?: string; error?: string } {
-	const tokenHash = hashToken(rawToken);
-	const invite = authQueries.getInviteByTokenHash(tokenHash);
-
-	if (!invite) {
-		return { valid: false, error: 'Invalid invite token' };
-	}
-
-	if (invite.expires_at && new Date(invite.expires_at) < new Date()) {
-		return { valid: false, error: 'Invite has expired' };
-	}
-
-	if (invite.max_uses > 0 && invite.use_count >= invite.max_uses) {
-		return { valid: false, error: 'Invite has reached maximum uses' };
-	}
-
-	return { valid: true, role: invite.role };
-}
-
-/**
- * List all invites
- */
-export function listInvites() {
-	return authQueries.getAllInvites();
-}
-
-/**
- * Revoke an invite
- */
-export function revokeInvite(id: string): void {
-	authQueries.revokeInvite(id);
-	debug.log('auth', `Invite revoked: ${id}`);
+export function getOwner(): AuthUser | null {
+	const user = authQueries.getOwner();
+	return user ? toAuthUser(user) : null;
 }
 
 /**
@@ -614,7 +438,7 @@ export function updateUserName(userId: string, newName: string): AuthUser {
 }
 
 /**
- * Logout all sessions (all users)
+ * Sign out every device
  */
 export function logoutAllSessions(): number {
 	const count = authQueries.deleteAllSessions();
@@ -623,66 +447,8 @@ export function logoutAllSessions(): number {
 }
 
 /**
- * List projects assigned to a specific user (admin view)
- */
-export function listUserProjects(userId: string): Project[] {
-	const user = authQueries.getUserById(userId);
-	if (!user) {
-		throw new Error('User not found');
-	}
-	return projectQueries.getAllForUser(userId);
-}
-
-/**
- * Assign a project to a user. Admins are implicitly assigned to all projects
- * they create, but this is used to grant a member access to a project.
- * Returns true if a new assignment was added, false if user already had access.
- */
-export function assignProjectToUser(userId: string, projectId: string): boolean {
-	const user = authQueries.getUserById(userId);
-	if (!user) {
-		throw new Error('Access denied');
-	}
-	const project = projectQueries.getById(projectId);
-	if (!project) {
-		throw new Error('Access denied');
-	}
-	// A Home workspace belongs to one user and is never shared.
-	if (project.kind === 'home') {
-		throw new Error('A Home workspace cannot be shared');
-	}
-	if (projectQueries.userHasProject(userId, projectId)) {
-		return false;
-	}
-	projectQueries.addUserProject(userId, projectId);
-	debug.log('auth', `Project ${projectId} assigned to user ${userId}`);
-	return true;
-}
-
-/**
- * Revoke a user's access to a project. Refuses to remove the last admin
- * association to avoid orphaning the project.
- */
-export function unassignProjectFromUser(userId: string, projectId: string): boolean {
-	const user = authQueries.getUserById(userId);
-	if (!user) {
-		throw new Error('Access denied');
-	}
-	const project = projectQueries.getById(projectId);
-	if (!project) {
-		throw new Error('Access denied');
-	}
-	if (!projectQueries.userHasProject(userId, projectId)) {
-		return false;
-	}
-	projectQueries.removeUserProject(userId, projectId);
-	debug.log('auth', `Project ${projectId} unassigned from user ${userId}`);
-	return true;
-}
-
-/**
- * List a user's active auth sessions (devices). `current` marks the session
- * matching the given token hash so the caller can flag "this device".
+ * A signed-in device. `current` marks the session matching the given token
+ * hash so the caller can flag "this device".
  */
 export interface AuthSessionInfo {
 	id: string;
@@ -697,16 +463,8 @@ export interface AuthSessionInfo {
 	source: string | null;
 }
 
-/** Admin "Connected devices" row — a session enriched with its owning user. */
-export interface AdminSessionInfo extends AuthSessionInfo {
-	userId: string;
-	userName: string;
-	userColor: string;
-	userRole: 'admin' | 'member';
-}
-
-export function listUserSessions(userId: string, currentTokenHash?: string, onlineHashes?: Set<string>): AuthSessionInfo[] {
-	return authQueries.getSessionsByUserId(userId).map((s) => ({
+export function listSessions(currentTokenHash?: string, onlineHashes?: Set<string>): AuthSessionInfo[] {
+	return authQueries.getAllSessions().map((s) => ({
 		id: s.id,
 		createdAt: s.created_at,
 		lastActiveAt: s.last_active_at,
@@ -720,57 +478,16 @@ export function listUserSessions(userId: string, currentTokenHash?: string, onli
 }
 
 /**
- * List every session across all users (admin view), enriched with the owning
- * user's identity and whether the device is currently online.
+ * Sign out one device. Returns the deleted session's token hash so the caller
+ * can kick any live WS connection bound to it.
  */
-export function listAllSessions(currentTokenHash?: string, onlineHashes?: Set<string>): AdminSessionInfo[] {
-	return authQueries.getAllSessions().map((s) => {
-		const user = authQueries.getUserById(s.user_id);
-		return {
-			id: s.id,
-			createdAt: s.created_at,
-			lastActiveAt: s.last_active_at,
-			expiresAt: s.expires_at,
-			current: currentTokenHash !== undefined && s.token_hash === currentTokenHash,
-			online: onlineHashes?.has(s.token_hash) ?? false,
-			userAgent: s.user_agent,
-			ipAddress: s.ip_address,
-			source: s.source,
-			userId: s.user_id,
-			userName: user?.name ?? 'Unknown',
-			userColor: user?.color ?? '#888888',
-			userRole: user?.role ?? 'member'
-		};
-	});
-}
-
-/**
- * Revoke one of a user's own sessions by id. Scoped to the owner so a member
- * can only sign out their own devices. Returns the deleted session's token hash
- * so the caller can kick any live WS connection bound to it.
- */
-export function revokeUserSession(userId: string, sessionId: string): { success: boolean; tokenHash?: string } {
-	const session = authQueries.getSessionById(sessionId);
-	if (!session || session.user_id !== userId) {
-		return { success: false };
-	}
-	authQueries.deleteSession(sessionId);
-	debug.log('auth', `Session revoked: ${sessionId} (user ${userId})`);
-	return { success: true, tokenHash: session.token_hash };
-}
-
-/**
- * Revoke any session by id (admin-only). Unlike revokeUserSession this is not
- * owner-scoped — an admin can sign out any connected device. Returns the token
- * hash so the caller can kick the live WS connection immediately.
- */
-export function revokeAnySession(sessionId: string): { success: boolean; tokenHash?: string } {
+export function revokeSession(sessionId: string): { success: boolean; tokenHash?: string } {
 	const session = authQueries.getSessionById(sessionId);
 	if (!session) {
 		return { success: false };
 	}
 	authQueries.deleteSession(sessionId);
-	debug.log('auth', `Session revoked by admin: ${sessionId} (user ${session.user_id})`);
+	debug.log('auth', `Session revoked: ${sessionId}`);
 	return { success: true, tokenHash: session.token_hash };
 }
 
@@ -778,19 +495,15 @@ export function revokeAnySession(sessionId: string): { success: boolean; tokenHa
  * Remote Access sidebar indicator: the number of *other* devices currently
  * online. "Active" means a live WS connection is bound to the session right now
  * — not merely a session row in the DB — so this mirrors Public Tunnel's live
- * connection count and the "Connected devices" list. A member sees their own
- * online devices; an admin sees the whole team's. The viewer's current device
- * is always excluded so the badge reads "N remote devices connected".
+ * connection count and the "Your devices" list. The viewer's current device is
+ * excluded so the badge reads "N remote devices connected".
  */
 export function getRemoteAccessSummary(
-	userId: string,
-	isAdmin: boolean,
 	onlineHashes: Set<string>,
 	currentTokenHash?: string
 ): { activeConnections: number } {
-	const sessions = isAdmin ? authQueries.getAllSessions() : authQueries.getSessionsByUserId(userId);
 	let activeConnections = 0;
-	for (const s of sessions) {
+	for (const s of authQueries.getAllSessions()) {
 		if (!onlineHashes.has(s.token_hash)) continue;
 		if (currentTokenHash && s.token_hash === currentTokenHash) continue;
 		activeConnections++;

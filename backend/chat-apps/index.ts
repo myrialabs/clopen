@@ -15,12 +15,12 @@
  *   conversation.ts   the active target, sending, going back, menus, commands
  *   questions.ts      answering AskUserQuestion from a chat
  *   messages.ts       the wording, as pure functions
- *   pairing.ts        one-time codes binding a chat to a user
+ *   pairing.ts        one-time codes binding a chat to Clopen
  *
  * A chat app is a CAPABILITY of a connected account (`control`), not a panel:
  * the bot token lives on its `integration_accounts` row like every other
- * credential. What a user manages — their own pairing and what the chat is
- * told about unprompted — sits in Settings → Chat Apps. WHAT the chat can do
+ * credential. Pairing and what the chat is told about unprompted sit in
+ * Settings → Chat Apps. WHAT the chat can do
  * is not here at all: it is the control catalog (`backend/control/`), shared
  * with every other remote surface.
  *
@@ -45,10 +45,7 @@ import { issuePairingCode, revokePairingCode, PAIRING_TTL_MS } from './pairing';
 import { onToolActivity, onUserMessage } from './turns';
 import { CHAT_COMMANDS, REPLIES, describeToolUse, textCard } from './messages';
 import { commandReference, setPublicOriginResolver, type CommandEntry } from '$backend/control';
-import { getUserById, type AuthUser } from '$backend/auth/auth-service';
 import type { ChannelCommand } from './platforms';
-import type { MenuRole } from './runtime';
-import { approveLink, rejectLink } from './approvals';
 import { notifyLinksChanged } from './link-events';
 
 export { registerComposer, onLinksChanged } from './inbound';
@@ -66,12 +63,12 @@ const MAX_MENU_COMMANDS = 100;
 const MAX_MENU_DESCRIPTION = 256;
 
 /**
- * The `/` menu for a role: EXACTLY what `/help` lists for that person, in the
- * same order — the chat's own commands, then the catalog's. Generated, so a
- * new catalog action shows up in every chat app without touching this module.
+ * The `/` menu: EXACTLY what `/help` lists, in the same order — the chat's own
+ * commands, then the catalog's. Generated, so a new catalog action shows up in
+ * every chat app without touching this module.
  */
-export function botCommands(role: MenuRole): ChannelCommand[] {
-	return commandReference({ role }, CHAT_COMMANDS)
+export function botCommands(): ChannelCommand[] {
+	return commandReference(CHAT_COMMANDS)
 		.slice(0, MAX_MENU_COMMANDS)
 		.map((entry) => {
 			const described = entry.hint ? `${entry.description} (${entry.hint})` : entry.description;
@@ -81,12 +78,8 @@ export function botCommands(role: MenuRole): ChannelCommand[] {
 
 channelRuntime.setInboundHandler(handleInboundMessage);
 channelRuntime.setCommandMenu({
-	forRole: botCommands,
-	chatsOf: (accountId) =>
-		channelLinkQueries.listByAccount(accountId).flatMap((link) => {
-			const user = getUserById(link.user_id);
-			return user ? [{ conversationId: link.conversation_id, role: user.role }] : [];
-		})
+	commands: botCommands,
+	chatsOf: (accountId) => channelLinkQueries.listByAccount(accountId).map((link) => link.conversation_id)
 });
 // Links in catalog results use the runtime's origin, which remembers the last
 // real domain a browser used — better than a bare lookup.
@@ -199,15 +192,10 @@ export async function stopChatApps(): Promise<void> {
 
 export interface ChannelLinkInfo {
 	id: string;
-	userId: string;
-	userName: string;
 	/** The chat's name on the platform. */
 	displayName: string | null;
-	status: 'pending' | 'approved';
 	/** Off: the chat can do nothing at all until it is switched back on. */
 	isEnabled: boolean;
-	/** The viewer's own chat (an admin also sees everyone else's). */
-	isMine: boolean;
 	createdAt: string;
 	lastUsedAt: string | null;
 }
@@ -226,26 +214,22 @@ export interface ChannelBotInfo {
 	error: string | null;
 	/** "Control Clopen" is on for this bot; without it a chat cannot drive anything. */
 	control: boolean;
-	/** The chats paired through this bot: the viewer's own, or every one for an admin. */
+	/** The chats paired through this bot. */
 	links: ChannelLinkInfo[];
 }
 
-function toLinkInfo(row: ChannelLinkRow, viewerId: string): ChannelLinkInfo {
+function toLinkInfo(row: ChannelLinkRow): ChannelLinkInfo {
 	return {
 		id: row.id,
-		userId: row.user_id,
-		userName: getUserById(row.user_id)?.name ?? 'Unknown user',
 		displayName: row.display_name,
-		status: row.status,
 		isEnabled: row.is_enabled === 1,
-		isMine: row.user_id === viewerId,
 		createdAt: row.created_at,
 		lastUsedAt: row.last_used_at
 	};
 }
 
-/** Every bot a user can pair with, and the chats they may see on it. */
-export async function listChannelBots(viewer: AuthUser, requestOrigin?: string): Promise<ChannelBotInfo[]> {
+/** Every bot a chat can pair with, and the chats paired through it. */
+export async function listChannelBots(requestOrigin?: string): Promise<ChannelBotInfo[]> {
 	channelRuntime.rememberBrowserOrigin(requestOrigin);
 	const bots: ChannelBotInfo[] = [];
 	for (const row of integrationAccountQueries.getAll()) {
@@ -254,11 +238,7 @@ export async function listChannelBots(viewer: AuthUser, requestOrigin?: string):
 		const capabilities = integrationAccountQueries.capabilitiesOf(row);
 		const status = channelRuntime.status(row.id);
 		const adapter = channelRuntime.adapterFor(row.id);
-		const links = channelLinkQueries
-			.listByAccount(row.id)
-			.filter((link) => viewer.role === 'admin' || link.user_id === viewer.id)
-			// Your own chats first, then requests waiting for you, then the rest.
-			.sort((a, b) => Number(b.user_id === viewer.id) - Number(a.user_id === viewer.id) || Number(b.status === 'pending') - Number(a.status === 'pending'));
+		const links = channelLinkQueries.listByAccount(row.id);
 		bots.push({
 			accountId: row.id,
 			provider: row.provider,
@@ -271,7 +251,7 @@ export async function listChannelBots(viewer: AuthUser, requestOrigin?: string):
 			connection: status.connection,
 			error: status.error,
 			control: capabilities.includes('control'),
-			links: links.map((link) => toLinkInfo(link, viewer.id))
+			links: links.map(toLinkInfo)
 		});
 	}
 	return bots;
@@ -291,40 +271,32 @@ export function cancelPairingLink(userId: string, accountId: string): void {
 	revokePairingCode(userId, accountId);
 }
 
-/** A link the viewer may manage: their own, or any for an admin. */
-function manageableLink(viewer: AuthUser, linkId: string): ChannelLinkRow {
+function requireLink(linkId: string): ChannelLinkRow {
 	const link = channelLinkQueries.getById(linkId);
-	if (!link || (link.user_id !== viewer.id && viewer.role !== 'admin')) throw new Error('Linked chat not found');
+	if (!link) throw new Error('Linked chat not found');
 	return link;
 }
 
-export async function setChannelLinkEnabled(viewer: AuthUser, linkId: string, enabled: boolean): Promise<void> {
-	const link = manageableLink(viewer, linkId);
+export async function setChannelLinkEnabled(linkId: string, enabled: boolean): Promise<void> {
+	const link = requireLink(linkId);
 	channelLinkQueries.setEnabled(linkId, enabled);
 	// Switched off or back on from Clopen: the chat should know why it went quiet.
-	if (enabled !== (link.is_enabled === 1) && link.status === 'approved') {
+	if (enabled !== (link.is_enabled === 1)) {
 		await channelRuntime.send(link.account_id, link.conversation_id, textCard(enabled ? REPLIES.chatOn : REPLIES.chatOff)).catch(() => {});
 	}
-	notifyLinksChanged(link.user_id);
+	notifyLinksChanged();
 }
 
-export async function removeChannelLink(viewer: AuthUser, linkId: string): Promise<void> {
-	const link = manageableLink(viewer, linkId);
+export async function removeChannelLink(linkId: string): Promise<void> {
+	const link = requireLink(linkId);
 	channelLinkQueries.remove(linkId);
-	await channelRuntime.syncChatMenu(link.account_id, link.conversation_id, null, { force: true });
 	// Tell the chat, so it does not keep waiting for messages that will never come.
 	await channelRuntime.send(link.account_id, link.conversation_id, textCard(REPLIES.unlinked)).catch(() => {});
-	notifyLinksChanged(link.user_id);
+	notifyLinksChanged();
 }
 
-export async function decideChannelLink(viewer: AuthUser, linkId: string, decision: 'approve' | 'reject'): Promise<void> {
-	if (viewer.role !== 'admin') throw new Error('Only an admin can approve a chat');
-	const done = decision === 'approve' ? await approveLink(linkId) : await rejectLink(linkId);
-	if (!done) throw new Error('That chat is no longer waiting for approval');
-}
-
-export async function sendChannelTest(viewer: AuthUser, linkId: string): Promise<void> {
-	const link = manageableLink(viewer, linkId);
+export async function sendChannelTest(linkId: string): Promise<void> {
+	const link = requireLink(linkId);
 	await channelRuntime.send(link.account_id, link.conversation_id, textCard(REPLIES.testMessage));
 	channelLinkQueries.touch(linkId);
 }
@@ -332,6 +304,6 @@ export async function sendChannelTest(viewer: AuthUser, linkId: string): Promise
 export type ChatAppCommandInfo = CommandEntry;
 
 /** The command reference Settings shows — the same list `/help` and the `/` menu are. */
-export function listChatAppCommands(user: AuthUser): ChatAppCommandInfo[] {
-	return commandReference(user, CHAT_COMMANDS);
+export function listChatAppCommands(): ChatAppCommandInfo[] {
+	return commandReference(CHAT_COMMANDS);
 }

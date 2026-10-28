@@ -21,8 +21,8 @@ export const crudHandler = createRouter()
 			include_all: t.Optional(t.Boolean())
 		}),
 		response: t.Array(t.Any())
-	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.session_id);
+	}, async ({ data }) => {
+		requireSessionAccess(data.session_id);
 		if (data.include_all) {
 			// Return all messages including those in other branches (for History view)
 			const allMessages = messageQueries.getAllBySessionId(data.session_id);
@@ -39,8 +39,8 @@ export const crudHandler = createRouter()
 			messageId: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const message = requireMessageAccess(conn, data.messageId);
+	}, async ({ data }) => {
+		const message = requireMessageAccess(data.messageId);
 		return loadMessage(message);
 	})
 
@@ -52,8 +52,8 @@ export const crudHandler = createRouter()
 			messageId: t.String({ minLength: 1 })
 		}),
 		response: t.Array(t.Any())
-	}, async ({ data, conn }) => {
-		requireMessageAccess(conn, data.messageId);
+	}, async ({ data }) => {
+		requireMessageAccess(data.messageId);
 		return messageQueries.getSubAgentMessages(data.messageId);
 	})
 
@@ -65,9 +65,9 @@ export const crudHandler = createRouter()
 		response: t.Object({
 			message: t.String()
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		// Check if message exists first
-		requireMessageAccess(conn, data.messageId);
+		requireMessageAccess(data.messageId);
 
 		// Delete the message
 		messageQueries.delete(data.messageId);

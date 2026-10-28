@@ -1,12 +1,11 @@
 /**
- * The bridge from a WebSocket connection to a git identity.
+ * The bridge from a git route to the project's git identity.
  *
- * Handlers already know the project (`data.projectId`); this adds the other
- * half, the user, from the connection. Both are needed because an identity is
- * owned by a person and chosen per project, so neither alone identifies one.
+ * Handlers already know the project (`data.projectId`); the identity is chosen
+ * per project, falling back to the default.
  *
- * Every helper here degrades to `{}` rather than throwing. A user with no
- * identity, an unreadable row, a project that was never bound — all of them
+ * Every helper here degrades to `{}` rather than throwing. No identity, an
+ * unreadable row, a project that was never bound — all of them
  * mean "run git the way Clopen always did", which is a working commit, not an
  * error dialog.
  */
@@ -14,8 +13,6 @@
 import { resolveGitEnv } from '$backend/git/identity';
 import { gitService } from '$backend/git/git-service';
 import type { GitIdentityEnv } from '$backend/git/git-executor';
-import { ws } from '$backend/utils/ws';
-import type { WSConnection } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -24,11 +21,9 @@ import { debug } from '$shared/utils/logger';
  * For commits, merges, stashes, tags — anything that writes a git object
  * without reaching the network.
  */
-export function identityEnvFor(conn: WSConnection, projectId: string): GitIdentityEnv {
+export function identityEnvFor(projectId: string): GitIdentityEnv {
 	try {
-		const userId = ws.getUserId(conn);
-		if (!userId) return {};
-		return resolveGitEnv(projectId, userId);
+		return resolveGitEnv(projectId);
 	} catch (error) {
 		debug.warn('git', 'Could not resolve a git identity for this connection:', error);
 		return {};
@@ -48,17 +43,13 @@ export function identityEnvFor(conn: WSConnection, projectId: string): GitIdenti
  * behaviour as before this feature.
  */
 export async function identityEnvForRemote(
-	conn: WSConnection,
 	projectId: string,
 	cwd: string,
 	remoteName?: string
 ): Promise<GitIdentityEnv> {
 	try {
-		const userId = ws.getUserId(conn);
-		if (!userId) return {};
-
 		const url = await remoteUrl(cwd, remoteName);
-		return resolveGitEnv(projectId, userId, url);
+		return resolveGitEnv(projectId, url);
 	} catch (error) {
 		debug.warn('git', 'Could not resolve a git identity for this remote:', error);
 		return {};

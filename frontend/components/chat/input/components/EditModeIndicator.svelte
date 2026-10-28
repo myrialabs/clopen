@@ -7,15 +7,6 @@
 	}
 
 	const { onCancel }: Props = $props();
-
-	// Someone else's edit is theirs to finish; collaborators are only told about
-	// it, because submitting it rewinds the chat for everyone.
-	const othersEditing = $derived.by(() => {
-		const names = [...new Set(editModeState.editors.map((editor) => editor.userName || 'Someone'))];
-		if (names.length === 0) return '';
-		if (names.length === 1) return `${names[0]} is editing a message`;
-		return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} are editing messages`;
-	});
 </script>
 
 {#if editModeState.isEditing}
@@ -38,10 +29,5 @@
 				Cancel
 			</button>
 		</div>
-	</div>
-{:else if othersEditing}
-	<div class="flex items-center gap-2 px-4 py-1.5 border-b border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">
-		<Icon name="lucide:pencil" class="w-3.5 h-3.5 shrink-0" />
-		<span>{othersEditing}</span>
 	</div>
 {/if}

@@ -25,7 +25,7 @@ function chain(sessionId: string, messages: UnifiedMessage[]): string[] {
 
 const base = { createdAt: '', messageId: '', sessionId: null, parent: { messageId: null, sessionId: null, toolUseId: null } };
 const engine = { type: 'claude-code', provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } };
-const user = (content: unknown[]) => ({ ...base, type: 'user', engine, sender: { id: 'u', name: 'u' }, content }) as unknown as UnifiedMessage;
+const user = (content: unknown[]) => ({ ...base, type: 'user', engine, content }) as unknown as UnifiedMessage;
 const assistant = (text: string) => ({ ...base, type: 'assistant', engine, content: [{ type: 'text', text }], stopReason: null, usage: null }) as unknown as UnifiedMessage;
 
 function newSession(): string {

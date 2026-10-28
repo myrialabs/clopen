@@ -7,7 +7,6 @@
 		globalIndex: number;
 		messageId: string;
 		text: string;
-		sender?: string;
 	}
 
 	interface Props {
@@ -186,11 +185,6 @@
 			bg-white/95 text-slate-900 ring-1 ring-slate-200
 			dark:bg-slate-700/95 dark:text-white dark:ring-0"
 	>
-		{#if item.sender}
-			<div class="text-xs text-slate-500 dark:text-slate-400 mb-0.5 font-medium">
-				{item.sender}
-			</div>
-		{/if}
 		<div class="text-sm leading-snug line-clamp-2 break-words">
 			{previewText(item.text)}
 		</div>

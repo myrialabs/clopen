@@ -1,16 +1,14 @@
 /**
  * Profiles Handlers (Settings → Profiles) + per-session picker + project default.
  *
- *   - profiles:list / get / inventory / create / update / delete   (admin)
- *   - profiles:get-permissions / save-permissions                  (admin, Fase 3)
- *   - profiles:set-project-default                                 (admin)
- *   - profiles:available / project-default                         (non-admin)
+ *   - profiles:list / get / inventory / create / update / delete
+ *   - profiles:get-permissions / save-permissions
+ *   - profiles:set-project-default
+ *   - profiles:available / project-default
  *
  * A Profile bundles references to existing artifacts (Skills, Commands,
  * Subagents, Integrations) by slug plus an optional per-engine allow/deny
- * overlay. Nothing is duplicated — see `backend/profiles`. Admin gating lives in
- * `backend/auth/permissions.ts`; the picker/default-read routes stay non-admin
- * (choosing a profile for a session is a run choice like the model).
+ * overlay. Nothing is duplicated — see `backend/profiles`.
  */
 
 import { t } from 'elysia';
@@ -129,7 +127,7 @@ export const profilesCrudHandler = createRouter()
 		return { success: true };
 	})
 
-	// ── Non-admin: per-session picker + default read ───────────────────────────
+	// ── Per-session picker + default read ──────────────────────────────────────
 	.http('profiles:available', {
 		data: t.Object({}),
 		response: t.Object({

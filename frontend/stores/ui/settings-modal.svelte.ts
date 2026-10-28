@@ -27,7 +27,6 @@ export type SettingsSection =
 	| 'chat-apps'
 	| 'tunnel'
 	| 'account'
-	| 'team'
 	| 'security'
 	| 'device'
 	| 'system';
@@ -59,12 +58,6 @@ interface SettingsModalState {
 	 */
 	engineFocus: EngineType | null;
 	/**
-	 * User whose project-access modal should auto-open when Team is shown. Set by
-	 * the "new member joined" nudge and the invite flow; UserManagement consumes
-	 * and clears it.
-	 */
-	teamFocusUserId: string | null;
-	/**
 	 * Provider whose Connect dialog should open as soon as Integrations is shown.
 	 *
 	 * Set by a CTA that already knows what the user is trying to connect — the
@@ -82,7 +75,6 @@ export interface SettingsSectionMeta {
 	icon: IconName;
 	description: string;
 	group: SettingsGroup;
-	adminOnly?: boolean;
 }
 
 export const settingsSections: SettingsSectionMeta[] = [
@@ -119,40 +111,35 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Memory',
 		icon: 'lucide:brain',
 		description: 'Model for long-term memory',
-		group: 'models',
-		adminOnly: true
+		group: 'models'
 	},
 	{
 		id: 'engines',
 		label: 'Engines',
 		icon: 'lucide:circuit-board',
 		description: 'Accounts and providers',
-		group: 'infrastructure',
-		adminOnly: true
+		group: 'infrastructure'
 	},
 	{
 		id: 'stack',
 		label: 'Stack',
 		icon: 'lucide:hammer',
 		description: 'Engines, runtimes & tools',
-		group: 'infrastructure',
-		adminOnly: true
+		group: 'infrastructure'
 	},
 	{
 		id: 'memory-graph',
 		label: 'Memory',
 		icon: 'lucide:brain',
 		description: 'What gets remembered',
-		group: 'infrastructure',
-		adminOnly: true
+		group: 'infrastructure'
 	},
 	{
 		id: 'tunnel',
 		label: 'Tunnel',
 		icon: 'lucide:globe',
 		description: 'Cloudflare tunnel services',
-		group: 'infrastructure',
-		adminOnly: true
+		group: 'infrastructure'
 	},
 	{
 		id: 'file-shares',
@@ -160,9 +147,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		icon: 'lucide:link',
 		// Infrastructure, not Artifacts & Access: a share link is a way out of
 		// this server, like a tunnel — nothing to do with what an engine can
-		// reach. Not adminOnly either, because any member can mint one from the
-		// Explorer and therefore needs somewhere to withdraw it; the server
-		// scopes the list, admins see every link.
+		// reach.
 		description: 'Links that expose a single file',
 		group: 'infrastructure'
 	},
@@ -174,8 +159,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		// and hand-installed MCP servers are one list now, because two places to
 		// connect a service means two tokens in two tables.
 		description: 'Connected services and tools',
-		group: 'artifacts-access',
-		adminOnly: true
+		group: 'artifacts-access'
 	},
 	{
 		id: 'skills',
@@ -185,40 +169,35 @@ export const settingsSections: SettingsSectionMeta[] = [
 		// invokes by name instead of one the agent picks up, so two menus meant
 		// two editors over one artifact.
 		description: 'Reusable prompts and /commands',
-		group: 'artifacts-access',
-		adminOnly: true
+		group: 'artifacts-access'
 	},
 	{
 		id: 'subagents',
 		label: 'Subagents',
 		icon: 'lucide:bot',
 		description: 'Specialized delegated agents',
-		group: 'artifacts-access',
-		adminOnly: true
+		group: 'artifacts-access'
 	},
 	{
 		id: 'instructions',
 		label: 'Instructions',
 		icon: 'lucide:scroll-text',
 		description: 'Shared instruction block',
-		group: 'artifacts-access',
-		adminOnly: true
+		group: 'artifacts-access'
 	},
 	{
 		id: 'permissions',
 		label: 'Permissions',
 		icon: 'lucide:shield-check',
 		description: 'Per-engine tool allow/deny',
-		group: 'artifacts-access',
-		adminOnly: true
+		group: 'artifacts-access'
 	},
 	{
 		id: 'profiles',
 		label: 'Profiles',
 		icon: 'lucide:layers',
 		description: 'Reusable tool bundles',
-		group: 'artifacts-access',
-		adminOnly: true
+		group: 'artifacts-access'
 	},
 	{
 		id: 'appearance',
@@ -249,36 +228,25 @@ export const settingsSections: SettingsSectionMeta[] = [
 		group: 'preferences'
 	},
 	{
-		id: 'team',
-		label: 'Team',
-		icon: 'lucide:users',
-		description: 'Members, invites, and devices',
-		group: 'administration',
-		adminOnly: true
-	},
-	{
 		id: 'security',
 		label: 'Security',
 		icon: 'lucide:shield',
 		description: 'Login and access control',
-		group: 'administration',
-		adminOnly: true
+		group: 'administration'
 	},
 	{
 		id: 'device',
 		label: 'Device',
 		icon: 'lucide:server',
 		description: 'Server hardware and status',
-		group: 'administration',
-		adminOnly: true
+		group: 'administration'
 	},
 	{
 		id: 'system',
 		label: 'Maintenance',
 		icon: 'lucide:settings-2',
 		description: 'Updates and data',
-		group: 'administration',
-		adminOnly: true
+		group: 'administration'
 	}
 ];
 
@@ -287,7 +255,6 @@ export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
 	activeSection: 'assistant',
 	engineFocus: null,
-	teamFocusUserId: null,
 	integrationFocusProvider: null
 });
 
@@ -331,20 +298,4 @@ export function focusEngineSection(engine: EngineType) {
 /** Called by AIEnginesSettings after consuming the focus request. */
 export function clearEngineFocus() {
 	settingsModalState.engineFocus = null;
-}
-
-/**
- * Open the Team section and request a specific member's project-access modal —
- * used by the "new member joined" nudge and the invite flow so the admin lands
- * exactly where they can grant access.
- */
-export function openTeamForUser(userId: string) {
-	settingsModalState.isOpen = true;
-	settingsModalState.activeSection = 'team';
-	settingsModalState.teamFocusUserId = userId;
-}
-
-/** Called by UserManagement after consuming the focus request. */
-export function clearTeamFocus() {
-	settingsModalState.teamFocusUserId = null;
 }

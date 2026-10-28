@@ -35,9 +35,8 @@ function getContainerPtyConnection(conn: WSConnection): PtyKitConnection {
 	if (existing) return existing;
 
 	const userId = ws.getUserId(conn);
-	const isAdmin = ws.getRole(conn) === 'admin';
 	const ptyConn = containerPtyKitServer.createConnection({
-		data: { userId, isAdmin, connId },
+		data: { userId, connId },
 		send: (frame) => {
 			ws.sendToConnectionId(connId, JSON.stringify({ action: 'containers:pty-out', payload: frame }));
 		}

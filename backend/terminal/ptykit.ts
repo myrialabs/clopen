@@ -41,7 +41,7 @@ export const ptyKitManager = new PtyKitManager({
 /**
  * Embedded WebSocket server over the manager. No HTTP/Bun mounting — Clopen's
  * tunnel feeds it frames and supplies per-connection `send`. `authorize` enforces
- * project access; the room is the project so output is collaborative.
+ * project access; the room is the project so every device sees the same output.
  */
 export const ptyKitServer = createPtyKitServer(ptyKitManager, {
 	room: (ctx) => ctx.namespace,
@@ -49,19 +49,18 @@ export const ptyKitServer = createPtyKitServer(ptyKitManager, {
 		const userId = ctx.conn.data.userId;
 		if (typeof userId !== 'string' || !userId) return false;
 		// The namespace separates worktrees; access is still the project's call.
-		const allowed = projectQueries.userHasProject(userId, scopeProjectId(ctx.namespace));
+		const allowed = projectQueries.isListed(scopeProjectId(ctx.namespace));
 		if (allowed) knownNamespaces.add(ctx.namespace);
 		return allowed;
 	},
 	/**
-	 * The shell inherits the git identity of whoever opened it, for the project
-	 * it belongs to. Without this a `git commit` typed into the terminal would
+	 * The shell inherits the git identity of the project it belongs to. Without this a `git commit` typed into the terminal would
 	 * use the machine's identity while the same commit from the Git panel used
 	 * the chosen one — the same repository, two different authors.
 	 *
 	 * Pointed at a FILE rather than given the `GIT_CONFIG_*` block the other
 	 * surfaces use. A shell lives for hours and its environment is fixed at
-	 * spawn, so an inlined identity goes stale the moment the user switches
+	 * spawn, so an inlined identity goes stale the moment the project switches
 	 * accounts — silently, since the tab keeps working. Git re-reads a config
 	 * file on every invocation, so the switch reaches tabs that are already open.
 	 * See `backend/git/identity/scope-config.ts`.
@@ -71,9 +70,7 @@ export const ptyKitServer = createPtyKitServer(ptyKitManager, {
 	 * user's own global config away from every git command in the terminal.
 	 */
 	env: async (ctx): Promise<Record<string, string>> => {
-		const userId = ctx.conn.data.userId;
-		if (typeof userId !== 'string' || !userId) return {};
-		const path = await writeScopeConfig(userId, scopeProjectId(ctx.namespace));
+		const path = await writeScopeConfig(scopeProjectId(ctx.namespace));
 		return path ? { GIT_CONFIG_GLOBAL: path } : {};
 	}
 });

@@ -1,7 +1,7 @@
 /**
  * The control catalog's own rules — the things every surface generated from
  * it relies on: unique ids and commands, argument parsing and validation,
- * help and descriptions filtered by role, and in-process route calls that go
+ * help and the command menu agreeing, and in-process route calls that go
  * through the same auth gate a browser does.
  */
 
@@ -13,7 +13,6 @@ import {
 	CONTROL_ACTIONS,
 	checkArgs,
 	commandReference,
-	commandsFor,
 	controlActionForCommand,
 	controlHelp,
 	describeControlActions,
@@ -24,9 +23,6 @@ import {
 import { defineAction } from './define';
 import { botCommands } from '$backend/chat-apps';
 import { CHAT_COMMANDS } from '$backend/chat-apps/messages';
-
-const admin = { role: 'admin' as const };
-const member = { role: 'member' as const };
 
 describe('the catalog', () => {
 	it('has unique ids and commands, all well-formed', () => {
@@ -47,18 +43,16 @@ describe('the catalog', () => {
 		for (const id of referenced) expect(getControlAction(id)).not.toBeNull();
 	});
 
-	it("keeps admin-only actions out of a member's commands and help", () => {
-		const memberCommands = commandsFor(member).map((action) => action.command!.name);
-		expect(memberCommands).toContain('model');
-		expect(memberCommands).not.toContain('newproject');
-		expect(memberCommands).not.toContain('accounts');
-		expect(controlHelp(member)).not.toContain('/accounts');
-		expect(controlHelp(admin)).toContain('/accounts');
-		expect(describeControlActions(member).some((action) => action.access === 'admin')).toBe(false);
+	it('lists every command-bearing action in help and the description', () => {
+		const help = controlHelp();
+		for (const action of CONTROL_ACTIONS.filter((entry) => entry.command)) {
+			expect(help).toContain(`/${action.command!.name}`);
+		}
+		expect(describeControlActions().length).toBe(CONTROL_ACTIONS.length);
 	});
 
 	it('offers nothing a person would not do in the web UI: no raw routes, no secrets typed into a chat', () => {
-		const names = commandsFor(admin).map((action) => action.command!.name);
+		const names = CONTROL_ACTIONS.flatMap((action) => (action.command ? [action.command.name] : []));
 		for (const gone of ['api', 'routes', 'addaccount', 'models', 'deletesession', 'update', 'system', 'mcp', 'rename', 'profile', 'notify', 'whoami']) {
 			expect(names).not.toContain(gone);
 		}
@@ -71,7 +65,7 @@ describe('the catalog', () => {
 		for (const name of catalog) expect(own).not.toContain(name);
 		expect(new Set([...own, ...catalog]).size).toBe(own.length + catalog.length);
 		expect(catalog).not.toContain('settings');
-		expect(() => defineAction({ id: 'chat.thing', group: 'sessions', title: 't', description: 'd', access: 'member', args: t.Object({}), async run() { return { text: '' }; } })).toThrow(/chat\./);
+		expect(() => defineAction({ id: 'chat.thing', group: 'sessions', title: 't', description: 'd', args: t.Object({}), async run() { return { text: '' }; } })).toThrow(/chat\./);
 	});
 
 	it('runs skills through /run, never as /<skill-name>', () => {
@@ -95,34 +89,22 @@ describe('the catalog', () => {
 	});
 
 	it('publishes a command menu every chat app accepts', () => {
-		for (const role of ['admin', 'member'] as const) {
-			const commands = botCommands(role);
-			expect(commands.length).toBeLessThanOrEqual(100);
-			for (const command of commands) {
-				expect(command.command).toMatch(/^[a-z0-9_]{1,32}$/);
-				expect(command.description.length).toBeGreaterThan(0);
-				expect(command.description.length).toBeLessThanOrEqual(256);
-			}
-			expect(new Set(commands.map((command) => command.command)).size).toBe(commands.length);
+		const commands = botCommands();
+		expect(commands.length).toBeLessThanOrEqual(100);
+		for (const command of commands) {
+			expect(command.command).toMatch(/^[a-z0-9_]{1,32}$/);
+			expect(command.description.length).toBeGreaterThan(0);
+			expect(command.description.length).toBeLessThanOrEqual(256);
 		}
+		expect(new Set(commands.map((command) => command.command)).size).toBe(commands.length);
 	});
 
 	it('the menu, /help and the Settings reference list the same commands in the same order', () => {
-		for (const user of [admin, member]) {
-			const reference = commandReference(user, CHAT_COMMANDS).map((entry) => entry.command);
-			expect(botCommands(user.role).map((command) => command.command)).toEqual(reference);
-			const help = controlHelp(user, CHAT_COMMANDS);
-			const inHelp = [...help.matchAll(/^\/([a-z0-9_]+)/gm)].map((match) => match[1]);
-			expect(inHelp).toEqual(reference);
-		}
-	});
-
-	it("never offers a member an admin-only command in the menu", () => {
-		const memberMenu = botCommands('member').map((command) => command.command);
-		for (const action of CONTROL_ACTIONS.filter((entry) => entry.access === 'admin' && entry.command)) {
-			expect(memberMenu).not.toContain(action.command!.name);
-		}
-		expect(botCommands('admin').map((command) => command.command)).toContain('accounts');
+		const reference = commandReference(CHAT_COMMANDS).map((entry) => entry.command);
+		expect(botCommands().map((command) => command.command)).toEqual(reference);
+		const help = controlHelp(CHAT_COMMANDS);
+		const inHelp = [...help.matchAll(/^\/([a-z0-9_]+)/gm)].map((match) => match[1]);
+		expect(inHelp).toEqual(reference);
 	});
 });
 
@@ -152,13 +134,13 @@ describe('in-process route calls', () => {
 			value: data.value,
 			userId: ws.getUserId(conn)
 		}))
-		.http('test:admin', { data: t.Object({}), response: t.Object({ ok: t.Boolean() }) }, async () => ({ ok: true }));
-	router.setAuthMiddleware(async (conn, action) =>
-		action === 'test:admin' && ws.getRole(conn) !== 'admin' ? { allowed: false, error: 'Admin access required' } : { allowed: true }
+		.http('test:gated', { data: t.Object({}), response: t.Object({ ok: t.Boolean() }) }, async () => ({ ok: true }));
+	router.setAuthMiddleware(async (_conn, action) =>
+		action === 'test:gated' ? { allowed: false, error: 'Authentication required' } : { allowed: true }
 	);
 
-	async function as(role: 'admin' | 'member', action: string, data: unknown) {
-		const conn = ws.openVirtualConnection({ userId: 'u-1', role, projectId: 'p-1' });
+	async function call(action: string, data: unknown) {
+		const conn = ws.openVirtualConnection({ userId: 'u-1', projectId: 'p-1' });
 		try {
 			return await router.invoke(conn, action, data);
 		} finally {
@@ -167,19 +149,18 @@ describe('in-process route calls', () => {
 	}
 
 	it('runs the handler as the virtual user and returns its result', async () => {
-		expect(await as('member', 'test:echo', { value: 7 })).toEqual({ value: 7, userId: 'u-1' });
+		expect(await call('test:echo', { value: 7 })).toEqual({ value: 7, userId: 'u-1' });
 	});
 
 	it('goes through the auth gate and the request schema', async () => {
-		await expect(as('member', 'test:admin', {})).rejects.toThrow('Admin access required');
-		expect(await as('admin', 'test:admin', {})).toEqual({ ok: true });
-		await expect(as('member', 'test:echo', { value: 'x' })).rejects.toThrow(/validation failed/);
-		await expect(as('member', 'test:missing', {})).rejects.toThrow(/Unknown action/);
+		await expect(call('test:gated', {})).rejects.toThrow('Authentication required');
+		await expect(call('test:echo', { value: 'x' })).rejects.toThrow(/validation failed/);
+		await expect(call('test:missing', {})).rejects.toThrow(/Unknown action/);
 	});
 
 	it('a virtual connection is never online', () => {
 		const before = ws.getConnections().length;
-		const conn = ws.openVirtualConnection({ userId: 'u-1', role: 'member' });
+		const conn = ws.openVirtualConnection({ userId: 'u-1' });
 		expect(ws.isVirtual(conn)).toBe(true);
 		expect(ws.getConnections().length).toBe(before);
 		ws.closeVirtualConnection(conn);

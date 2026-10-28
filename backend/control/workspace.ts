@@ -27,7 +27,7 @@ export function modelOf(session: ChatSession | null | undefined): ModelChoice | 
 	return { engine: session.engine, provider: session.provider ?? '', modelId: session.model_id, modelName: session.model_name ?? session.model_id };
 }
 
-/** The model the user last picked in Clopen — the per-user settings blob, read here only for this. */
+/** The model last picked in Clopen — the saved settings blob, read here only for this. */
 export function settingsModel(userId: string): ModelChoice | null {
 	try {
 		const raw = settingsQueries.get(`user:${userId}:settings`)?.value;
@@ -50,15 +50,15 @@ function byRecency(a: ChatSession, b: ChatSession): number {
 	return (b.last_message_at ?? b.started_at).localeCompare(a.last_message_at ?? a.started_at);
 }
 
-export function recentSessions(userId: string, projectId?: string): ChatSession[] {
-	const projects = projectId ? [projectId] : projectQueries.getAllForUser(userId).map((project) => project.id);
+export function recentSessions(projectId?: string): ChatSession[] {
+	const projects = projectId ? [projectId] : projectQueries.getListed().map((project) => project.id);
 	return projects.flatMap((id) => sessionQueries.getByProjectId(id)).sort(byRecency);
 }
 
 /** A model for a NEW session: this project's latest, the user's picked one, then any they used. */
 export function pickModel(userId: string, projectId: string): ModelChoice | null {
-	const inProject = recentSessions(userId, projectId).map(modelOf).find(Boolean);
-	return inProject ?? settingsModel(userId) ?? recentSessions(userId).map(modelOf).find(Boolean) ?? null;
+	const inProject = recentSessions(projectId).map(modelOf).find(Boolean);
+	return inProject ?? settingsModel(userId) ?? recentSessions().map(modelOf).find(Boolean) ?? null;
 }
 
 /**
@@ -108,20 +108,20 @@ export function createSession(project: Project, model: ModelChoice): ChatSession
 }
 
 /**
- * Resolve a target to rows the user may act on. A project they no longer have
+ * Resolve a target to rows that can be acted on. A project that was removed
  * falls back to Home; a session outside the project is dropped.
  */
-export function resolveTarget(userId: string, target: Partial<ControlTarget> | null): { project: Project; session: ChatSession | null } {
+export function resolveTarget(target: Partial<ControlTarget> | null): { project: Project; session: ChatSession | null } {
 	let project = target?.projectId ? projectQueries.getById(target.projectId) : null;
-	if (!project || !projectQueries.userHasProject(userId, project.id)) project = ensureHomeProject(userId);
+	if (!project || !projectQueries.isListed(project.id)) project = ensureHomeProject();
 	const session = target?.sessionId ? sessionQueries.getById(target.sessionId) : null;
 	return { project, session: session && session.project_id === project.id ? session : null };
 }
 
-/** A session the user may act on, with its project. */
-export function accessibleSession(userId: string, sessionId: string | null | undefined): { project: Project; session: ChatSession } | null {
+/** A session that can be acted on, with its project. */
+export function accessibleSession(sessionId: string | null | undefined): { project: Project; session: ChatSession } | null {
 	const session = sessionId ? sessionQueries.getById(sessionId) : null;
 	const project = session ? projectQueries.getById(session.project_id) : null;
-	if (!session || !project || !projectQueries.userHasProject(userId, project.id)) return null;
+	if (!session || !project || !projectQueries.isListed(project.id)) return null;
 	return { project, session };
 }

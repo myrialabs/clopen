@@ -6,9 +6,8 @@
 	live, because a stop that can be reached without opening anything is a stop
 	that will eventually be hit by accident.
 
-	Environment values are shown only to an admin, and only after asking: a
-	container's env is where its database password lives, and this pane is
-	reachable through a shared Remote Access link.
+	Environment values are shown only after asking: a container's env is where
+	its database password lives.
 -->
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
@@ -21,14 +20,13 @@
 
 	interface Props {
 		entry: ContainerEntry;
-		canManage: boolean;
 		onClose: () => void;
 		onAction: (entry: ContainerEntry, action: ContainerAction) => void;
 		/** Rendered as a bottom sheet on small screens rather than a side panel. */
 		sheet?: boolean;
 	}
 
-	const { entry, canManage, onClose, onAction, sheet = false }: Props = $props();
+	const { entry, onClose, onAction, sheet = false }: Props = $props();
 
 	let showEnv = $state(false);
 
@@ -104,67 +102,65 @@
 			Logs
 		</button>
 
-		{#if canManage}
+		<button
+			type="button"
+			class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 hover:text-violet-700 dark:hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed"
+			onclick={() => containersStore.openShell(entry)}
+			disabled={entry.state !== 'running'}
+			title={entry.state === 'running'
+				? 'Open a shell inside this container'
+				: 'A stopped container has nothing to attach to'}
+		>
+			<Icon name="lucide:terminal" class="w-3.5 h-3.5" />
+			Shell
+		</button>
+
+		{#if entry.canManage}
 			<button
 				type="button"
-				class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 hover:text-violet-700 dark:hover:text-violet-300 disabled:opacity-40 disabled:cursor-not-allowed"
-				onclick={() => containersStore.openShell(entry)}
-				disabled={entry.state !== 'running'}
-				title={entry.state === 'running'
-					? 'Open a shell inside this container'
-					: 'A stopped container has nothing to attach to'}
+				class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 disabled:opacity-40 disabled:cursor-wait"
+				onclick={() => onAction(entry, isUp ? 'stop' : 'start')}
+				disabled={busy}
 			>
-				<Icon name="lucide:terminal" class="w-3.5 h-3.5" />
-				Shell
+				<Icon
+					name={busy ? 'lucide:loader-circle' : isUp ? 'lucide:square' : 'lucide:play'}
+					class="w-3.5 h-3.5 {busy ? 'animate-spin' : ''}"
+				/>
+				{isUp ? 'Stop' : 'Start'}
+			</button>
+			<button
+				type="button"
+				class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 disabled:opacity-40 disabled:cursor-wait"
+				onclick={() => onAction(entry, 'restart')}
+				disabled={busy}
+			>
+				<Icon name="lucide:rotate-cw" class="w-3.5 h-3.5" />
+				Restart
 			</button>
 
-			{#if entry.canManage}
+			{#if isUp}
+				<!-- Pause freezes the processes without unbinding the ports, which
+				     is the one way to stop something eating CPU and keep its port. -->
 				<button
 					type="button"
 					class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 disabled:opacity-40 disabled:cursor-wait"
-					onclick={() => onAction(entry, isUp ? 'stop' : 'start')}
+					onclick={() => onAction(entry, isPaused ? 'unpause' : 'pause')}
 					disabled={busy}
 				>
-					<Icon
-						name={busy ? 'lucide:loader-circle' : isUp ? 'lucide:square' : 'lucide:play'}
-						class="w-3.5 h-3.5 {busy ? 'animate-spin' : ''}"
-					/>
-					{isUp ? 'Stop' : 'Start'}
-				</button>
-				<button
-					type="button"
-					class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 disabled:opacity-40 disabled:cursor-wait"
-					onclick={() => onAction(entry, 'restart')}
-					disabled={busy}
-				>
-					<Icon name="lucide:rotate-cw" class="w-3.5 h-3.5" />
-					Restart
-				</button>
-
-				{#if isUp}
-					<!-- Pause freezes the processes without unbinding the ports, which
-					     is the one way to stop something eating CPU and keep its port. -->
-					<button
-						type="button"
-						class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-violet-500/10 disabled:opacity-40 disabled:cursor-wait"
-						onclick={() => onAction(entry, isPaused ? 'unpause' : 'pause')}
-						disabled={busy}
-					>
-						<Icon name={isPaused ? 'lucide:play' : 'lucide:pause'} class="w-3.5 h-3.5" />
-						{isPaused ? 'Resume' : 'Pause'}
-					</button>
-				{/if}
-
-				<button
-					type="button"
-					class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 disabled:cursor-wait"
-					onclick={() => onAction(entry, isUp ? 'force-remove' : 'remove')}
-					disabled={busy}
-				>
-					<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-					Remove
+					<Icon name={isPaused ? 'lucide:play' : 'lucide:pause'} class="w-3.5 h-3.5" />
+					{isPaused ? 'Resume' : 'Pause'}
 				</button>
 			{/if}
+
+			<button
+				type="button"
+				class="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-xs font-semibold cursor-pointer transition-colors bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 disabled:cursor-wait"
+				onclick={() => onAction(entry, isUp ? 'force-remove' : 'remove')}
+				disabled={busy}
+			>
+				<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+				Remove
+			</button>
 		{/if}
 	</div>
 
@@ -345,22 +341,14 @@
 						<h4 class="m-0 text-[11px] font-semibold uppercase tracking-wider text-slate-500">
 							Environment ({detail.env.length})
 						</h4>
-						{#if !containersStore.envRedacted}
-							<button
-								type="button"
-								class="text-[11px] text-violet-600 dark:text-violet-400 bg-transparent border-none cursor-pointer p-0"
-								onclick={() => (showEnv = !showEnv)}
-							>
-								{showEnv ? 'Hide values' : 'Show values'}
-							</button>
-						{/if}
+						<button
+							type="button"
+							class="text-[11px] text-violet-600 dark:text-violet-400 bg-transparent border-none cursor-pointer p-0"
+							onclick={() => (showEnv = !showEnv)}
+						>
+							{showEnv ? 'Hide values' : 'Show values'}
+						</button>
 					</div>
-					{#if containersStore.envRedacted}
-						<p class="m-0 text-xs text-slate-500 dark:text-slate-500">
-							Values are hidden. A container's environment is where its credentials live, so only
-							an admin can read them.
-						</p>
-					{/if}
 					<ul class="m-0 p-0 list-none flex flex-col gap-0.5">
 						{#each detail.env as line, index (`${line}:${index}`)}
 							{@const split = line.indexOf('=')}

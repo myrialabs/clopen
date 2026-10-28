@@ -6,9 +6,8 @@
  *   - permissions:save      — upsert one (scope, project, engine) rule set
  *
  * Rules are enforced at each engine's runtime auto-approve hook (real on
- * Claude/Qwen/Copilot; best-effort/unverified on OpenCode/Codex). Mutations are
- * admin-gated in `backend/auth/permissions.ts`. Changes take effect on the next
- * chat stream.
+ * Claude/Qwen/Copilot; best-effort/unverified on OpenCode/Codex). Changes take
+ * effect on the next chat stream.
  */
 
 import { t } from 'elysia';
@@ -65,7 +64,7 @@ export const permissionsCrudHandler = createRouter()
 		debug.log('path', `permissions:save ${data.engine}/${data.scope}`);
 		const projectId = data.scope === 'project' ? (data.projectId ?? null) : null;
 		if (data.scope === 'project' && !projectId) throw new Error('A project is required for project-scoped permissions');
-		// This admin endpoint only manages global/project scope. Profile-scoped
+		// This endpoint only manages global/project scope. Profile-scoped
 		// permission overlays are edited through the profiles editor (profiles:save-permissions).
 		permissionService.save(data.scope as PermissionScope, projectId, null, data.engine as EngineType, data.allow, data.deny);
 		return { success: true };

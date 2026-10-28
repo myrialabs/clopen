@@ -31,9 +31,9 @@ export const timelineHandler = createRouter()
 			nodes: t.Array(t.Any()),
 			currentHeadId: t.Union([t.String(), t.Null()])
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const { sessionId } = data;
-		requireSessionAccess(conn, sessionId);
+		requireSessionAccess(sessionId);
 
 		debug.log('snapshot', 'TIMELINE - Building tree view');
 
@@ -114,7 +114,6 @@ export const timelineHandler = createRouter()
 			isCurrent: isAtInitialState,
 			hasSnapshot: false,
 			isInitial: true,
-			senderName: null,
 			filesChanged: 0,
 			insertions: 0,
 			deletions: 0
@@ -155,7 +154,6 @@ export const timelineHandler = createRouter()
 				isOrphaned,
 				isCurrent,
 				hasSnapshot: !!snapshot,
-				senderName: msg.type === 'user' ? msg.sender?.name || null : null,
 				filesChanged: stats.filesChanged,
 				insertions: stats.insertions,
 				deletions: stats.deletions

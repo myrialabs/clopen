@@ -83,13 +83,9 @@ export function controlActionForCommand(name: string): ControlAction | null {
 	return byCommand.get(name) ?? null;
 }
 
-export function canRun(action: ControlAction, user: Pick<AuthUser, 'role'>): boolean {
-	return action.access === 'member' || user.role === 'admin';
-}
-
-/** The command-bearing actions a user may run, in catalog order. */
-export function commandsFor(user: Pick<AuthUser, 'role'>): ControlAction[] {
-	return CONTROL_ACTIONS.filter((action) => action.command && canRun(action, user));
+/** The command-bearing actions, in catalog order. */
+function commandActions(): ControlAction[] {
+	return CONTROL_ACTIONS.filter((action) => action.command);
 }
 
 /**
@@ -140,11 +136,10 @@ export async function confirmationFor(action: ControlAction, ctx: ControlContext
 	return action.confirm ? await action.confirm(args as never, ctx) : null;
 }
 
-/** Run an action as `ctx.user`: access, then validated arguments, then the action. */
+/** Run an action as `ctx.user`: validated arguments, then the action. */
 export async function runControlAction(ctx: ControlContext, actionId: string, rawArgs: Record<string, unknown>): Promise<ControlResult> {
 	const action = getControlAction(actionId);
 	if (!action) throw new Error('That is no longer available.');
-	if (!canRun(action, ctx.user)) throw new Error('Only an admin can do that.');
 	const args = checkArgs(action, rawArgs);
 	return action.run(ctx, args as never);
 }
@@ -155,28 +150,25 @@ export interface CommandEntry {
 	hint: string | null;
 	description: string;
 	group: string;
-	adminOnly: boolean;
 }
 
 /**
- * Every command a user can type, in one order: a surface's own commands
+ * Every command that can be typed, in one order: a surface's own commands
  * (`extra`) first, then the catalog's, grouped. Help, the command menu a
  * chat app publishes and the reference in Settings are all THIS list, so
  * they can never disagree about what exists.
  */
 export function commandReference(
-	user: Pick<AuthUser, 'role'>,
 	extra: Array<{ command: string; description: string; hint?: string | null }> = []
 ): CommandEntry[] {
 	const own = extra.map((entry) => ({
 		command: entry.command,
 		hint: entry.hint ?? null,
 		description: entry.description,
-		group: CONTROL_GROUP_LABELS.conversation,
-		adminOnly: false
+		group: CONTROL_GROUP_LABELS.conversation
 	}));
 	const byGroup = new Map<ControlGroup, ControlAction[]>();
-	for (const action of commandsFor(user)) {
+	for (const action of commandActions()) {
 		const list = byGroup.get(action.group) ?? [];
 		list.push(action);
 		byGroup.set(action.group, list);
@@ -186,18 +178,17 @@ export function commandReference(
 			command: action.command!.name,
 			hint: action.command!.argument?.hint ?? null,
 			description: action.description,
-			group: CONTROL_GROUP_LABELS[group],
-			adminOnly: action.access === 'admin'
+			group: CONTROL_GROUP_LABELS[group]
 		}))
 	);
 	return [...own, ...catalog];
 }
 
 /** Help as Markdown, grouped — `commandReference()` written out. */
-export function controlHelp(user: Pick<AuthUser, 'role'>, extra: Array<{ command: string; description: string; hint?: string | null }> = []): string {
+export function controlHelp(extra: Array<{ command: string; description: string; hint?: string | null }> = []): string {
 	const lines: string[] = [];
 	let group: string | null = null;
-	for (const entry of commandReference(user, extra)) {
+	for (const entry of commandReference(extra)) {
 		if (entry.group !== group) {
 			if (group !== null) lines.push('');
 			lines.push(`**${entry.group}**`);
@@ -209,13 +200,12 @@ export function controlHelp(user: Pick<AuthUser, 'role'>, extra: Array<{ command
 }
 
 /** The catalog as data — what an MCP server will publish as its tool schema. */
-export function describeControlActions(user?: Pick<AuthUser, 'role'>) {
-	return CONTROL_ACTIONS.filter((action) => !user || canRun(action, user)).map((action) => ({
+export function describeControlActions() {
+	return CONTROL_ACTIONS.map((action) => ({
 		id: action.id,
 		group: action.group,
 		title: action.title,
 		description: action.description,
-		access: action.access,
 		destructive: Boolean(action.confirm),
 		command: action.command?.name ?? null,
 		args: action.args

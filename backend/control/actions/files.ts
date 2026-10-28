@@ -39,8 +39,8 @@ const STATUS_MARK: Record<TurnFile['status'], string> = { added: '🆕', modifie
 const HIDDEN = new Set(['.git', 'node_modules', '.DS_Store']);
 
 /** The folder a session works in — its worktree when it has one. */
-function workingRoot(userId: string, target: { projectId: string; sessionId: string | null }): string {
-	const { project, session } = resolveTarget(userId, target);
+function workingRoot(target: { projectId: string; sessionId: string | null }): string {
+	const { project, session } = resolveTarget(target);
 	return session ? resolveSessionPath(session.id, project.path) : project.path;
 }
 
@@ -49,11 +49,10 @@ export const turnDiff = defineAction({
 	group: 'files',
 	title: 'Changes',
 	description: 'Files the last turn changed',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'diff' },
 	async run(ctx) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		if (!found) return { text: 'No session yet. Send a message first.' };
 		const { turns, net } = await ctx.call<TurnChanges>('snapshot:list-turn-changes', { sessionId: found.session.id }, { projectId: found.project.id });
 		const turn = turns.find((entry) => entry.files.length > 0);
@@ -79,12 +78,11 @@ export const getFile = defineAction({
 	group: 'files',
 	title: 'Get a file',
 	description: 'Get a file from the project, or browse its folders',
-	access: 'member',
 	args: t.Object({ path: t.Optional(t.String()), page: t.Optional(t.Number({ minimum: 0 })) }),
 	command: { name: 'file', argument: { keys: ['path'], hint: '[path in the project]' } },
 	async run(ctx, args) {
-		const { project } = resolveTarget(ctx.user.id, ctx.target);
-		const root = workingRoot(ctx.user.id, ctx.target);
+		const { project } = resolveTarget(ctx.target);
+		const root = workingRoot(ctx.target);
 		const requested = (args.path ?? '').trim().replace(/^["']|["']$/g, '').replace(/^\.\//, '');
 		const full = resolve(root, requested || '.');
 		if (!isPathInside(root, full)) throw new Error('Only files inside the project can be sent.');

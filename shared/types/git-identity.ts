@@ -95,7 +95,7 @@ export interface GitIdentityInput {
  */
 export interface ResolvedGitIdentity {
 	identity: GitIdentityDTO | null;
-	source: 'project' | 'user-default' | 'none';
+	source: 'project' | 'default' | 'none';
 	/**
 	 * The identity supplying credentials for a given remote host, when the
 	 * project's own identity does not claim that host. Null when the project

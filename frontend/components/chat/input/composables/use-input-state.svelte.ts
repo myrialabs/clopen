@@ -146,7 +146,7 @@ export function useInputState(params: InputStateParams) {
 			const state = await ws.http('chat:composer-state', { chatSessionId });
 			if (generation !== restoreGeneration) return;
 
-			applyRestoredEditMode(state.edit, state.editors);
+			applyRestoredEditMode(state.edit);
 			setQueue(chatSessionId, state.queue);
 
 			const { draft } = state;

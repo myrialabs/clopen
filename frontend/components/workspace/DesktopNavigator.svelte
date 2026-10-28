@@ -13,11 +13,10 @@
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { projectStatusService } from '$frontend/services/project';
-	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
+	import { getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import { debug } from '$shared/utils/logger';
 	import { settings } from '$frontend/stores/features/settings.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
@@ -35,7 +34,6 @@
 	import WorkModal from '$frontend/components/work/WorkModal.svelte';
 	import DeploymentsModal from '$frontend/components/deployments/DeploymentsModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
-	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ProjectInfoModal from '$frontend/components/workspace/ProjectInfoModal.svelte';
 	import ProjectContextMenu, {
 		type ProjectContextMenuItem
@@ -108,7 +106,6 @@
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
 	const currentProjectId = $derived(projectState.currentProject?.id);
-	const canManageProjects = $derived(authStore.isAdmin);
 	const navigatorWidth = $derived(
 		workspaceState.navigatorCollapsed ? 48 : Math.round(workspaceState.navigatorWidth * (settings.fontSize / 13))
 	);
@@ -158,9 +155,6 @@
 	);
 
 	const contextMenuPinned = $derived(isProjectPinned(contextMenuProject?.id));
-	// Pin / Archive / Restore are per-user view state stored against this user's
-	// own record, so every role gets them. Only Delete — which drops the project
-	// for everyone — is gated on admin.
 	const contextMenuItems = $derived<ProjectContextMenuItem[]>([
 		...(contextMenuArchived
 			? [{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' } as ProjectContextMenuItem]
@@ -171,9 +165,7 @@
 					{ id: 'archive', label: 'Archive', icon: 'lucide:archive' } as ProjectContextMenuItem
 				]),
 		{ id: 'info', label: 'Details', icon: 'lucide:info' },
-		...(canManageProjects
-			? [{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true } as ProjectContextMenuItem]
-			: [])
+		{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
 	]);
 
 	// Auto-scroll the active project into view — covers both clicking it directly
@@ -192,7 +184,7 @@
 	// Select project
 	async function selectProject(project: Project) {
 		await setCurrentProject(project);
-		await projectStatusService.startTracking(project.id);
+		projectStatusService.startTracking(project.id);
 
 		// Update last opened (handled by projects:get in setCurrentProject)
 	}
@@ -314,7 +306,7 @@
 			archiveSingleProject(project);
 		} else if (action === 'restore') {
 			restoreSingleProject(project);
-		} else if (action === 'delete' && canManageProjects) {
+		} else if (action === 'delete') {
 			projectToDelete = project;
 			showDeleteDialog = true;
 		}
@@ -547,17 +539,15 @@
 							>
 								<Icon name="lucide:list-checks" class="w-4 h-4" />
 							</button>
-							{#if canManageProjects}
-								<button
-									type="button"
-									class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-600 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:text-violet-600"
-									onclick={openNewProjectDialog}
-									aria-label="Add project"
-									title="Add project"
-								>
-									<Icon name="lucide:plus" class="w-4 h-4" />
-								</button>
-							{/if}
+							<button
+								type="button"
+								class="flex items-center justify-center w-6 h-6 bg-transparent border-none rounded-md text-slate-600 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:text-violet-600"
+								onclick={openNewProjectDialog}
+								aria-label="Add project"
+								title="Add project"
+							>
+								<Icon name="lucide:plus" class="w-4 h-4" />
+							</button>
 						</div>
 					</div>
 				{:else}
@@ -677,7 +667,6 @@
 									<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
-									<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
 									<!-- Fixed-size pin slot keeps the ⋮ button position stable. -->
 									<span class="flex h-3.5 w-3.5 items-center justify-center shrink-0" aria-hidden="true">
 										{#if isProjectPinned(project.id)}
@@ -703,19 +692,14 @@
 							class="flex flex-col items-center gap-3 py-8 px-4 text-slate-600 dark:text-slate-500 text-sm text-center"
 						>
 							<Icon name="lucide:folder-plus" class="w-8 h-8 opacity-40" />
-							{#if canManageProjects}
-								<span>No projects yet</span>
-								<button
-									type="button"
-									class="py-2 px-4 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 dark:border-violet-500/30 rounded-lg text-violet-600 text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/25"
-									onclick={openNewProjectDialog}
-								>
-									Add your first project
-								</button>
-							{:else}
-								<span class="font-medium text-slate-700 dark:text-slate-300">No projects assigned</span>
-								<span class="text-xs text-slate-500 dark:text-slate-500 leading-relaxed">Ask an admin to invite you to a project.</span>
-							{/if}
+							<span>No projects yet</span>
+							<button
+								type="button"
+								class="py-2 px-4 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 dark:border-violet-500/30 rounded-lg text-violet-600 text-xs font-medium cursor-pointer transition-all duration-150 hover:bg-violet-500/20 dark:hover:bg-violet-500/25"
+								onclick={openNewProjectDialog}
+							>
+								Add your first project
+							</button>
 						</div>
 					{/each}
 					{#if !selectionActive && archivedList().length > 0}
@@ -800,27 +784,23 @@
 			</footer>
 		{:else}
 			<!-- Collapsed State: Icon Buttons -->
-			{#if canManageProjects}
-				<div class="flex flex-col items-center pt-4 px-2 shrink-0">
-					<button
-						type="button"
-						class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-						onclick={openNewProjectDialog}
-						title="Add Project"
-					>
-						<Icon name="lucide:folder-plus" class="w-5 h-5" />
-					</button>
+			<div class="flex flex-col items-center pt-4 px-2 shrink-0">
+				<button
+					type="button"
+					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					onclick={openNewProjectDialog}
+					title="Add Project"
+				>
+					<Icon name="lucide:folder-plus" class="w-5 h-5" />
+				</button>
 
-					<div class="w-6 h-px bg-violet-500/10 my-1"></div>
-				</div>
-			{/if}
+				<div class="w-6 h-px bg-violet-500/10 my-1"></div>
+			</div>
 
 			<div class="flex-1 flex flex-col items-center gap-2 px-2 pb-4 min-h-0 overflow-y-auto" bind:this={collapsedListEl}>
 				<HomeProjectEntry collapsed onSelect={selectProject} />
 				<!-- Same pinned-first order as the expanded list: width never reorders. -->
 				{#each visibleProjects(projectState.projects) as project (project.id)}
-					{@const projectStatus = presenceState.statuses.get(project.id ?? '')}
-					{@const activeUserCount = (projectStatus?.activeUsers || []).length}
 					<button
 						type="button"
 						data-project-id={project.id}
@@ -845,13 +825,6 @@
 						<span
 							class="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full border-2 border-slate-50 dark:border-slate-900/95 {getProjectStatusColor(project.id ?? '')}"
 						></span>
-						{#if activeUserCount > 0}
-							<span
-								class="absolute -top-1 -right-1 min-w-4 h-4 px-0.5 rounded-full bg-violet-500 text-white text-3xs font-bold flex items-center justify-center border-2 border-slate-50 dark:border-slate-900/95"
-							>
-								{activeUserCount}
-							</span>
-						{/if}
 					</button>
 				{/each}
 			</div>

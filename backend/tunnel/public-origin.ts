@@ -5,7 +5,7 @@
  * build share links against. Where that origin comes from is adaptive, so the
  * caller never has to think about tunnels vs domains:
  *
- *   1. `configured` — an admin-set public URL (system setting `publicBaseUrl`),
+ *   1. `configured` — a set public URL (system setting `publicBaseUrl`),
  *      for VPS/reverse-proxy deployments where the browser can't see the real
  *      hostname.
  *   2. `domain` — the browser is already hitting Clopen on a non-local origin
@@ -43,12 +43,12 @@ export function isLocalHostname(hostname: string): boolean {
 	return false;
 }
 
-/** Strip a trailing slash so callers can append `/#invite/...` cleanly. */
+/** Strip a trailing slash so callers can append `/#device/...` cleanly. */
 function normalizeOrigin(url: string): string {
 	return url.replace(/\/+$/, '');
 }
 
-/** Read the admin-configured public base URL from system settings, if any. */
+/** Read the configured public base URL from system settings, if any. */
 function getConfiguredPublicBaseUrl(): string | null {
 	return readSystemSetting((settings) => {
 		const url = settings.publicBaseUrl;

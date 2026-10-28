@@ -45,13 +45,12 @@ export const sshPtyKitServer = createPtyKitServer(sshPtyKitManager, {
 	room: (ctx) => ctx.namespace,
 	authorize: (ctx) => {
 		const userId = ctx.conn.data.userId;
-		const isAdmin = ctx.conn.data.isAdmin === true;
 		if (typeof userId !== 'string' || !userId) return false;
 
 		const connectionId = connectionIdFromNamespace(ctx.namespace);
 		if (!connectionId) return false;
 
-		return sshConnectionQueries.getForUser(connectionId, userId, isAdmin) !== null;
+		return sshConnectionQueries.get(connectionId) !== null;
 	}
 });
 

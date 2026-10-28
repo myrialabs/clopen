@@ -108,14 +108,8 @@
 						{user.name}
 					</div>
 					<div class="text-xs text-slate-600 dark:text-slate-500">
-						{user.role === 'admin' ? 'Administrator' : 'Member'}
+						Owner of this Clopen
 					</div>
-				</div>
-				<div class="flex items-center gap-2">
-					<span class="inline-flex items-center gap-1.5 py-1.5 px-3 bg-{user.role === 'admin' ? 'violet' : 'emerald'}-500/15 rounded-full text-xs font-medium text-{user.role === 'admin' ? 'violet' : 'emerald'}-500">
-						<Icon name="lucide:{user.role === 'admin' ? 'shield' : 'user'}" class="w-3 h-3" />
-						{user.role === 'admin' ? 'Admin' : 'Member'}
-					</span>
 				</div>
 			</div>
 

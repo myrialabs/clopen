@@ -116,7 +116,7 @@ export const skillsStore = {
 	get installed() { return installed; },
 	get installedLoaded() { return installedLoaded; },
 	get detected() { return detected; },
-	/** Slash-invocable skills for the chat "/" picker (non-admin surface). */
+	/** Slash-invocable skills for the chat "/" picker. */
 	get available() { return available; },
 	get catalog() { return catalog; },
 	get catalogCursor() { return catalogCursor; },

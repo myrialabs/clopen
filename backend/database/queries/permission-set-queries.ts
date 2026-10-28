@@ -4,7 +4,7 @@
  * CRUD for per-engine tool allow/deny rules (Settings → Permissions). Each row
  * carries the `allow` + `deny` tool-pattern lists for one
  * `(scope, project_id, engine)` combination — see migration 049 for the resolved
- * semantics. Instance-global + admin-managed (no `user_id`), mirroring
+ * semantics. Instance-global (no `user_id`), mirroring
  * `skills` / `mcp_servers` / `subagents`.
  *
  * `allow` / `deny` are stored as JSON `string[]`; callers get parsed arrays back

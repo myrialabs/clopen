@@ -321,18 +321,14 @@ export class WSRouter<
 				const { ws: wsServer } = await import('$backend/utils/ws');
 				const { projectQueries } = await import('$backend/database/queries');
 
-				// userId is set exclusively by auth handlers (auth:login, auth:setup, auth:accept-invite)
+				// userId is set exclusively by auth handlers (auth:login, auth:setup, auth:claim-device-code)
 				// ws:set-context only handles projectId
 				if (data.projectId !== undefined) {
 					if (data.projectId !== null) {
-						const state = wsServer.getConnectionState(conn);
-						const userId = state?.userId;
-						if (!userId) {
+						if (!wsServer.getConnectionState(conn)?.userId) {
 							throw new Error('Authentication required');
 						}
-
-						const hasProjectAccess = projectQueries.userHasProject(userId, data.projectId);
-						if (!hasProjectAccess) {
+						if (!projectQueries.isListed(data.projectId)) {
 							throw new Error('Project not found');
 						}
 					}

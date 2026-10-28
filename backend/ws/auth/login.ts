@@ -1,15 +1,13 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import {
-	createAdmin,
+	createOwner,
 	loginWithToken,
-	createUserFromInvite,
 	logout,
 	logoutAllSessions,
-	validateInviteToken,
 	regeneratePAT,
 	updateUserName,
-	createOrGetNoAuthAdmin,
+	createOrGetNoAuthOwner,
 	needsSetup,
 	markOnboardingPending
 } from '$backend/auth/auth-service';
@@ -23,14 +21,13 @@ import { clientIpFromConnection } from '$backend/utils/client-ip';
 const authUserSchema = t.Object({
 	id: t.String(),
 	name: t.String(),
-	role: t.Union([t.Literal('admin'), t.Literal('member')]),
 	color: t.String(),
 	avatar: t.String(),
 	createdAt: t.String()
 });
 
 export const loginHandler = createRouter()
-	// Setup — create first admin (only works when no users exist)
+	// Setup — create the owner (only works before setup)
 	.http('auth:setup', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
@@ -45,17 +42,17 @@ export const loginHandler = createRouter()
 	}, async ({ data, conn }) => {
 		// Refuse before touching any state. This route is public, so without the
 		// guard a stray call against a live instance would flip the onboarding
-		// marker below and send every user back through the wizard.
+		// marker below and send the instance back through the wizard.
 		if (!needsSetup()) {
-			throw new Error('Setup already completed. Admin account exists.');
+			throw new Error('Setup already completed. The owner account exists.');
 		}
 
-		// Mark the wizard as in-progress BEFORE the first user exists, so a refresh
+		// Mark the wizard as in-progress BEFORE the owner exists, so a refresh
 		// between here and "Finish" resumes setup instead of looking like a
 		// completed install (which is how onboarding state is inferred).
 		markOnboardingPending();
 
-		const result = createAdmin(data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
+		const result = createOwner(data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 		// Save authMode to system settings
 		writeSystemSettings({ authMode: 'required' });
@@ -64,18 +61,18 @@ export const loginHandler = createRouter()
 			userId: result.user.id,
 			actorUserId: result.user.id,
 			eventType: 'auth:setup',
-			eventDetails: `Admin account created: ${result.user.name}`,
+			eventDetails: `Owner account created: ${result.user.name}`,
 			ipAddress: clientIpFromConnection(conn)
 		});
 
 		// Set auth on connection
 		const tokenHash = (await import('$backend/auth/tokens')).hashToken(result.sessionToken);
-		ws.setAuth(conn, result.user.id, result.user.role, tokenHash);
+		ws.setAuth(conn, result.user.id, tokenHash);
 
 		return result;
 	})
 
-	// Setup no-auth mode — create default admin, save authMode setting
+	// Setup no-auth mode — create the default owner, save authMode setting
 	.http('auth:setup-no-auth', {
 		data: t.Object({}),
 		response: t.Object({
@@ -89,26 +86,25 @@ export const loginHandler = createRouter()
 		}
 
 		// Same ordering as auth:setup — record the in-progress wizard before the
-		// first user exists.
+		// owner exists.
 		markOnboardingPending();
 
 		// Save authMode to system settings
 		writeSystemSettings({ authMode: 'none' });
 
-		// Create or get default admin
-		const result = createOrGetNoAuthAdmin();
+		const result = createOrGetNoAuthOwner();
 
 		auditLogQueries.logEvent({
 			userId: result.user.id,
 			actorUserId: result.user.id,
 			eventType: 'auth:setup-no-auth',
-			eventDetails: `No-auth mode enabled, admin: ${result.user.name}`,
+			eventDetails: `No-auth mode enabled, owner: ${result.user.name}`,
 			ipAddress: clientIpFromConnection(conn)
 		});
 
 		// Set auth on connection
 		const tokenHash = (await import('$backend/auth/tokens')).hashToken(result.sessionToken);
-		ws.setAuth(conn, result.user.id, result.user.role, tokenHash);
+		ws.setAuth(conn, result.user.id, tokenHash);
 
 		return result;
 	})
@@ -126,7 +122,7 @@ export const loginHandler = createRouter()
 			throw new Error('Auto-login is only available in no-auth mode');
 		}
 
-		const result = createOrGetNoAuthAdmin();
+		const result = createOrGetNoAuthOwner();
 
 		auditLogQueries.logEvent({
 			userId: result.user.id,
@@ -138,7 +134,7 @@ export const loginHandler = createRouter()
 
 		// Set auth on connection
 		const tokenHash = (await import('$backend/auth/tokens')).hashToken(result.sessionToken);
-		ws.setAuth(conn, result.user.id, result.user.role, tokenHash);
+		ws.setAuth(conn, result.user.id, tokenHash);
 
 		return result;
 	})
@@ -185,7 +181,7 @@ export const loginHandler = createRouter()
 				ipAddress: clientIpFromConnection(conn)
 			});
 
-			ws.setAuth(conn, result.user.id, result.user.role, result.tokenHash);
+			ws.setAuth(conn, result.user.id, result.tokenHash);
 
 			return {
 				user: result.user,
@@ -199,89 +195,6 @@ export const loginHandler = createRouter()
 			}
 			throw err;
 		}
-	})
-
-	// Accept invite — create user from invite token
-	.http('auth:accept-invite', {
-		data: t.Object({
-			inviteToken: t.String({ minLength: 1 }),
-			name: t.String({ minLength: 1 }),
-			userAgent: t.Optional(t.String())
-		}),
-		response: t.Object({
-			user: authUserSchema,
-			sessionToken: t.String(),
-			personalAccessToken: t.String(),
-			expiresAt: t.String()
-		})
-	}, async ({ data, conn }) => {
-		const ip = ws.getRemoteAddress(conn);
-
-		// Rate limit check
-		const rateLimitError = authRateLimiter.check(ip, 'auth:accept-invite');
-		if (rateLimitError) {
-			throw new Error(rateLimitError);
-		}
-
-		try {
-			const result = createUserFromInvite(data.inviteToken, data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
-
-			authRateLimiter.recordSuccess(ip, 'auth:accept-invite');
-
-			auditLogQueries.logEvent({
-				userId: result.user.id,
-				actorUserId: result.user.id,
-				eventType: 'auth:accept-invite',
-				eventDetails: `User ${result.user.name} created account via invite`,
-				ipAddress: clientIpFromConnection(conn)
-			});
-
-			// Set auth on connection
-			const tokenHash = (await import('$backend/auth/tokens')).hashToken(result.sessionToken);
-			ws.setAuth(conn, result.user.id, result.user.role, tokenHash);
-
-			// Notify admin sessions so their User Management list refreshes.
-			ws.emit.global('auth:users-changed', { type: 'added', userId: result.user.id });
-			// A member just joined via an invite — close the admin's invite QR and
-			// refresh the invite/device lists (mirrors device-claimed).
-			ws.emit.global('remote-access:changed', { kind: 'invite-claimed' });
-
-			return result;
-		} catch (err) {
-			authRateLimiter.recordFailure(ip, 'auth:accept-invite');
-			throw err;
-		}
-	})
-
-	// Validate invite token (for UI, doesn't consume the invite)
-	.http('auth:validate-invite', {
-		data: t.Object({
-			inviteToken: t.String({ minLength: 1 })
-		}),
-		response: t.Object({
-			valid: t.Boolean(),
-			error: t.Optional(t.String())
-		})
-	}, async ({ data, conn }) => {
-		const ip = ws.getRemoteAddress(conn);
-
-		const rateLimitError = authRateLimiter.check(ip, 'auth:validate-invite');
-		if (rateLimitError) {
-			return { valid: false, error: rateLimitError };
-		}
-
-		const result = validateInviteToken(data.inviteToken);
-
-		// Record failure if invalid token (probing). On a valid token, clear this
-		// route's record so someone who mistyped their link a couple of times
-		// doesn't carry those failures into a later attempt.
-		if (result.valid) {
-			authRateLimiter.recordSuccess(ip, 'auth:validate-invite');
-		} else {
-			authRateLimiter.recordFailure(ip, 'auth:validate-invite');
-		}
-
-		return { valid: result.valid, error: result.error };
 	})
 
 	// Logout — clear session
@@ -317,26 +230,26 @@ export const loginHandler = createRouter()
 		return { personalAccessToken: pat };
 	})
 
-	// Logout all sessions (admin only — used when switching auth mode)
+	// Sign out every device (used when switching auth mode)
 	.http('auth:logout-all', {
 		data: t.Object({}),
 		response: t.Object({ count: t.Number() })
 	}, async ({ conn }) => {
-		const adminId = ws.getUserId(conn);
+		const userId = ws.getUserId(conn);
 		const count = logoutAllSessions();
 		ws.emit.global('auth:force-logout', { reason: 'Auth mode changed' });
 		ws.clearAllAuth();
 		auditLogQueries.logEvent({
-			userId: adminId,
-			actorUserId: adminId,
+			userId,
+			actorUserId: userId,
 			eventType: 'auth:logout-all',
-			eventDetails: `Admin logged out all sessions (${count} sessions cleared)`,
+			eventDetails: `Signed out every device (${count} sessions cleared)`,
 			ipAddress: clientIpFromConnection(conn)
 		});
 		return { count };
 	})
 
-	// Update display name (authenticated user)
+	// Update display name
 	.http('auth:update-name', {
 		data: t.Object({
 			newName: t.String({ minLength: 1 })

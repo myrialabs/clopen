@@ -1,14 +1,12 @@
 <script lang="ts">
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { pickDefaultModel } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
 	import EngineModelPicker from './EngineModelPicker.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 
-	const isAdmin = $derived(authStore.isAdmin);
 
 	function handleAssistantEngineChange(engineType: EngineType) {
 		updateSettings({ selectedEngine: engineType });
@@ -68,9 +66,7 @@
 		<Icon name="lucide:info" class="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
 		<p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
 			Just the default — override it per chat anytime from the model picker in the chat input.
-			{#if isAdmin}
-				Accounts are managed under <button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={() => setActiveSection('engines')}>Settings → Engines</button>.
-			{/if}
+			Accounts are managed under <button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={() => setActiveSection('engines')}>Settings → Engines</button>.
 		</p>
 	</div>
 

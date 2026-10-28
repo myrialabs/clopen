@@ -4,7 +4,6 @@
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
 	import { focusEngineSection, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { settings, setReasoningDefault } from '$frontend/stores/features/settings.svelte';
 
 	interface Props {
@@ -30,7 +29,6 @@
 
 	const engineMeta = $derived(ENGINES.find(e => e.type === displayEngine));
 	const engineError = $derived(modelStore.getError(displayEngine));
-	const isAdmin = $derived(authStore.isAdmin);
 
 	// Models for the selected engine, filtered by search
 	const filteredModels = $derived.by(() => {
@@ -201,24 +199,22 @@
 						<p class="text-sm text-amber-900 dark:text-amber-100">
 							{engineError}
 						</p>
-						{#if isAdmin}
-							{#if engineError && engineError.includes('Settings → Stack')}
-								<button
-									type="button"
-									class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-									onclick={() => openSettingsModal('stack')}
-								>
-									Open Stack
-								</button>
-							{:else}
-								<button
-									type="button"
-									class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-									onclick={() => focusEngineSection(engine)}
-								>
-									Configure {engineMeta?.name ?? 'engine'}
-								</button>
-							{/if}
+						{#if engineError && engineError.includes('Settings → Stack')}
+							<button
+								type="button"
+								class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+								onclick={() => openSettingsModal('stack')}
+							>
+								Open Stack
+							</button>
+						{:else}
+							<button
+								type="button"
+								class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+								onclick={() => focusEngineSection(engine)}
+							>
+								Configure {engineMeta?.name ?? 'engine'}
+							</button>
 						{/if}
 					</div>
 				</div>

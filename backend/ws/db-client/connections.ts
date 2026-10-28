@@ -15,7 +15,7 @@ import type {
 } from '$shared/types/db-client';
 import { debug } from '$shared/utils/logger';
 import { dbLinks } from '../../db-client/integrations';
-import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
 
 const driverSchema = t.Union([
 	t.Literal('mysql'),
@@ -129,21 +129,19 @@ export const connectionsHandler = createRouter()
 	.http('db-client:list', {
 		data: t.Object({}),
 		response: t.Array(t.Any())
-	}, async ({ conn }) => {
+	}, async () => {
 		await initializeDatabase();
-		const { userId, isAdmin } = getDbClientPrincipal(conn);
 		// Ownership is attached HERE rather than stored on the connection: the
 		// answer lives in `integration_projections`, and duplicating it into a
 		// column would create a second place for it to be wrong.
-		return dbLinks.decorate(dbClientConnectionQueries.listForUser(userId, isAdmin));
+		return dbLinks.decorate(dbClientConnectionQueries.listRedacted());
 	})
 
 	.http('db-client:get', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const { userId, isAdmin } = getDbClientPrincipal(conn);
-		const connection = dbClientConnectionQueries.getForUser(data.id, userId, isAdmin);
+	}, async ({ data }) => {
+		const connection = dbClientConnectionQueries.getRedacted(data.id);
 		if (!connection) throw new Error('db-client connection not found');
 		return { ...connection, managedBy: dbLinks.managedBy(data.id) };
 	})
@@ -151,13 +149,9 @@ export const connectionsHandler = createRouter()
 	.http('db-client:create', {
 		data: connectionInputSchema,
 		response: t.Any()
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		await initializeDatabase();
-		const { userId } = getDbClientPrincipal(conn);
-		const created = dbClientConnectionQueries.createForUser(
-			ensureInputDefaults(data as DbClientConnectionInput),
-			userId
-		);
+		const created = dbClientConnectionQueries.createRedacted(ensureInputDefaults(data as DbClientConnectionInput));
 		debug.log('db-client', `created connection ${created.id} (${created.driver})`);
 		return created;
 	})
@@ -168,9 +162,8 @@ export const connectionsHandler = createRouter()
 			patch: connectionPatchSchema
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const { userId, isAdmin } = getDbClientPrincipal(conn);
-		requireDbClientConnectionAccess(conn, data.id);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.id);
 		// A managed row is DERIVED. Letting the form edit its host or password
 		// would produce a connection the next re-projection silently reverts, so
 		// the two fields that are genuinely local are the only ones allowed
@@ -184,15 +177,14 @@ export const connectionsHandler = createRouter()
 		};
 		// Drop the live adapter so the next access re-opens with new settings.
 		await connectionManager.release(data.id);
-		return dbClientConnectionQueries.updateForUser(data.id, normalized, userId, isAdmin);
+		return dbClientConnectionQueries.updateRedacted(data.id, normalized);
 	})
 
 	.http('db-client:delete', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const { userId, isAdmin } = getDbClientPrincipal(conn);
-		requireDbClientConnectionAccess(conn, data.id);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.id);
 		// Deleting a projected row here would leave the account owning a
 		// connection that no longer exists, and the next re-projection would
 		// recreate it — so the panel is told to unlink instead, which is the
@@ -201,27 +193,27 @@ export const connectionsHandler = createRouter()
 			throw new Error('This connection comes from a connected account. Unlink it there to remove it.');
 		}
 		await connectionManager.release(data.id);
-		dbClientConnectionQueries.deleteForUser(data.id, userId, isAdmin);
+		dbClientConnectionQueries.delete(data.id);
 		return { ok: true };
 	})
 
 	.http('db-client:test', {
 		data: connectionTestSchema,
 		response: healthSchema
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		await initializeDatabase();
 		if (isInput(data)) {
 			return connectionManager.test(ensureInputDefaults(data as DbClientConnectionInput));
 		}
 		const id = (data as { id: string }).id;
-		requireDbClientConnectionAccess(conn, id);
+		requireDbClientConnection(id);
 		return connectionManager.test({ id });
 	})
 
 	.http('db-client:health', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: healthSchema
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.id);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.id);
 		return connectionManager.test({ id: data.id });
 	});

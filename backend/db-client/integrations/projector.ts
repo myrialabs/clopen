@@ -11,11 +11,6 @@
  * database answers was resolved when the link was created (see `links.ts`) and
  * stored on the link; here it is only copied onto a row. That keeps a token
  * rotation from waiting on a third-party API before the account can be saved.
- *
- * A projected row is created with NO OWNER, which in db-client's access model
- * means admins see it and members do not. That matches who can create it:
- * `integrations:*` is admin-gated, because connecting an account changes what
- * the whole install can reach.
  */
 
 import {

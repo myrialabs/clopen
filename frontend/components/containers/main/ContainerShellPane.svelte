@@ -7,8 +7,8 @@
 	already running instead of leaving it orphaned and starting a second.
 
 	The namespace carries the host and the container, and it is the only thing
-	the client gets to say about what it wants: the server checks it, derives the
-	spawn target from it, and refuses anything a non-admin asks for.
+	the client gets to say about what it wants: the server checks it and derives
+	the spawn target from it.
 -->
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';

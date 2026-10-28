@@ -2,22 +2,17 @@
  * Chat Apps Router
  *
  * Pairing chats with the connected bots: which bots there are and how they
- * are doing, a pairing link, approving members' chats, switching a chat on
- * or off, a test message, unlinking, and the command
- * reference. Open to every signed-in user and scoped to the caller: a member
- * manages their own chats, an admin every chat (and approves new ones).
- * Connecting or removing the BOT itself is an integration (admin-only). What
- * a paired chat can DO is the control catalog, held to the user's role.
+ * are doing, a pairing link, switching a chat on or off, a test message,
+ * unlinking, and the command reference. Connecting or removing the BOT itself
+ * is an integration. What a paired chat can DO is the control catalog.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
-import { getUserById, type AuthUser } from '$backend/auth/auth-service';
 import {
 	cancelPairingLink,
 	createPairingLink,
-	decideChannelLink,
 	listChannelBots,
 	listChatAppCommands,
 	onBotsChanged,
@@ -29,12 +24,8 @@ import {
 
 const LINK_SCHEMA = t.Object({
 	id: t.String(),
-	userId: t.String(),
-	userName: t.String(),
 	displayName: t.Union([t.String(), t.Null()]),
-	status: t.Union([t.Literal('pending'), t.Literal('approved')]),
 	isEnabled: t.Boolean(),
-	isMine: t.Boolean(),
 	createdAt: t.String(),
 	lastUsedAt: t.Union([t.String(), t.Null()])
 });
@@ -56,15 +47,8 @@ const BOT_SCHEMA = t.Object({
 
 const OK = t.Object({ ok: t.Boolean() });
 
-function viewer(conn: Parameters<typeof ws.getUserId>[0]): AuthUser {
-	const user = getUserById(ws.getUserId(conn));
-	if (!user) throw new Error('Not signed in');
-	return user;
-}
-
-// A chat pairs, is approved or changes itself from the phone, and a bot comes
-// up or goes down, with no request from any tab. Every open Settings page
-// re-reads what it may see; the list is scoped server-side.
+// A chat pairs or changes itself from the phone, and a bot comes up or goes
+// down, with no request from any tab. Every open Settings page re-reads.
 onLinksChanged(() => ws.emit.global('chat-apps:changed', {}));
 onBotsChanged(() => ws.emit.global('chat-apps:changed', {}));
 
@@ -75,8 +59,8 @@ export const chatAppsRouter = createRouter()
 			requestOrigin: t.Optional(t.String())
 		}),
 		response: t.Array(BOT_SCHEMA)
-	}, async ({ data, conn }) => {
-		return listChannelBots(viewer(conn), data.requestOrigin);
+	}, async ({ data }) => {
+		return listChannelBots(data.requestOrigin);
 	})
 
 	.http('chat-apps:pair', {
@@ -97,32 +81,24 @@ export const chatAppsRouter = createRouter()
 	.http('chat-apps:set-enabled', {
 		data: t.Object({ linkId: t.String(), enabled: t.Boolean() }),
 		response: OK
-	}, async ({ data, conn }) => {
-		await setChannelLinkEnabled(viewer(conn), data.linkId, data.enabled);
-		return { ok: true };
-	})
-
-	.http('chat-apps:decide', {
-		data: t.Object({ linkId: t.String(), decision: t.Union([t.Literal('approve'), t.Literal('reject')]) }),
-		response: OK
-	}, async ({ data, conn }) => {
-		await decideChannelLink(viewer(conn), data.linkId, data.decision);
+	}, async ({ data }) => {
+		await setChannelLinkEnabled(data.linkId, data.enabled);
 		return { ok: true };
 	})
 
 	.http('chat-apps:unlink', {
 		data: t.Object({ linkId: t.String() }),
 		response: OK
-	}, async ({ data, conn }) => {
-		await removeChannelLink(viewer(conn), data.linkId);
+	}, async ({ data }) => {
+		await removeChannelLink(data.linkId);
 		return { ok: true };
 	})
 
 	.http('chat-apps:test', {
 		data: t.Object({ linkId: t.String() }),
 		response: OK
-	}, async ({ data, conn }) => {
-		await sendChannelTest(viewer(conn), data.linkId);
+	}, async ({ data }) => {
+		await sendChannelTest(data.linkId);
 		return { ok: true };
 	})
 
@@ -132,11 +108,10 @@ export const chatAppsRouter = createRouter()
 			command: t.String(),
 			hint: t.Union([t.String(), t.Null()]),
 			description: t.String(),
-			group: t.String(),
-			adminOnly: t.Boolean()
+			group: t.String()
 		}))
-	}, async ({ conn }) => {
-		return listChatAppCommands(viewer(conn));
+	}, async () => {
+		return listChatAppCommands();
 	})
 
 	.emit('chat-apps:changed', t.Object({}));

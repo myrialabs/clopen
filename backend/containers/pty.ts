@@ -10,12 +10,8 @@
  * security design: it is the only statement of intent the client makes,
  * `authorize` checks it, and the spawn target is derived from it rather than
  * from anything else in the frame — so a client cannot ask for a container on a
- * host it may not reach. It also scopes the collaborative room to one
- * container, which is what a second admin opening the same shell should join.
- *
- * A shell inside a container is usually root inside it and can reach every
- * volume that container mounts, so `authorize` requires an admin. Reading the
- * list, the detail and the logs stays open to any member.
+ * host it may not reach. It also scopes the shared room to one container, which
+ * is what a second device opening the same shell should join.
  */
 
 import { PtyKitManager } from '@myrialabs/ptykit/core';
@@ -63,17 +59,13 @@ export const containerPtyKitServer = createPtyKitServer(containerPtyKitManager, 
 	room: (ctx) => ctx.namespace,
 	authorize: (ctx) => {
 		const userId = ctx.conn.data.userId;
-		const isAdmin = ctx.conn.data.isAdmin === true;
 		if (typeof userId !== 'string' || !userId) return false;
-		// A container shell can do anything the container can, so it is gated the
-		// same way stopping a port is.
-		if (!isAdmin) return false;
 
 		const target = targetFromNamespace(ctx.namespace);
 		if (!target) return false;
 		if (target.hostId === LOCAL_HOST_ID) return true;
 
-		return sshConnectionQueries.getForUser(target.hostId, userId, isAdmin) !== null;
+		return sshConnectionQueries.get(target.hostId) !== null;
 	}
 });
 

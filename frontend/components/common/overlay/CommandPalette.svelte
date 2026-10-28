@@ -11,7 +11,6 @@
 	} from '$frontend/stores/ui/command-palette.svelte';
 	import { projectState, setCurrentProject } from '$frontend/stores/core/projects.svelte';
 	import { setCurrentSession } from '$frontend/stores/core/sessions.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { openSettingsModal, settingsSections } from '$frontend/stores/ui/settings-modal.svelte';
 	import { getCommandActions } from '$frontend/config/command-registry';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
@@ -204,8 +203,7 @@
 		if (fileOnly) return [];
 		const q = effectiveQuery;
 		if (!q) return [];
-		const visible = settingsSections.filter((s) => !s.adminOnly || authStore.isAdmin);
-		return visible
+		return settingsSections
 			.map((s) => ({ s, match: bestFuzzyScore(q, [s.label, s.description]) }))
 			.filter((x) => x.match > 0)
 			.sort((x, y) => y.match - x.match)

@@ -68,19 +68,18 @@ describe('failure-based lockout tiers', () => {
 });
 
 describe('per-route isolation', () => {
-	test('a lockout on auth:login does not block auth:validate-invite', () => {
+	test('a lockout on auth:login does not block auth:claim-device-code', () => {
 		const id = uniqueId('route-iso');
 		fail(id, 'auth:login', 5);
 
 		expect(authRateLimiter.check(id, 'auth:login')).not.toBeNull();
-		expect(authRateLimiter.check(id, 'auth:validate-invite')).toBeNull();
 		expect(authRateLimiter.check(id, 'auth:claim-device-code')).toBeNull();
 	});
 
 	test('success on one route does not clear another route\'s failures', () => {
 		const id = uniqueId('no-cross-clear');
 		fail(id, 'auth:login', 5);
-		authRateLimiter.recordSuccess(id, 'auth:validate-invite');
+		authRateLimiter.recordSuccess(id, 'auth:claim-device-code');
 
 		expect(authRateLimiter.check(id, 'auth:login')).not.toBeNull();
 	});
@@ -93,13 +92,13 @@ describe('per-route isolation', () => {
 		expect(authRateLimiter.check(id, 'auth:login')).toBeNull();
 	});
 
-	test('a valid invite clears the failures from earlier mistyped ones', () => {
-		const id = uniqueId('invite-retry');
-		fail(id, 'auth:validate-invite', 2);
-		authRateLimiter.recordSuccess(id, 'auth:validate-invite');
-		fail(id, 'auth:validate-invite', 4);
+	test('a successful claim clears the failures from earlier mistyped codes', () => {
+		const id = uniqueId('device-retry');
+		fail(id, 'auth:claim-device-code', 2);
+		authRateLimiter.recordSuccess(id, 'auth:claim-device-code');
+		fail(id, 'auth:claim-device-code', 4);
 
-		expect(authRateLimiter.check(id, 'auth:validate-invite')).toBeNull();
+		expect(authRateLimiter.check(id, 'auth:claim-device-code')).toBeNull();
 	});
 });
 

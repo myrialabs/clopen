@@ -15,7 +15,7 @@ import { killContainerSessionsForHost } from '../../containers/pty';
 import { stopLogStreamsForHost } from '../../containers/logs';
 import type { SshConnectionInput } from '$shared/types/ssh';
 import { debug } from '$shared/utils/logger';
-import { getSshPrincipal, requireSshConnection } from './access';
+import { requireSshConnection } from './access';
 
 const authMethodSchema = t.Union([
 	t.Literal('password'),
@@ -98,18 +98,16 @@ export const sshConnectionsHandler = createRouter()
 	.http('ssh:list', {
 		data: t.Object({}),
 		response: t.Array(t.Any())
-	}, async ({ conn }) => {
+	}, async () => {
 		await initializeDatabase();
-		const { userId, isAdmin } = getSshPrincipal(conn);
-		return sshConnectionQueries.listForUser(userId, isAdmin);
+		return sshConnectionQueries.listRedacted();
 	})
 
 	.http('ssh:get', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const { userId, isAdmin } = getSshPrincipal(conn);
-		const connection = sshConnectionQueries.getForUser(data.id, userId, isAdmin);
+	}, async ({ data }) => {
+		const connection = sshConnectionQueries.getRedacted(data.id);
 		if (!connection) throw new Error('ssh connection not found');
 		return connection;
 	})
@@ -117,10 +115,9 @@ export const sshConnectionsHandler = createRouter()
 	.http('ssh:create', {
 		data: connectionInputSchema,
 		response: t.Any()
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		await initializeDatabase();
-		const { userId } = getSshPrincipal(conn);
-		const created = sshConnectionQueries.createForUser(data as SshConnectionInput, userId);
+		const created = sshConnectionQueries.createRedacted(data as SshConnectionInput);
 		debug.log('ssh', `created connection ${created.id} (${created.host})`);
 		return created;
 	})
@@ -128,39 +125,32 @@ export const sshConnectionsHandler = createRouter()
 	.http('ssh:update', {
 		data: t.Object({ id: t.String({ minLength: 1 }), patch: connectionPatchSchema }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const { userId, isAdmin } = getSshPrincipal(conn);
-		requireSshConnection(conn, data.id);
+	}, async ({ data }) => {
+		requireSshConnection(data.id);
 		await tearDownConnection(data.id);
-		return sshConnectionQueries.updateForUser(
-			data.id,
-			data.patch as Partial<SshConnectionInput>,
-			userId,
-			isAdmin
-		);
+		return sshConnectionQueries.updateRedacted(data.id, data.patch as Partial<SshConnectionInput>);
 	})
 
 	.http('ssh:delete', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const { userId, isAdmin } = getSshPrincipal(conn);
-		requireSshConnection(conn, data.id);
+	}, async ({ data }) => {
+		requireSshConnection(data.id);
 		await tearDownConnection(data.id);
-		sshConnectionQueries.deleteForUser(data.id, userId, isAdmin);
+		sshConnectionQueries.delete(data.id);
 		return { ok: true };
 	})
 
 	.http('ssh:test', {
 		data: connectionTestSchema,
 		response: healthSchema
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		await initializeDatabase();
 		if (isInput(data)) {
 			return sshHealthService.testInput(data as SshConnectionInput);
 		}
 		const id = (data as { id: string }).id;
-		requireSshConnection(conn, id);
+		requireSshConnection(id);
 		return sshHealthService.testSaved(id);
 	})
 
@@ -172,8 +162,8 @@ export const sshConnectionsHandler = createRouter()
 	.http('ssh:activate', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: healthSchema
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.id);
+	}, async ({ data }) => {
+		requireSshConnection(data.id);
 		sshClientPool.resume(data.id);
 		const health = await sshHealthService.testSaved(data.id);
 		if (health.ok) {
@@ -190,8 +180,8 @@ export const sshConnectionsHandler = createRouter()
 	.http('ssh:disconnect', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: healthSchema
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.id);
+	}, async ({ data }) => {
+		requireSshConnection(data.id);
 		killSessionsForConnection(data.id);
 		killContainerSessionsForHost(data.id);
 		stopLogStreamsForHost(data.id);
@@ -216,8 +206,8 @@ export const sshConnectionsHandler = createRouter()
 	.http('ssh:trust-host-key', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: healthSchema
-	}, async ({ data, conn }) => {
-		const connection = requireSshConnection(conn, data.id);
+	}, async ({ data }) => {
+		const connection = requireSshConnection(data.id);
 		knownHosts.forget(connection.host, connection.port);
 		await tearDownConnection(data.id);
 		return sshHealthService.testSaved(data.id);

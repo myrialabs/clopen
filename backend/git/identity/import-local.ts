@@ -77,10 +77,10 @@ export async function readMachineIdentity(): Promise<MachineIdentity | null> {
 /**
  * A label that says where the row came from without pretending to be a choice.
  *
- * Unique per user is enforced by the schema, so a collision with a manual
- * identity called "This machine" has to be resolved rather than thrown.
+ * Labels are unique, so a collision with a manual identity called "This
+ * machine" has to be resolved rather than thrown.
  */
-function machineLabel(userId: string, taken: (label: string) => boolean): string {
+function machineLabel(taken: (label: string) => boolean): string {
 	const base = 'This machine';
 	if (!taken(base)) return base;
 	for (let i = 2; i < 50; i++) {
@@ -88,20 +88,20 @@ function machineLabel(userId: string, taken: (label: string) => boolean): string
 		if (!taken(candidate)) return candidate;
 	}
 	// Practically unreachable; a unique suffix beats failing the whole list read.
-	return `${base} ${userId.slice(0, 6)}`;
+	return `${base} ${randomUUID().slice(0, 6)}`;
 }
 
 /**
- * Ensure the user's list reflects the machine's git config.
+ * Ensure the identity list reflects the machine's git config.
  *
  * Returns the mirrored row, or null when the machine has nothing to mirror.
  * Never throws: this runs on the read path for Settings, and a failure to mirror
  * must not take the whole list with it.
  */
-export async function syncLocalMachineIdentity(userId: string): Promise<GitIdentityRow | null> {
+export async function syncLocalMachineIdentity(): Promise<GitIdentityRow | null> {
 	try {
 		const machine = await readMachineIdentity();
-		const existing = gitIdentityQueries.getLocalMachine(userId);
+		const existing = gitIdentityQueries.getLocalMachine();
 
 		if (!machine) {
 			// Nothing to mirror. An existing row is left alone rather than deleted —
@@ -111,8 +111,8 @@ export async function syncLocalMachineIdentity(userId: string): Promise<GitIdent
 		}
 
 		if (!existing) {
-			const label = machineLabel(userId, (l) => gitIdentityQueries.labelTaken(userId, l));
-			const row = gitIdentityQueries.create(randomUUID(), userId, {
+			const label = machineLabel((l) => gitIdentityQueries.labelTaken(l));
+			const row = gitIdentityQueries.create(randomUUID(), {
 				label,
 				name: machine.name,
 				email: machine.email,
@@ -124,10 +124,10 @@ export async function syncLocalMachineIdentity(userId: string): Promise<GitIdent
 			});
 			// Becoming the default is the point: a fresh install then commits as the
 			// person the machine already says it is, with nothing to configure.
-			if (!gitIdentityQueries.getDefaultForUser(userId)) {
-				gitIdentityQueries.setDefault(userId, row.id);
+			if (!gitIdentityQueries.getDefault()) {
+				gitIdentityQueries.setDefault(row.id);
 			}
-			debug.log('git', `Imported the machine's git identity for user ${userId}`);
+			debug.log('git', "Imported the machine's git identity");
 			return gitIdentityQueries.getById(row.id);
 		}
 

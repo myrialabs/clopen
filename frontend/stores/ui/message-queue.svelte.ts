@@ -12,8 +12,6 @@ import { sessionState } from '$frontend/stores/core/sessions.svelte';
 
 export interface QueuedMessage {
 	id: string;
-	userId: string;
-	userName: string;
 	createdAt: string;
 	text: string;
 	attachmentCount: number;

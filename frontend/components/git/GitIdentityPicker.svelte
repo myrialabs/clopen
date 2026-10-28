@@ -80,7 +80,7 @@
 		<span class="truncate">
 			{resolved.identity?.name} &lt;{resolved.identity?.email}&gt;
 		</span>
-		{#if resolved.source === 'user-default'}
+		{#if resolved.source === 'default'}
 			<span class="shrink-0 text-slate-400 dark:text-slate-500" title="Following the default account">
 				· default
 			</span>

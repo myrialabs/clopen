@@ -43,8 +43,8 @@ export const sshForwardsHandler = createRouter()
 	.http('ssh:forward-list', {
 		data: t.Object({ connectionId: t.String({ minLength: 1 }) }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return {
 			forwards: sshPortForwardQueries.listForConnection(data.connectionId),
 			statuses: sshForwardManager.statusesForConnection(data.connectionId)
@@ -57,8 +57,8 @@ export const sshForwardsHandler = createRouter()
 			input: forwardInputSchema
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		const input = data.input as SshForwardInput;
 		requireDestination(input.type, input.destHost, input.destPort);
 		return sshPortForwardQueries.create(data.connectionId, input);
@@ -67,8 +67,8 @@ export const sshForwardsHandler = createRouter()
 	.http('ssh:forward-update', {
 		data: t.Object({ id: t.String({ minLength: 1 }), patch: forwardPatchSchema }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const existing = requireSshForward(conn, data.id);
+	}, async ({ data }) => {
+		const existing = requireSshForward(data.id);
 		const patch = data.patch as Partial<SshForwardInput>;
 		requireDestination(
 			patch.type ?? existing.type,
@@ -84,8 +84,8 @@ export const sshForwardsHandler = createRouter()
 	.http('ssh:forward-delete', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshForward(conn, data.id);
+	}, async ({ data }) => {
+		requireSshForward(data.id);
 		await sshForwardManager.stop(data.id);
 		sshPortForwardQueries.delete(data.id);
 		return { ok: true };
@@ -94,16 +94,16 @@ export const sshForwardsHandler = createRouter()
 	.http('ssh:forward-start', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const forward = requireSshForward(conn, data.id);
+	}, async ({ data }) => {
+		const forward = requireSshForward(data.id);
 		return sshForwardManager.start(forward);
 	})
 
 	.http('ssh:forward-stop', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const forward = requireSshForward(conn, data.id);
+	}, async ({ data }) => {
+		const forward = requireSshForward(data.id);
 		await sshForwardManager.stop(data.id);
 		return sshForwardManager.status(forward);
 	});

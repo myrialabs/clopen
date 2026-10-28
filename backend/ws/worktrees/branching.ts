@@ -12,18 +12,8 @@
  *   worktrees:branch-forget      drop the row, leave the remote branch alone
  *   worktrees:branch-delete-remote  destroy a branch the sweep found untracked
  *
- * ACCESS IS SPLIT, deliberately, and enforced in two places. Every route here
- * takes project access the way `worktrees:create` and `git:push` do — they act
- * inside one project. The DESTROYING ones are additionally listed in
- * `backend/auth/permissions.ts` as admin-only, the way `db-client:link` is:
- * deleting one destroys a real database.
- *
- * Choosing a SOURCE is gated per source rather than per route, because the two
- * kinds belong to different people. An integration account belongs to the
- * install and spends its quota, so only an admin is shown one; a DB Client
- * connection belongs to whoever saved it, and refusing a member their own would
- * make the whole feature admin-only for no reason that survives being stated.
- * `listBranchSources` decides, and `requireSource` enforces.
+ * Every route takes project access the way `worktrees:create` and `git:push`
+ * do — they act inside one project.
  */
 
 import { t } from 'elysia';
@@ -33,30 +23,11 @@ import { worktreeBranching } from '../../worktrees';
 import { ws } from '$backend/utils/ws';
 import { requireCurrentProjectAccess } from '../access';
 
-/**
- * Who is asking.
- *
- * Passed into every source-facing call rather than checked here, because the
- * rule is not "admin or not": an integration account belongs to the install and
- * is admin-only, while a DB Client connection belongs to whoever saved it. One
- * helper in the service answers both — see `requireSource`.
- */
-function principalOf(conn: Parameters<typeof ws.getUserId>[0]) {
-	return { userId: ws.getUserId(conn), isAdmin: ws.getRole(conn) === 'admin' };
-}
-
-/**
- * Tell everyone in the project that its branches or binding moved.
- *
- * The broadcast state is built for an ADMIN. Every recipient re-reads the
- * source list through their own request anyway, and building one payload per
- * viewer here would make an announcement O(viewers) round trips into the
- * database for a list that is about to be refetched.
- */
+/** Tell every device in the project that its branches or binding moved. */
 async function announce(projectId: string): Promise<void> {
 	ws.emit.project(projectId, 'worktrees:branching-changed', {
 		projectId,
-		state: await worktreeBranching.state(projectId, { userId: '', isAdmin: true })
+		state: await worktreeBranching.state(projectId)
 	});
 }
 
@@ -67,7 +38,7 @@ export const worktreeBranchingHandler = createRouter()
 	}, async ({ conn }) => {
 		await initializeDatabase();
 		const { projectId } = requireCurrentProjectAccess(conn);
-		return worktreeBranching.state(projectId, principalOf(conn));
+		return worktreeBranching.state(projectId);
 	})
 
 	/**
@@ -94,7 +65,7 @@ export const worktreeBranchingHandler = createRouter()
 		response: t.Array(t.Any())
 	}, async ({ data, conn }) => {
 		requireCurrentProjectAccess(conn);
-		return worktreeBranching.parents(data, principalOf(conn));
+		return worktreeBranching.parents(data);
 	})
 
 	.http('worktrees:branching-save', {
@@ -118,7 +89,7 @@ export const worktreeBranchingHandler = createRouter()
 		await initializeDatabase();
 		const { projectId } = requireCurrentProjectAccess(conn);
 
-		const binding = worktreeBranching.saveBinding({ projectId, ...data }, principalOf(conn));
+		const binding = worktreeBranching.saveBinding({ projectId, ...data });
 		await announce(projectId);
 		return binding;
 	})

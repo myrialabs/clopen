@@ -327,11 +327,6 @@ export const CHAT_COMMANDS: { command: string; description: string; hint?: strin
 export const REPLIES = {
 	paired: (name: string) =>
 		`Linked to ${name}'s Clopen. Just type to chat, or send photos and files. You start in Home, with no project selected: /projects switches project, /model picks a model, /help lists everything.\n\nSend /unlink to unlink this chat.`,
-	pairedPending: (name: string) =>
-		`Linked to ${name}'s Clopen. An admin has to approve this chat before it can be used. You will get a message here once they do.`,
-	awaitingApproval: 'This chat is waiting for an admin to approve it. You will get a message here once they do.',
-	approved: '✅ An admin approved this chat. Just type to chat, or /help to see everything it can do.',
-	rejected: 'An admin did not approve this chat, so it was unlinked.',
 	chatOff: 'This chat is switched off in Clopen → Settings → Chat Apps, so it cannot do anything right now.',
 	chatOn: '✅ This chat is switched back on.',
 	pairingExpired: 'That link has expired or was already used. Open Clopen → Settings → Chat Apps and link Telegram again.',
@@ -340,8 +335,7 @@ export const REPLIES = {
 	unlinked: 'Unlinked. This chat no longer controls Clopen.',
 	helpIntro:
 		'Type to chat with the session you are in, including photos, files and albums. Reply to any earlier message to continue from that point. Edit a message you sent to rewrite it, like Edit in Clopen.',
-	controlOff: 'Controlling Clopen is switched off for this bot. An admin can turn on "Control Clopen" for it in Settings → Integrations.',
-	adminOnly: 'Only an admin can do that.',
+	controlOff: 'Controlling Clopen is switched off for this bot. Turn on "Control Clopen" for it in Settings → Integrations.',
 	unknownCommand: (name: string) => `There is no /${name}. /help lists what this bot can do.`,
 	sendAsMessage: 'Send it to the session as a message instead?',
 	skillNotACommand: (name: string) => `${name.replace(/_/g, '-')} is one of your skills. Run it with /run ${name.replace(/_/g, '-')}, followed by what it needs.`,

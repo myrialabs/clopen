@@ -10,12 +10,9 @@
  *
  * Two gates, both already load-bearing elsewhere:
  *
- *  - `requireDbClientConnectionAccess` is the owner-or-admin check the rest of
- *    the surface uses. A projected connection has NO owner, which in
- *    db-client's access model means only an admin can reach it — the same
- *    reason `db-client:link` is admin-only, arrived at without a second rule.
+ *  - `requireDbClientConnection`: the connection must exist.
  *  - `requireProjectWorkspace` decides which tree a write lands in, and it is
- *    worktree-aware. A user looking at a worktree gets the worktree's `.env`,
+ *    worktree-aware. Looking at a worktree gets the worktree's `.env`,
  *    because that is the checkout their dev server is running from.
  */
 
@@ -27,7 +24,7 @@ import { worktreeQueries } from '$backend/database/queries';
 import { dbClientEnv, type EnvScope } from '../../db-client/env';
 import type { DbEnvRequest } from '$shared/types/db-client';
 import { requireProjectWorkspace } from '../access';
-import { requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
 
 const requestSchema = t.Object({
 	connectionId: t.String({ minLength: 1 }),
@@ -89,7 +86,7 @@ export const envHandler = createRouter()
 		}),
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const connection = requireDbClientConnection(data.connectionId);
 		return dbClientEnv.state(connection, resolveScope(conn, data.projectId), data.database);
 	})
 
@@ -97,7 +94,7 @@ export const envHandler = createRouter()
 		data: requestSchema,
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const connection = requireDbClientConnection(data.connectionId);
 		return dbClientEnv.plan(connection, resolveScope(conn, data.projectId), toRequest(data));
 	})
 
@@ -105,7 +102,7 @@ export const envHandler = createRouter()
 		data: requestSchema,
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const connection = requireDbClientConnection(data.connectionId);
 		return dbClientEnv.apply(connection, requireScope(conn, data.projectId), toRequest(data));
 	})
 
@@ -113,7 +110,7 @@ export const envHandler = createRouter()
 		data: requestSchema,
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const connection = requireDbClientConnection(data.connectionId);
 		return dbClientEnv.remove(connection, requireScope(conn, data.projectId), toRequest(data));
 	});
 

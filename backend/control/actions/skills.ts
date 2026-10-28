@@ -21,7 +21,7 @@ interface AvailableSkill {
 }
 
 async function availableSkills(ctx: ControlContext): Promise<AvailableSkill[]> {
-	const { project, session } = resolveTarget(ctx.user.id, ctx.target);
+	const { project, session } = resolveTarget(ctx.target);
 	const { skills } = await ctx.call<{ skills: AvailableSkill[] }>(
 		'skills:available',
 		{ profileId: session?.profile_id ?? null, projectId: project.id },
@@ -54,7 +54,6 @@ export const listSkills = defineAction({
 	group: 'skills',
 	title: 'Skills',
 	description: 'Your skills',
-	access: 'member',
 	args: t.Object({ page: t.Optional(t.Number({ minimum: 0 })) }),
 	command: { name: 'skills' },
 	async run(ctx, args) {
@@ -88,7 +87,6 @@ export const runSkill = defineAction({
 	group: 'skills',
 	title: 'Run a skill',
 	description: 'Run a skill',
-	access: 'member',
 	args: t.Object({ slug: t.Optional(t.String()), input: t.Optional(t.String()) }),
 	command: { name: 'run', argument: { keys: ['slug', 'input'], hint: '<skill> [input]' } },
 	async run(ctx, args) {

@@ -238,9 +238,8 @@ export const dbAccountsStore = {
 	/**
 	 * Providers, accounts and links.
 	 *
-	 * Admin-gated on the server, so a member gets an error here. That is not
-	 * surfaced as a failure: the entry points this data feeds simply do not
-	 * appear, which is the honest rendering of "you cannot connect accounts".
+	 * A failure is not surfaced as one: the entry points this data feeds simply
+	 * do not appear.
 	 */
 	async load(options: { force?: boolean } = {}): Promise<void> {
 		requested.add('providers');
@@ -262,7 +261,7 @@ export const dbAccountsStore = {
 			state.accounts = [];
 			state.links = [];
 			state.error = messageOf(error, 'Could not load database providers');
-			debug.log('db-client', 'provider list unavailable (likely not an admin)');
+			debug.log('db-client', 'provider list unavailable');
 		} finally {
 			state.loaded = true;
 			state.loading = false;

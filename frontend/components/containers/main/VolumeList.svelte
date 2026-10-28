@@ -13,11 +13,10 @@
 	import type { ContainerVolumeEntry } from '$shared/types/containers';
 
 	interface Props {
-		canManage: boolean;
 		onRemove: (volume: ContainerVolumeEntry) => void;
 	}
 
-	const { canManage, onRemove }: Props = $props();
+	const { onRemove }: Props = $props();
 
 	const volumes = $derived(containersStore.volumes);
 	const total = $derived(containersStore.result?.volumes.length ?? 0);
@@ -85,25 +84,23 @@
 				{volume.mountpoint ?? volume.driver}
 			</span>
 
-			{#if canManage}
-				<button
-					type="button"
-					class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent text-slate-400 cursor-pointer transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-wait"
-					onclick={() => onRemove(volume)}
-					disabled={containersStore.actingId === volume.name}
-					title={volume.usedBy.length > 0
-						? 'In use — the runtime will refuse while a container has it mounted'
-						: 'Remove this volume'}
-					aria-label="Remove volume {volume.name}"
-				>
-					<Icon
-						name={containersStore.actingId === volume.name
-							? 'lucide:loader-circle'
-							: 'lucide:trash-2'}
-						class="w-3.5 h-3.5 {containersStore.actingId === volume.name ? 'animate-spin' : ''}"
-					/>
-				</button>
-			{/if}
+			<button
+				type="button"
+				class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent text-slate-400 cursor-pointer transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-wait"
+				onclick={() => onRemove(volume)}
+				disabled={containersStore.actingId === volume.name}
+				title={volume.usedBy.length > 0
+					? 'In use — the runtime will refuse while a container has it mounted'
+					: 'Remove this volume'}
+				aria-label="Remove volume {volume.name}"
+			>
+				<Icon
+					name={containersStore.actingId === volume.name
+						? 'lucide:loader-circle'
+						: 'lucide:trash-2'}
+					class="w-3.5 h-3.5 {containersStore.actingId === volume.name ? 'animate-spin' : ''}"
+				/>
+			</button>
 		</div>
 	{/each}
 </div>

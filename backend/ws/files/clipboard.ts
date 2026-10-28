@@ -17,29 +17,16 @@
  * native file-drop list on a menu click (no DataTransfer), hence this backend
  * round-trip.
  *
- * Security: both routes act on the HOST machine's clipboard, which belongs to
- * whoever runs the server — not to a remote collaborator. A member's project
- * grants say nothing about that clipboard, and its contents are absolute
- * paths that can sit anywhere on disk (another user's project, a home
- * directory), so both routes are admin-only.
- *
- * The read route answers a non-admin with an empty list rather than an error:
- * the frontend polls it to decide whether to offer "Paste", and an empty list
- * simply means "nothing pasteable from the OS" — no error toast on every
- * context-menu open. The write route throws, because it is only ever reached
- * from an explicit Copy/Cut the caller asked for.
- *
- * Published paths still go through the standard per-user file access guard on
- * top of the admin check, so the guard stays correct if the policy is ever
- * widened. The backend only *publishes references* — the file manager
- * performs the actual copy, and sources are never moved or deleted by Clopen.
+ * Both routes act on the clipboard of the machine the server runs on — the
+ * owner's own. Published paths are canonicalised first. The backend only
+ * *publishes references* — the file manager performs the actual copy, and
+ * sources are never moved or deleted by Clopen.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { ws } from '$backend/utils/ws';
 import { copyPathsToOsClipboard, readOsClipboardFilePaths } from '../../files/os-clipboard';
-import { requireFilePathAccess } from './path-access';
+import { resolveFilePath } from './path-access';
 
 export const clipboardHandler = createRouter()
 	.http('files:copy-to-os-clipboard', {
@@ -52,13 +39,10 @@ export const clipboardHandler = createRouter()
 			/** The effect actually published — `copy` on macOS even for a CUT. */
 			effect: t.Union([t.Literal('copy'), t.Literal('move')])
 		})
-	}, async ({ data, conn }) => {
-		if (ws.getRole(conn) !== 'admin') {
-			throw new Error('Access denied');
-		}
+	}, async ({ data }) => {
 		const resolved: string[] = [];
 		for (const p of data.paths) {
-			resolved.push(await requireFilePathAccess(conn, p));
+			resolved.push(await resolveFilePath(p));
 		}
 		return await copyPathsToOsClipboard(resolved, data.effect ?? 'copy');
 	})
@@ -70,9 +54,6 @@ export const clipboardHandler = createRouter()
 				isDirectory: t.Boolean()
 			}))
 		})
-	}, async ({ conn }) => {
-		if (ws.getRole(conn) !== 'admin') {
-			return { items: [] };
-		}
+	}, async () => {
 		return { items: await readOsClipboardFilePaths() };
 	});

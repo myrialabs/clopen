@@ -53,7 +53,7 @@ function connectionNameFor(row: WorktreeBranchRow, noun: string): string {
  * ACTIVE and still attached to a worktree. An orphan is deliberately excluded:
  * its remote database may well still exist — that is what makes it an orphan —
  * but the worktree it belonged to is gone, so leaving a connection behind would
- * clutter every admin's list with rows pointing at databases nobody is using.
+ * clutter the connection list with rows pointing at databases nobody is using.
  * The orphan list is where those live, and it offers a delete rather than a
  * connection.
  */

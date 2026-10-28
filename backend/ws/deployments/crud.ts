@@ -9,11 +9,6 @@
  *   deployments:set-config   per-binding behaviour (environment, auto-refresh)
  *   deployments:logs         build logs as one budgeted bundle
  *
- * NOT admin-gated, unlike `integrations:*`. The distinction is what the route
- * can reach: an integrations route changes a credential every project and every
- * engine depends on, while these act inside one project the caller was already
- * granted access to — the same reasoning that leaves `git:push` open.
- *
  * Every route takes an optional `projectId`, because this surface is global.
  */
 

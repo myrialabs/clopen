@@ -5,7 +5,7 @@
  *   - instructions:get-project / save-project
  *
  * The managed block is injected into each engine's memory file as a
- * marker-region; hand-written content is preserved. Mutations are admin-gated.
+ * marker-region; hand-written content is preserved.
  */
 
 import { t } from 'elysia';

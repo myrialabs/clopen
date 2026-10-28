@@ -5,7 +5,7 @@
  * keys, an `.env` a tool printed, an Authorization header inside a failed
  * request. Memory is the worst possible place for those to land, because unlike
  * a chat message a memory is durable, is re-injected into EVERY future turn on
- * EVERY engine, and is readable by every member of the instance. A secret that
+ * EVERY engine, and is readable from every device. A secret that
  * reaches a message is exposed once; a secret that reaches the graph is exposed
  * continuously.
  *

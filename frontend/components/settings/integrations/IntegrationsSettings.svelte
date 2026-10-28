@@ -84,7 +84,7 @@
 			mcpServersStore.checkAllStatuses();
 		})();
 
-		// An account connected from anywhere — another admin, or a surface's own
+		// An account connected from anywhere — another device, or a surface's own
 		// connect entry point — creates and removes connector rows here, so both
 		// lists have to be refreshed, not just the one that changed.
 		return ws.on('integrations:changed', () => {

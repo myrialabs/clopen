@@ -26,7 +26,7 @@ import type {
 } from '$shared/types/git-identity';
 import { derivePublicKey, generateKeyPair, identityKeyPath, removeKeyFiles, writeKeyFile } from './keys';
 import { syncLocalMachineIdentity } from './import-local';
-import { refreshScopeConfigsForUser, writeScopeConfig } from './scope-config';
+import { refreshScopeConfigs, writeScopeConfig } from './scope-config';
 
 /** Strip a row down to what a client may see. */
 export function toDTO(row: GitIdentityRow): GitIdentityDTO {
@@ -111,31 +111,29 @@ async function syncKeyFile(row: GitIdentityRow): Promise<GitIdentityRow> {
 
 export const gitIdentityService = {
 	/**
-	 * Every identity this user owns, mirroring the machine's git config first.
+	 * Every identity, mirroring the machine's git config first.
 	 *
-	 * Done on the read rather than at startup so it also covers a user who joins
-	 * later, and because it is the moment the result is actually about to be
-	 * shown. It is idempotent and only writes on the first call per user.
+	 * Done on the read rather than at startup because it is the moment the result
+	 * is actually about to be shown. It is idempotent and only writes once.
 	 */
-	async list(userId: string): Promise<GitIdentityDTO[]> {
-		await syncLocalMachineIdentity(userId);
-		return gitIdentityQueries.listByUser(userId).map(toDTO);
+	async list(): Promise<GitIdentityDTO[]> {
+		await syncLocalMachineIdentity();
+		return gitIdentityQueries.list().map(toDTO);
 	},
 
-	get(userId: string, id: string): GitIdentityDTO | null {
+	get(id: string): GitIdentityDTO | null {
 		const row = gitIdentityQueries.getById(id);
-		if (!row || row.owner_user_id !== userId) return null;
-		return toDTO(row);
+		return row ? toDTO(row) : null;
 	},
 
-	async create(userId: string, input: GitIdentityInput): Promise<GitIdentityDTO> {
+	async create(input: GitIdentityInput): Promise<GitIdentityDTO> {
 		assertValid(input);
-		if (gitIdentityQueries.labelTaken(userId, input.label.trim())) {
+		if (gitIdentityQueries.labelTaken(input.label.trim())) {
 			throw new Error(`You already have an identity called "${input.label.trim()}"`);
 		}
 
 		const id = randomUUID();
-		let row = gitIdentityQueries.create(id, userId, {
+		let row = gitIdentityQueries.create(id, {
 			label: input.label.trim(),
 			name: input.name.trim(),
 			email: input.email.trim(),
@@ -151,28 +149,28 @@ export const gitIdentityService = {
 
 		row = await syncKeyFile(row);
 
-		// The first identity a user creates becomes their default — otherwise it
-		// would sit there doing nothing until they found the toggle, which reads
-		// as the feature being broken.
-		if (input.isDefault || gitIdentityQueries.listByUser(userId).length === 1) {
-			gitIdentityQueries.setDefault(userId, id);
+		// The first identity created becomes the default — otherwise it would sit
+		// there doing nothing until someone found the toggle, which reads as the
+		// feature being broken.
+		if (input.isDefault || gitIdentityQueries.list().length === 1) {
+			gitIdentityQueries.setDefault(id);
 			row = gitIdentityQueries.getById(id)!;
 		}
 
 		// Terminals that are already open read their identity from a file, so it is
 		// rewritten here — otherwise the new account would only reach tabs opened
 		// after this point.
-		await refreshScopeConfigsForUser(userId);
+		await refreshScopeConfigs();
 
-		debug.log('git', `Created git identity "${row.label}" for user ${userId}`);
+		debug.log('git', `Created git identity "${row.label}"`);
 		return toDTO(row);
 	},
 
-	async update(userId: string, id: string, input: GitIdentityInput): Promise<GitIdentityDTO> {
+	async update(id: string, input: GitIdentityInput): Promise<GitIdentityDTO> {
 		assertValid(input);
 		const existing = gitIdentityQueries.getById(id);
-		if (!existing || existing.owner_user_id !== userId) throw new Error('Identity not found');
-		if (gitIdentityQueries.labelTaken(userId, input.label.trim(), id)) {
+		if (!existing) throw new Error('Identity not found');
+		if (gitIdentityQueries.labelTaken(input.label.trim(), id)) {
 			throw new Error(`You already have an identity called "${input.label.trim()}"`);
 		}
 
@@ -199,19 +197,19 @@ export const gitIdentityService = {
 		row = await syncKeyFile(row);
 
 		if (input.isDefault && row.is_default !== 1) {
-			gitIdentityQueries.setDefault(userId, id);
+			gitIdentityQueries.setDefault(id);
 			row = gitIdentityQueries.getById(id)!;
 		}
 
-		await refreshScopeConfigsForUser(userId);
+		await refreshScopeConfigs();
 
 		debug.log('git', `Updated git identity "${row.label}"`);
 		return toDTO(row);
 	},
 
-	async remove(userId: string, id: string): Promise<void> {
+	async remove(id: string): Promise<void> {
 		const row = gitIdentityQueries.getById(id);
-		if (!row || row.owner_user_id !== userId) throw new Error('Identity not found');
+		if (!row) throw new Error('Identity not found');
 		if (row.source === 'local-machine') {
 			throw new Error(
 				"This account mirrors the machine's own git config, so it cannot be deleted. Edit it instead."
@@ -221,24 +219,24 @@ export const gitIdentityService = {
 		gitIdentityQueries.remove(id);
 		await removeKeyFiles(id);
 
-		// Deleting the default leaves the user with none, so the next one in the
-		// list takes over rather than every project silently losing its identity.
+		// Deleting the default leaves none, so the next one in the list takes over
+		// rather than every project silently losing its identity.
 		if (row.is_default === 1) {
-			const remaining = gitIdentityQueries.listByUser(userId);
-			if (remaining.length > 0) gitIdentityQueries.setDefault(userId, remaining[0]!.id);
+			const remaining = gitIdentityQueries.list();
+			if (remaining.length > 0) gitIdentityQueries.setDefault(remaining[0]!.id);
 		}
 
-		await refreshScopeConfigsForUser(userId);
+		await refreshScopeConfigs();
 
 		debug.log('git', `Removed git identity "${row.label}"`);
 	},
 
-	async setDefault(userId: string, id: string): Promise<GitIdentityDTO> {
+	async setDefault(id: string): Promise<GitIdentityDTO> {
 		const row = gitIdentityQueries.getById(id);
-		if (!row || row.owner_user_id !== userId) throw new Error('Identity not found');
-		gitIdentityQueries.setDefault(userId, id);
+		if (!row) throw new Error('Identity not found');
+		gitIdentityQueries.setDefault(id);
 		// Every project that inherits the default is affected, not just one.
-		await refreshScopeConfigsForUser(userId);
+		await refreshScopeConfigs();
 		return toDTO(gitIdentityQueries.getById(id)!);
 	},
 
@@ -248,9 +246,9 @@ export const gitIdentityService = {
 	 * Returns only the public key and its fingerprint; the private key goes
 	 * straight into the sealed column and the 0600 file.
 	 */
-	async generateKey(userId: string, id: string): Promise<GeneratedSshKey> {
+	async generateKey(id: string): Promise<GeneratedSshKey> {
 		const row = gitIdentityQueries.getById(id);
-		if (!row || row.owner_user_id !== userId) throw new Error('Identity not found');
+		if (!row) throw new Error('Identity not found');
 
 		const { privateKey, publicKey, fingerprint } = await generateKeyPair(
 			id,
@@ -271,23 +269,22 @@ export const gitIdentityService = {
 			integrationAccountId: row.integration_account_id
 		});
 
-		await refreshScopeConfigsForUser(userId);
+		await refreshScopeConfigs();
 
 		debug.log('git', `Generated SSH key for identity "${row.label}"`);
 		return { publicKey, fingerprint };
 	},
 
-	/** Bind a project to an identity, for this user. */
-	async bind(userId: string, projectId: string, identityId: string | null): Promise<void> {
+	/** Bind a project to an identity. */
+	async bind(projectId: string, identityId: string | null): Promise<void> {
 		if (identityId === null) {
-			gitIdentityBindingQueries.clear(projectId, userId);
+			gitIdentityBindingQueries.clear(projectId);
 		} else {
-			const row = gitIdentityQueries.getById(identityId);
-			if (!row || row.owner_user_id !== userId) throw new Error('Identity not found');
-			gitIdentityBindingQueries.set(projectId, userId, identityId);
+			if (!gitIdentityQueries.getById(identityId)) throw new Error('Identity not found');
+			gitIdentityBindingQueries.set(projectId, identityId);
 		}
 		// Only this project's file can have changed, so only it is rewritten.
-		await writeScopeConfig(userId, projectId);
+		await writeScopeConfig(projectId);
 	},
 
 	/** How many projects would lose their binding if this identity went away. */

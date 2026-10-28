@@ -46,7 +46,7 @@ async function modelsOf(ctx: ControlContext, args: { engine: string; query?: str
 		: models;
 	if (matching.length === 0) return { text: query ? `No ${engineName(engine)} model matches “${args.query}”.` : `${engineName(engine)} offers no models right now.` };
 
-	const { session } = resolveTarget(ctx.user.id, ctx.target);
+	const { session } = resolveTarget(ctx.target);
 	const current = modelOf(session);
 	const { choices, range } = paged(
 		matching,
@@ -68,12 +68,11 @@ export const listEngines = defineAction({
 	group: 'models',
 	title: 'Model',
 	description: 'Pick the model for this session',
-	access: 'member',
 	args: t.Object({ engine: t.Optional(t.String()), query: t.Optional(t.String()) }),
 	command: { name: 'model', argument: { keys: ['engine', 'query'], hint: '[engine] [search]' } },
 	async run(ctx, args) {
 		if (args.engine?.trim()) return modelsOf(ctx, { engine: args.engine, query: args.query });
-		const { session } = resolveTarget(ctx.user.id, ctx.target);
+		const { session } = resolveTarget(ctx.target);
 		const current = modelOf(session);
 		// The same readiness check the model picker and the chat gate use, so an
 		// engine that would only answer "install it first" says so up front.
@@ -101,7 +100,6 @@ export const listModels = defineAction({
 	group: 'models',
 	title: 'Models of an engine',
 	description: 'Every model an engine offers, searchable, paged.',
-	access: 'member',
 	args: t.Object({
 		engine: t.String({ minLength: 1 }),
 		query: t.Optional(t.String()),
@@ -117,7 +115,6 @@ export const setModel = defineAction({
 	group: 'models',
 	title: 'Use model',
 	description: 'Use a model for the current session (or for the next one, when there is none).',
-	access: 'member',
 	args: t.Object({
 		engine: ENGINE_SCHEMA,
 		provider: t.String(),
@@ -125,7 +122,7 @@ export const setModel = defineAction({
 		modelName: t.String({ minLength: 1 })
 	}),
 	async run(ctx, args) {
-		const { project, session } = resolveTarget(ctx.user.id, ctx.target);
+		const { project, session } = resolveTarget(ctx.target);
 		const model = { engine: args.engine as EngineType, provider: args.provider, modelId: args.modelId, modelName: args.modelName };
 		if (session) {
 			const switchedEngine = session.engine !== model.engine;
@@ -153,11 +150,10 @@ export const listReasoning = defineAction({
 	group: 'models',
 	title: 'Reasoning level',
 	description: 'Set how hard the model thinks',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'reasoning' },
 	async run(ctx) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		const current = modelOf(found?.session);
 		if (!found || !current) return { text: 'Pick a model first with /model.' };
 		const models = await ctx.call<EngineModel[]>('models:list', { engine: current.engine }, { projectId: found.project.id });
@@ -182,10 +178,9 @@ export const setReasoning = defineAction({
 	group: 'models',
 	title: 'Use reasoning level',
 	description: 'Set the reasoning level of the current session.',
-	access: 'member',
 	args: t.Object({ value: t.String({ minLength: 1 }) }),
 	async run(ctx, args) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		if (!found) throw new Error('No session yet. Send a message first.');
 		sessionQueries.updateReasoning(found.session.id, args.value);
 		return { text: `🧠 Reasoning set to **${escapeMd(args.value)}**.` };

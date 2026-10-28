@@ -45,7 +45,7 @@ import {
 	type ChannelLinkRow,
 	type ChannelMessageRow
 } from '$backend/database/queries';
-import { getUserById, type AuthUser } from '$backend/auth/auth-service';
+import type { AuthUser } from '$backend/auth/auth-service';
 import { checkSessionRestoreConflicts, restoreSessionTo, restoreTargetEnd } from '$backend/snapshot/restore';
 import { INITIAL_NODE_ID } from '$backend/snapshot/helpers';
 import { lastTurnAnswer, userMessageText } from '$backend/chat/turn-answer';
@@ -67,7 +67,6 @@ import {
 	projectLabel,
 	resolveTarget,
 	runControlAction,
-	canRun,
 	type ControlChoice,
 	type ControlResult,
 	type ControlTarget
@@ -78,7 +77,6 @@ import { accountHas, parsePayload } from './outbound';
 import { expectTurn, forgetExpectedTurn, markStoppedByChat, queuedPromptFor, setExpectedQueueId } from './turns';
 import { replyText } from './questions';
 import { setAwaiting } from './awaiting';
-import { approveLink, rejectLink } from './approvals';
 import { promptContent, type PromptAttachment } from './media';
 import { REPLIES, CHAT_COMMANDS, confirmCard, menuCard, textCard, type ButtonAction } from './messages';
 
@@ -89,8 +87,8 @@ import { REPLIES, CHAT_COMMANDS, confirmCard, menuCard, textCard, type ButtonAct
  * this module through the stream hooks, so importing it back would be a cycle.
  */
 export interface Composer {
-	submit(input: { userId: string; userName: string; request: StreamRequest }): Promise<{ outcome: 'started' | 'queued'; queueId: string }>;
-	replaceQueued(chatSessionId: string, queueId: string, userId: string, content: unknown[]): boolean;
+	submit(input: { request: StreamRequest }): Promise<{ outcome: 'started' | 'queued'; queueId: string }>;
+	replaceQueued(chatSessionId: string, queueId: string, content: unknown[]): boolean;
 }
 
 let composer: Composer | null = null;
@@ -107,12 +105,12 @@ export interface Conversation {
 }
 
 /** The project and session a plain message from this chat goes to. */
-export function activeTarget(link: ChannelLinkRow, user: AuthUser): { project: Project; session: ChatSession | null } {
-	return resolveTarget(user.id, { projectId: link.active_project_id ?? undefined, sessionId: link.active_session_id });
+export function activeTarget(link: ChannelLinkRow): { project: Project; session: ChatSession | null } {
+	return resolveTarget({ projectId: link.active_project_id ?? undefined, sessionId: link.active_session_id });
 }
 
 function activeControlTarget(conversation: Conversation): ControlTarget {
-	const { project, session } = activeTarget(reload(conversation.link), conversation.user);
+	const { project, session } = activeTarget(reload(conversation.link));
 	return { projectId: project.id, sessionId: session?.id ?? null };
 }
 
@@ -180,7 +178,6 @@ export async function sendPrompt(
 		model: { id: model.modelId, name: model.modelName },
 		account: account ?? { id: 0, name: '' }
 	};
-	const sender = { id: user.id, name: user.name };
 	const promptMessageId = crypto.randomUUID();
 	const request: StreamRequest = {
 		projectPath: target.project.path,
@@ -194,12 +191,10 @@ export async function sendPrompt(
 			// The branch tip is resolved server-side from HEAD, as for a queued message.
 			parent: { messageId: null, sessionId: null, toolUseId: null },
 			engine,
-			sender,
 			content: promptContent(text, attachments),
 			synthetic: false
 		} as StreamRequest['prompt'],
 		engine: engine as StreamRequest['engine'],
-		sender,
 		profileId: session.profile_id ?? null,
 		reasoningEffort: session.reasoning_effort ?? null,
 		requestedByUserId: user.id
@@ -216,7 +211,7 @@ export async function sendPrompt(
 	});
 
 	try {
-		const { outcome, queueId } = await composer.submit({ userId: user.id, userName: user.name, request });
+		const { outcome, queueId } = await composer.submit({ request });
 		if (outcome === 'queued') {
 			setExpectedQueueId(session.id, promptMessageId, queueId);
 			await replyText(channel, message, REPLIES.queued);
@@ -231,7 +226,7 @@ export async function sendPrompt(
 /** A plain message: continue the active target. */
 export async function continueActive(conversation: Conversation, text: string, attachments: PromptAttachment[]): Promise<void> {
 	if (!(await requireControl(conversation))) return;
-	const target = activeTarget(reload(conversation.link), conversation.user);
+	const target = activeTarget(reload(conversation.link));
 	await sendPrompt(conversation, target, text, attachments, { platformMessageId: conversation.message.platform_message_id ?? null });
 }
 
@@ -333,7 +328,7 @@ async function sendConfirmation(
  */
 export async function continueFrom(conversation: Conversation, row: ChannelMessageRow, text: string, attachments: PromptAttachment[]): Promise<void> {
 	if (!(await requireControl(conversation))) return;
-	const target = accessibleSession(conversation.user.id, row.chat_session_id);
+	const target = accessibleSession(row.chat_session_id);
 	if (!target) {
 		await replyText(conversation.channel, conversation.message, REPLIES.sessionGone);
 		return;
@@ -366,7 +361,7 @@ export async function continueFrom(conversation: Conversation, row: ChannelMessa
  * just changes what will run. Already a turn: Edit Message.
  */
 export async function editSent(conversation: Conversation, text: string, attachments: PromptAttachment[]): Promise<void> {
-	const { link, message, user } = conversation;
+	const { link, message } = conversation;
 	const platformMessageId = message.platform_message_id ?? null;
 	if (!platformMessageId) {
 		await replyText(conversation.channel, message, REPLIES.notEditable);
@@ -375,7 +370,7 @@ export async function editSent(conversation: Conversation, text: string, attachm
 	if (!(await requireControl(conversation))) return;
 
 	const queued = queuedPromptFor(link.id, platformMessageId);
-	if (queued && composer?.replaceQueued(queued.chatSessionId, queued.prompt.queueId!, user.id, promptContent(text, attachments))) {
+	if (queued && composer?.replaceQueued(queued.chatSessionId, queued.prompt.queueId!, promptContent(text, attachments))) {
 		await replyText(conversation.channel, message, REPLIES.queuedEdited);
 		return;
 	}
@@ -385,7 +380,7 @@ export async function editSent(conversation: Conversation, text: string, attachm
 		await replyText(conversation.channel, message, REPLIES.notEditable);
 		return;
 	}
-	const target = accessibleSession(user.id, row.chat_session_id);
+	const target = accessibleSession(row.chat_session_id);
 	const original = messageQueries.getById(row.clopen_message_id);
 	if (!target || !original) {
 		await replyText(conversation.channel, message, REPLIES.notEditable);
@@ -409,8 +404,8 @@ export async function editSent(conversation: Conversation, text: string, attachm
 
 /** The active session's last turn: its user message and what it said. */
 function lastTurn(conversation: Conversation) {
-	const { session } = activeTarget(reload(conversation.link), conversation.user);
-	const target = session ? accessibleSession(conversation.user.id, session.id) : null;
+	const { session } = activeTarget(reload(conversation.link));
+	const target = session ? accessibleSession(session.id) : null;
 	const turn = target ? lastTurnAnswer(target.session.id) : null;
 	const userRow = turn?.userMessageId ? messageQueries.getById(turn.userMessageId) : null;
 	return { target, userRow, text: turn?.userMessageId ? userMessageText(turn.userMessageId) : null };
@@ -502,7 +497,7 @@ async function askRewind(
 async function performRewind(conversation: Conversation, row: ChannelMessageRow, payload: RewindPayload): Promise<void> {
 	const { channel, message, link } = conversation;
 	const attachments = takeAttachments(row.id);
-	const target = accessibleSession(conversation.user.id, payload.sessionId);
+	const target = accessibleSession(payload.sessionId);
 	if (!target) {
 		await replyText(channel, message, REPLIES.sessionGone);
 		return;
@@ -538,9 +533,6 @@ async function performRewind(conversation: Conversation, row: ChannelMessageRow,
 }
 
 // ── The control catalog ─────────────────────────────────────────────────────
-
-/** Menu choices handled by the chat itself rather than the catalog. */
-const CHAT_ACTION_PREFIX = 'chat.';
 
 /** A menu's buttons, and the target they act on. */
 interface MenuPayload {
@@ -619,14 +611,14 @@ async function showResult(conversation: Conversation, result: ControlResult, ran
 	// An action that starts a turn (a skill) names what to send; it goes where
 	// the action ran, exactly as if the user had typed it there.
 	if (result.prompt) {
-		const where = resolveTarget(conversation.user.id, result.target ?? ranAt);
+		const where = resolveTarget(result.target ?? ranAt);
 		await sendPrompt(conversation, where, result.prompt, [], { platformMessageId: null });
 	}
 }
 
 /** Does a skill by this name exist for the chat's active session? */
 async function skillNamed(conversation: Conversation, name: string): Promise<boolean> {
-	const { project, session } = activeTarget(reload(conversation.link), conversation.user);
+	const { project, session } = activeTarget(reload(conversation.link));
 	const ctx = createControlContext(conversation.user, { projectId: project.id, sessionId: session?.id ?? null });
 	try {
 		const { skills } = await ctx.call<{ skills: Array<{ slug: string }> }>('skills:available', { profileId: session?.profile_id ?? null, projectId: project.id });
@@ -637,7 +629,7 @@ async function skillNamed(conversation: Conversation, name: string): Promise<boo
 }
 
 /**
- * Run a catalog action for this chat: access, arguments, a confirmation when
+ * Run a catalog action for this chat: arguments, a confirmation when
  * the action asks for one, then the action and its result. `at` pins the
  * target (a menu's own); without it the action runs on the active one.
  */
@@ -646,10 +638,6 @@ async function runAction(conversation: Conversation, actionId: string, rawArgs: 
 	const action = getControlAction(actionId);
 	if (!action) {
 		await replyText(conversation.channel, conversation.message, REPLIES.staleAction);
-		return;
-	}
-	if (!canRun(action, user)) {
-		await replyText(conversation.channel, conversation.message, REPLIES.adminOnly);
 		return;
 	}
 	const target = at ?? activeControlTarget(conversation);
@@ -666,7 +654,7 @@ async function runAction(conversation: Conversation, actionId: string, rawArgs: 
 async function runConfirmed(conversation: Conversation, actionId: string, args: Record<string, unknown>, target: ControlTarget): Promise<void> {
 	// This chat says "Stopped" itself; the turn ending must not say it twice.
 	if (actionId === 'sessions.stop' && target.sessionId) {
-		const found = accessibleSession(conversation.user.id, target.sessionId);
+		const found = accessibleSession(target.sessionId);
 		if (found && isSessionBusy(found.session)) markStoppedByChat(found.session.id);
 	}
 	const ctx = createControlContext(conversation.user, target);
@@ -674,29 +662,6 @@ async function runConfirmed(conversation: Conversation, actionId: string, args: 
 }
 
 // ── The chat's own commands ─────────────────────────────────────────────────
-
-/** A tap on one of the chat's own menus: act, and redraw the menu in place. */
-async function handleChatChoice(conversation: Conversation, row: ChannelMessageRow, choice: ControlChoice): Promise<void> {
-	const { link, user } = conversation;
-	if ((choice.action === 'chat.approve' || choice.action === 'chat.reject') && typeof choice.args?.linkId === 'string') {
-		if (user.role !== 'admin') {
-			await replyText(conversation.channel, conversation.message, REPLIES.adminOnly);
-			return;
-		}
-		const pending = channelLinkQueries.getById(choice.args.linkId);
-		const owner = pending ? getUserById(pending.user_id) : null;
-		const done = choice.action === 'chat.approve' ? await approveLink(choice.args.linkId) : await rejectLink(choice.args.linkId);
-		channelMessageQueries.settle(row.id, 'closed');
-		const note = !done
-			? 'Already handled.'
-			: choice.action === 'chat.approve'
-				? `✅ Approved${owner ? ` ${owner.name}` : ''}.`
-				: `✕ Rejected${owner ? ` ${owner.name}` : ''}.`;
-		await channelRuntime.edit(link.account_id, link.conversation_id, row.platform_message_id, textCard(note));
-		return;
-	}
-	await replyText(conversation.channel, conversation.message, REPLIES.staleAction);
-}
 
 /** Every command this chat answers to: its own, pairing's, and the catalog's. */
 export function isKnownCommand(name: string): boolean {
@@ -706,7 +671,7 @@ export function isKnownCommand(name: string): boolean {
 /** A `/command` that is not pairing: one of the chat's own, or a catalog action. */
 export async function handleControlCommand(conversation: Conversation, name: string, argument: string, rawText: string): Promise<void> {
 	if (name === 'help') {
-		await channelRuntime.sendLong(conversation.channel.accountId, conversation.message.address.conversation_id, markdownToRuns(`${REPLIES.helpIntro}\n\n${controlHelp(conversation.user, CHAT_COMMANDS)}`));
+		await channelRuntime.sendLong(conversation.channel.accountId, conversation.message.address.conversation_id, markdownToRuns(`${REPLIES.helpIntro}\n\n${controlHelp(CHAT_COMMANDS)}`));
 		return;
 	}
 	if (!(await requireControl(conversation))) return;
@@ -748,10 +713,6 @@ export async function handleControlButton(conversation: Conversation, row: Chann
 			await replyText(channel, message, REPLIES.staleAction);
 			return;
 		}
-		if (choice.action.startsWith(CHAT_ACTION_PREFIX)) {
-			await handleChatChoice(conversation, row, choice);
-			return;
-		}
 		if (!(await requireControl(conversation))) return;
 		await runAction(conversation, choice.action, choice.args ?? {}, payload.target);
 		return;
@@ -776,7 +737,7 @@ export async function handleControlButton(conversation: Conversation, row: Chann
 		}
 		if (payload.kind === 'send') {
 			await channelRuntime.edit(link.account_id, link.conversation_id, row.platform_message_id, textCard('📨 Sent as a message.'));
-			const target = activeTarget(reload(link), conversation.user);
+			const target = activeTarget(reload(link));
 			await sendPrompt(conversation, target, payload.text, takeAttachments(row.id), { platformMessageId: null });
 			return;
 		}

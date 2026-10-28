@@ -109,12 +109,6 @@ export interface ControlAction<A extends TSchema = TSchema> {
 	title: string;
 	/** One line, shown in help and to an agent. */
 	description: string;
-	/**
-	 * Who may run it. The routes an action calls enforce their own rules too
-	 * (the same `auth/permissions.ts` the web UI is held to); this is what keeps
-	 * an admin-only action out of a member's menus in the first place.
-	 */
-	access: 'member' | 'admin';
 	args: A;
 	command?: ControlCommand;
 	/** A question to ask before running, for anything destructive. Null: just run it. */

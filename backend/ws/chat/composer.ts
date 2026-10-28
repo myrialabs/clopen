@@ -3,11 +3,8 @@
  *
  * Everything about the message box that outlives a page load, per chat session:
  *
- * - Drafts are per USER. Text and attachments typed in a session wait for the
- *   same person on any device, but never land in a collaborator's box — a
- *   shared box let two people overwrite each other keystroke by keystroke.
- * - Edit mode is per user too. Collaborators only learn THAT someone is
- *   editing; they never enter (or cancel, or submit) another person's edit.
+ * - The draft: text and attachments typed in a session wait on any device.
+ * - Edit mode: which message is being edited, restored with the session.
  * - The message queue holds what was sent while the AI was still working, and
  *   the server starts the next one when a turn completes — so a queued message
  *   is sent even if every tab that queued it has been closed.
@@ -58,31 +55,24 @@ interface Draft {
 interface EditState {
 	messageId: string;
 	messageTimestamp: string | null;
-	userName: string;
 }
 
 interface QueuedMessage {
 	id: string;
-	userId: string;
-	userName: string;
 	createdAt: string;
 	text: string;
 	attachmentCount: number;
 	request: StreamRequest;
 }
 
-/** Keyed by `draftKey(sessionId, userId)`. */
+/** chatSessionId → its draft. */
 const drafts = new Map<string, Draft>();
-/** chatSessionId → userId → that user's edit. */
-const edits = new Map<string, Map<string, EditState>>();
+/** chatSessionId → the message being edited. */
+const edits = new Map<string, EditState>();
 /** chatSessionId → messages waiting for the current turn to finish, in order. */
 const queues = new Map<string, QueuedMessage[]>();
 /** Sessions whose next queued message is being started right now. */
 const draining = new Set<string>();
-
-function draftKey(chatSessionId: string, userId: string): string {
-	return `${chatSessionId}\u0000${userId}`;
-}
 
 function isSessionBusy(chatSessionId: string, projectId: string): boolean {
 	if (draining.has(chatSessionId)) return true;
@@ -102,19 +92,9 @@ function promptAttachmentCount(prompt: any): number {
 	return content.filter((block: any) => block?.type === 'image' || block?.type === 'document').length;
 }
 
-function editorsFor(chatSessionId: string, exceptUserId?: string) {
-	const sessionEdits = edits.get(chatSessionId);
-	if (!sessionEdits) return [];
-	return [...sessionEdits.entries()]
-		.filter(([userId]) => userId !== exceptUserId)
-		.map(([userId, edit]) => ({ userId, userName: edit.userName, messageId: edit.messageId }));
-}
-
 function queueView(chatSessionId: string) {
 	return (queues.get(chatSessionId) ?? []).map((item) => ({
 		id: item.id,
-		userId: item.userId,
-		userName: item.userName,
 		createdAt: item.createdAt,
 		text: item.text,
 		attachmentCount: item.attachmentCount
@@ -164,19 +144,15 @@ async function startPrepared(item: QueuedMessage): Promise<void> {
 /**
  * Send a message the way the composer does: start it now if the session is
  * idle and nothing is queued ahead of it, otherwise queue it behind the turn.
- * Shared by `chat:queue-add` and anything server-side that speaks for a user
- * — a reply from a chat app arrives with no tab open at all.
+ * Shared by `chat:queue-add` and anything server-side that sends on the
+ * owner's behalf — a reply from a chat app arrives with no tab open at all.
  */
 export async function submitPrompt(input: {
-	userId: string;
-	userName: string;
 	request: StreamRequest;
 }): Promise<{ outcome: 'started' | 'queued'; queueId: string }> {
 	const { chatSessionId, projectId } = input.request;
 	const item: QueuedMessage = {
 		id: crypto.randomUUID(),
-		userId: input.userId,
-		userName: input.userName,
 		createdAt: new Date().toISOString(),
 		text: promptText(input.request.prompt),
 		attachmentCount: promptAttachmentCount(input.request.prompt),
@@ -197,12 +173,11 @@ export async function submitPrompt(input: {
 
 /**
  * Replace the content of a message still waiting in the queue — editing it
- * before it ran. Only its author can, and only while it is still queued.
- * Returns false when it already started (or was dropped).
+ * before it ran. Returns false when it already started (or was dropped).
  */
-export function replaceQueuedPrompt(chatSessionId: string, queueId: string, userId: string, content: unknown[]): boolean {
+export function replaceQueuedPrompt(chatSessionId: string, queueId: string, content: unknown[]): boolean {
 	const item = queues.get(chatSessionId)?.find((entry) => entry.id === queueId);
-	if (!item || item.userId !== userId) return false;
+	if (!item) return false;
 	item.request = { ...item.request, prompt: { ...item.request.prompt, content } as StreamRequest['prompt'] };
 	item.text = promptText(item.request.prompt);
 	item.attachmentCount = promptAttachmentCount(item.request.prompt);
@@ -246,9 +221,7 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 
 // Deleting a session drops everything its composer was holding.
 streamManager.on('session:cleanup', (chatSessionId: string) => {
-	for (const key of drafts.keys()) {
-		if (key.startsWith(`${chatSessionId}\u0000`)) drafts.delete(key);
-	}
+	drafts.delete(chatSessionId);
 	edits.delete(chatSessionId);
 	queues.delete(chatSessionId);
 });
@@ -272,16 +245,8 @@ const engineSchema = t.Object({
 	account: t.Object({ id: t.Number(), name: t.String() })
 });
 
-const editorSchema = t.Object({
-	userId: t.String(),
-	userName: t.String(),
-	messageId: t.String()
-});
-
 const queueItemSchema = t.Object({
 	id: t.String(),
-	userId: t.String(),
-	userName: t.String(),
 	createdAt: t.String(),
 	text: t.String(),
 	attachmentCount: t.Number()
@@ -308,23 +273,20 @@ export const composerHandler = createRouter()
 				t.Object({ messageId: t.String(), messageTimestamp: t.Union([t.String(), t.Null()]) }),
 				t.Null()
 			]),
-			editors: t.Array(editorSchema),
 			queue: t.Array(queueItemSchema)
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
-		const userId = ws.getUserId(conn);
-		const draft = drafts.get(draftKey(data.chatSessionId, userId));
-		const ownEdit = edits.get(data.chatSessionId)?.get(userId);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
+		const draft = drafts.get(data.chatSessionId);
+		const edit = edits.get(data.chatSessionId);
 		return {
 			draft: draft ?? { text: '', attachments: [], textRevision: 0, attachmentsRevision: 0 },
-			edit: ownEdit ? { messageId: ownEdit.messageId, messageTimestamp: ownEdit.messageTimestamp } : null,
-			editors: editorsFor(data.chatSessionId, userId),
+			edit: edit ? { messageId: edit.messageId, messageTimestamp: edit.messageTimestamp } : null,
 			queue: queueView(data.chatSessionId)
 		};
 	})
 
-	// Save this user's draft. Omitted fields are left as they are, so typing
+	// Save the draft. Omitted fields are left as they are, so typing
 	// sends text only and attachments travel only when they change. A part is
 	// only replaced by a write newer than the one it holds.
 	.on('chat:draft-save', {
@@ -334,10 +296,9 @@ export const composerHandler = createRouter()
 			text: t.Optional(t.String()),
 			attachments: t.Optional(t.Array(attachmentSchema))
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
-		const key = draftKey(data.chatSessionId, ws.getUserId(conn));
-		const draft = drafts.get(key) ?? { text: '', attachments: [], textRevision: 0, attachmentsRevision: 0 };
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
+		const draft = drafts.get(data.chatSessionId) ?? { text: '', attachments: [], textRevision: 0, attachmentsRevision: 0 };
 		if (data.text !== undefined && data.revision > draft.textRevision) {
 			draft.text = data.text;
 			draft.textRevision = data.revision;
@@ -346,45 +307,31 @@ export const composerHandler = createRouter()
 			draft.attachments = data.attachments;
 			draft.attachmentsRevision = data.revision;
 		}
-		drafts.set(key, draft);
+		drafts.set(data.chatSessionId, draft);
 	})
 
-	// Enter (messageId) or leave (null) edit mode for this user.
+	// Enter (messageId) or leave (null) edit mode.
 	.on('chat:edit-mode', {
 		data: t.Object({
 			chatSessionId: t.String(),
 			messageId: t.Union([t.String(), t.Null()]),
-			messageTimestamp: t.Union([t.String(), t.Null()]),
-			userName: t.String()
+			messageTimestamp: t.Union([t.String(), t.Null()])
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
-		const userId = ws.getUserId(conn);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 
 		if (data.messageId) {
 			const message = messageQueries.getById(data.messageId);
 			if (!message || message.session_id !== data.chatSessionId) {
 				throw new Error('Message not found in this chat session');
 			}
-			const sessionEdits = edits.get(data.chatSessionId) ?? new Map<string, EditState>();
-			sessionEdits.set(userId, {
+			edits.set(data.chatSessionId, {
 				messageId: data.messageId,
-				messageTimestamp: data.messageTimestamp,
-				userName: data.userName
+				messageTimestamp: data.messageTimestamp
 			});
-			edits.set(data.chatSessionId, sessionEdits);
 		} else {
-			const sessionEdits = edits.get(data.chatSessionId);
-			sessionEdits?.delete(userId);
-			if (sessionEdits && sessionEdits.size === 0) edits.delete(data.chatSessionId);
+			edits.delete(data.chatSessionId);
 		}
-
-		ws.emit.chatSession(data.chatSessionId, 'chat:edit-presence', {
-			chatSessionId: data.chatSessionId,
-			userId,
-			userName: data.userName,
-			messageId: data.messageId
-		});
 	})
 
 	// Where submitting an edit rewinds to: the edited message's parent. Resolved
@@ -399,8 +346,8 @@ export const composerHandler = createRouter()
 		response: t.Object({
 			targetId: t.String()
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		const message = messageQueries.getById(data.messageId);
 		if (!message || message.session_id !== data.chatSessionId) {
 			throw new Error('The message being edited no longer exists in this chat session');
@@ -416,25 +363,21 @@ export const composerHandler = createRouter()
 			projectPath: t.String(),
 			prompt: t.Any(),
 			engine: engineSchema,
-			sender: t.Object({ id: t.String(), name: t.String() }),
 			profileId: t.Optional(t.Union([t.Number(), t.Null()])),
 			reasoningEffort: t.Optional(t.Union([t.String(), t.Null()]))
 		})
 	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+		requireSessionAccess(data.chatSessionId);
 		const userId = ws.getUserId(conn);
 		const projectId = ws.getProjectId(conn);
 
 		await submitPrompt({
-			userId,
-			userName: data.sender.name,
 			request: {
 				projectPath: data.projectPath,
 				projectId,
 				chatSessionId: data.chatSessionId,
 				prompt: data.prompt,
 				engine: data.engine,
-				sender: data.sender,
 				profileId: data.profileId,
 				reasoningEffort: data.reasoningEffort,
 				requestedByUserId: userId
@@ -442,19 +385,17 @@ export const composerHandler = createRouter()
 		});
 	})
 
-	// Drop a queued message. Only its author can.
+	// Drop a queued message.
 	.on('chat:queue-remove', {
 		data: t.Object({
 			chatSessionId: t.String(),
 			id: t.String()
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
-		const userId = ws.getUserId(conn);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		const queue = queues.get(data.chatSessionId);
 		const index = queue?.findIndex((item) => item.id === data.id) ?? -1;
 		if (!queue || index === -1) return;
-		if (queue[index].userId !== userId) throw new Error('Only the author can remove a queued message');
 		queue.splice(index, 1);
 		if (queue.length === 0) queues.delete(data.chatSessionId);
 		broadcastQueue(data.chatSessionId);
@@ -479,13 +420,11 @@ export const composerHandler = createRouter()
 			}),
 			t.Null()
 		])
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
-		const userId = ws.getUserId(conn);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		const queue = queues.get(data.chatSessionId);
 		const index = queue?.findIndex((item) => item.id === data.id) ?? -1;
 		if (!queue || index === -1) return null;
-		if (queue[index].userId !== userId) throw new Error('Only the author can edit a queued message');
 		const [item] = queue.splice(index, 1);
 		if (queue.length === 0) queues.delete(data.chatSessionId);
 		broadcastQueue(data.chatSessionId);
@@ -510,13 +449,11 @@ export const composerHandler = createRouter()
 			id: t.String()
 		})
 	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
-		const userId = ws.getUserId(conn);
+		requireSessionAccess(data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 		const queue = queues.get(data.chatSessionId);
 		const index = queue?.findIndex((item) => item.id === data.id) ?? -1;
 		if (!queue || index === -1) return;
-		if (queue[index].userId !== userId) throw new Error('Only the author can send a queued message');
 
 		const [item] = queue.splice(index, 1);
 		if (isSessionBusy(data.chatSessionId, projectId)) {
@@ -528,13 +465,6 @@ export const composerHandler = createRouter()
 		broadcastQueue(data.chatSessionId);
 		await startQueued(item);
 	})
-
-	.emit('chat:edit-presence', t.Object({
-		chatSessionId: t.String(),
-		userId: t.String(),
-		userName: t.String(),
-		messageId: t.Union([t.String(), t.Null()])
-	}))
 
 	.emit('chat:queue', t.Object({
 		chatSessionId: t.String(),

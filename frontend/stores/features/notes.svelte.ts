@@ -393,7 +393,7 @@ export async function deleteNoteImage(imageId: string, noteId: string): Promise<
 let eventsBound = false;
 let reloadTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Subscribe to collaborative note events. Idempotent. */
+/** Subscribe to note events from every device. Idempotent. */
 export function initNotesEvents(): void {
 	if (eventsBound) return;
 	eventsBound = true;

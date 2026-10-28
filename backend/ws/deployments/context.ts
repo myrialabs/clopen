@@ -32,7 +32,7 @@ export interface DeployProjectContext {
 export function resolveDeployProject(conn: WSConnection, projectId?: string): DeployProjectContext {
 	const current = ws.getProjectId(conn);
 	const target = (projectId ?? '').trim() || current;
-	const project = requireProjectAccess(conn, target);
+	const project = requireProjectAccess(target);
 
 	return {
 		projectId: target,

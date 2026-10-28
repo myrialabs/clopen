@@ -10,7 +10,6 @@
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
 	import SetupPage from '$frontend/components/auth/SetupPage.svelte';
 	import LoginPage from '$frontend/components/auth/LoginPage.svelte';
-	import InvitePage from '$frontend/components/auth/InvitePage.svelte';
 	import DeviceClaimPage from '$frontend/components/auth/DeviceClaimPage.svelte';
 	import { backgroundTerminalService } from '$frontend/services/terminal/background';
 	import { initializeMCPPreview } from '$frontend/services/preview';
@@ -23,9 +22,6 @@
 	import { initAiChanges } from '$frontend/stores/features/ai-changes.svelte';
 	import { containersStore } from '$frontend/stores/features/containers.svelte';
 	import { startUpdateChecker, stopUpdateChecker } from '$frontend/stores/ui/update.svelte';
-	import ws from '$frontend/utils/ws';
-	import { showNotificationWithActions } from '$frontend/stores/ui/notification.svelte';
-	import { openTeamForUser } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	let servicesInitialized = false;
@@ -73,18 +69,6 @@
 			// the server remembers that answer and skips the command entirely.
 			containersStore.initRealtimeListener();
 
-			// Nudge admins to set project access when a new member joins via an invite,
-			// so the "invite → join → grant access" flow doesn't dead-end.
-			ws.on('auth:users-changed', (payload: { type: string; userId: string }) => {
-				if (payload?.type !== 'added' || !authStore.isAdmin) return;
-				showNotificationWithActions(
-					'info',
-					'New member joined',
-					'Review which projects they can access.',
-					[{ label: 'Set project access', action: () => openTeamForUser(payload.userId) }]
-				);
-			});
-
 			// `#session/<project>/<session>` — the "Open in Clopen" link a
 			// notification channel sends. Applied once signed in, so the project
 			// list it resolves against exists.
@@ -113,8 +97,6 @@
 	<SetupPage />
 {:else if authStore.authState === 'login'}
 	<LoginPage />
-{:else if authStore.authState === 'invite'}
-	<InvitePage />
 {:else if authStore.authState === 'device'}
 	<DeviceClaimPage />
 {:else}

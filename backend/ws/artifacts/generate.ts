@@ -5,8 +5,8 @@
  *     sentence, using the caller-selected engine/model (the "Artifacts" model in
  *     Settings → Models). Returns loosely-typed fields the editor prefills.
  *
- * Admin-gated (authoring is part of the admin artifact editors). The engine/model
- * are chosen client-side, mirroring git:generate-commit-message.
+ * Part of the artifact editors. The engine/model are chosen client-side,
+ * mirroring git:generate-commit-message.
  */
 
 import { t } from 'elysia';

@@ -7,7 +7,7 @@
  * deny rule silently won't match. Only Claude's names are authoritative (the
  * Agent SDK's canonical PascalCase tool names); every other engine is
  * BEST-EFFORT — the runtime hook receives the engine's own casing/aliases, and
- * these lists are a curated starting point the admin can extend with free-text
+ * these lists are a curated starting point that can be extended with free-text
  * patterns. See {@link ENGINE_TOOLS_BEST_EFFORT}.
  *
  * Copilot is special: its permission hook decides by operation `kind`

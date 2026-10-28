@@ -11,7 +11,7 @@ import type { ChatSession } from '$shared/types/database/schema';
 import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { projectState } from './projects.svelte';
-import { setupEditModeListener, resetEditModeQuietly } from '$frontend/stores/ui/edit-mode.svelte';
+import { resetEditModeQuietly } from '$frontend/stores/ui/edit-mode.svelte';
 import { setupMessageQueueListener } from '$frontend/stores/ui/message-queue.svelte';
 import { markSessionUnread, markSessionRead, clearSessionState, syncGlobalStateFromSession, appState } from '$frontend/stores/core/app.svelte';
 import { debug } from '$shared/utils/logger';
@@ -146,7 +146,7 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 		ws.emit('sessions:set-current', { sessionId: session.id });
 
 		// Refresh session data from server to get latest engine/model
-		// (may have been set by another user's stream or not yet synced)
+		// (may have been set by a stream from another device or not yet synced)
 		try {
 			const response = await ws.http('sessions:get', { id: session.id });
 			if (response?.session) {
@@ -458,11 +458,10 @@ export async function reloadSessionsForProject(): Promise<string | null> {
 // ========================================
 
 /**
- * Setup WebSocket listeners for collaborative session management.
- * When another user creates a new chat session, all users in the project
- * automatically switch to the new shared session.
+ * Setup WebSocket listeners that keep the session list in sync across devices:
+ * sessions created or deleted elsewhere, and messages rewritten elsewhere.
  */
-function setupCollaborativeListeners() {
+function setupSyncListeners() {
 	// Re-join chat session room after WebSocket reconnection.
 	// Without this, the new connection is not in the session room and
 	// misses all chat events (stream, partial, complete, input sync, etc.).
@@ -473,7 +472,7 @@ function setupCollaborativeListeners() {
 		}
 	});
 
-	// Listen for new session available notifications from other users.
+	// Listen for sessions created on another device.
 	// Does NOT auto-switch — adds session to list and shows notification.
 	ws.on('sessions:session-available', async (data: { session: ChatSession }) => {
 		debug.log('session', 'New session available in project:', data.session.id);
@@ -494,13 +493,13 @@ function setupCollaborativeListeners() {
 		}
 	});
 
-	// Listen for session deletion broadcasts from other users
+	// Listen for session deletions made on another device
 	ws.on('sessions:session-deleted', (data: { sessionId: string; projectId: string }) => {
-		debug.log('session', 'Session deleted by another user:', data.sessionId);
+		debug.log('session', 'Session deleted on another device:', data.sessionId);
 		removeSession(data.sessionId);
 	});
 
-	// Listen for messages-changed broadcasts (undo/redo/edit by another user)
+	// Listen for messages-changed broadcasts (undo/redo/edit on another device)
 	ws.on('chat:messages-changed', async (data: { sessionId: string; reason: string; timestamp: string }) => {
 		debug.log('session', `Messages changed (${data.reason}) for session: ${data.sessionId}`);
 
@@ -517,8 +516,7 @@ function setupCollaborativeListeners() {
 
 export async function initializeSessions() {
 	// Setup sync listeners first (no await needed)
-	setupCollaborativeListeners();
-	setupEditModeListener();
+	setupSyncListeners();
 	setupMessageQueueListener();
 
 	// Skip loading if no project is active — both calls require WS project context

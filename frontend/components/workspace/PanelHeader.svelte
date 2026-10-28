@@ -4,11 +4,7 @@
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import AvatarBubble from '$frontend/components/common/display/AvatarBubble.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
-	import { projectState } from '$frontend/stores/core/projects.svelte';
-	import { presenceState } from '$frontend/stores/core/presence.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
 	import {
 		workspaceState,
 		type PanelId,
@@ -53,40 +49,6 @@
 
 	// Track current branch name reactively
 	const currentBranch = $derived(gitPanelRef?.panelActions?.getBranchInfo()?.current || '...');
-
-	// Chat session users (other users in the same chat session, excluding self)
-	const chatSessionUsers = $derived.by(() => {
-		if (panelId !== 'chat') return [];
-		const projectId = projectState.currentProject?.id;
-		const chatSessionId = sessionState.currentSession?.id;
-		const currentUserId = userStore.currentUser?.id;
-		if (!projectId || !chatSessionId) return [];
-		const status = presenceState.statuses.get(projectId);
-		if (!status?.chatSessionUsers) return [];
-		const users = status.chatSessionUsers[chatSessionId] || [];
-		return currentUserId ? users.filter(u => u.userId !== currentUserId) : users;
-	});
-
-	// Chat session users popover
-	let showChatUsersPopover = $state(false);
-	let chatUsersContainer = $state<HTMLDivElement | null>(null);
-
-	function toggleChatUsersPopover(e: MouseEvent) {
-		e.stopPropagation();
-		showChatUsersPopover = !showChatUsersPopover;
-	}
-
-	$effect(() => {
-		if (showChatUsersPopover) {
-			const handleClickOutside = (e: MouseEvent) => {
-				if (chatUsersContainer && !chatUsersContainer.contains(e.target as Node)) {
-					showChatUsersPopover = false;
-				}
-			};
-			document.addEventListener('click', handleClickOutside, true);
-			return () => document.removeEventListener('click', handleClickOutside, true);
-		}
-	});
 
 	// Panel actions menu state
 	let showActionsMenu = $state(false);
@@ -252,32 +214,6 @@
 			{#if panelId === 'chat'}
 				{#if sessionState.messages.length > 0 || sessionState.hasMessageHistory}
 					<ContextIndicator {isMobile} />
-				{/if}
-				{#if chatSessionUsers.length > 0}
-					<div class="relative" bind:this={chatUsersContainer}>
-					<div class="flex items-center -space-x-1.5 mr-1 cursor-pointer" title="Users in this session" onclick={toggleChatUsersPopover}>
-						{#each chatSessionUsers.slice(0, 3) as user}
-							<AvatarBubble {user} size="sm" />
-						{/each}
-						{#if chatSessionUsers.length > 3}
-							<span class="w-5 h-5 rounded-full bg-gradient-to-br from-slate-500 to-slate-600 dark:from-slate-600 dark:to-slate-700 text-white text-4xs font-bold flex items-center justify-center border-2 border-white dark:border-slate-800 z-10">
-								+{chatSessionUsers.length - 3}
-							</span>
-						{/if}
-					</div>
-					{#if showChatUsersPopover}
-						<div class="absolute top-full right-0 mt-2 py-2 px-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg z-50 min-w-[160px]">
-							<div class="px-2 pb-1.5 text-left text-xs font-semibold text-slate-500 dark:text-slate-400">
-								In this session ({chatSessionUsers.length})
-							</div>
-							{#each chatSessionUsers as user}
-								<div class="flex items-center gap-2 px-2 py-1.5 rounded-md">
-									<AvatarBubble {user} size="sm" showName={true} />
-								</div>
-							{/each}
-						</div>
-					{/if}
-				</div>
 				{/if}
 				<button
 					type="button"

@@ -58,7 +58,7 @@ function sessionLinkPath(projectId: string, chatSessionId: string): string {
 }
 
 /**
- * Broadcast presence + notify project members when a chat message may flip the
+ * Broadcast presence + notify every device when a chat message may flip the
  * stream's waiting-for-input state (an AskUserQuestion tool_use arrives, or a
  * tool_result answers it). `event.data.message` IS the UnifiedMessage, so its
  * blocks live at `.content` — reading `.message.content` (one level too deep)
@@ -92,11 +92,11 @@ function handleWaitingInputChange(
 		});
 	}
 
-	// Notify all project members when AskUserQuestion arrives (sound + push)
+	// Notify every device when AskUserQuestion arrives (sound + push)
 	if (askToolUse) {
 		const context = resolveNotificationContext(projectId, chatSessionId);
 
-		ws.emit.projectMembers(projectId, 'chat:waiting-input', {
+		ws.emit.signedIn('chat:waiting-input', {
 			projectId,
 			chatSessionId,
 			toolUseId: askToolUse.id,
@@ -158,8 +158,8 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 	// two copies of one event cannot word themselves differently.
 	const context = resolveNotificationContext(projectId, chatSessionId);
 
-	// Notify all project members (cross-project notification for sound + push)
-	ws.emit.projectMembers(projectId, 'chat:stream-finished', {
+	// Notify every device (cross-project notification for sound + push)
+	ws.emit.signedIn('chat:stream-finished', {
 		projectId,
 		chatSessionId: chatSessionId || '',
 		streamId,
@@ -193,12 +193,12 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 	});
 });
 
-// Notify project members when a snapshot is captured (so the timeline modal can refresh stats)
+// Notify every device when a snapshot is captured (so the timeline modal can refresh stats)
 streamManager.on('snapshot:captured', (event: { projectId: string; chatSessionId: string }) => {
 	const { projectId, chatSessionId } = event;
 	if (!projectId) return;
 
-	ws.emit.projectMembers(projectId, 'snapshot:captured', { projectId, chatSessionId });
+	ws.emit.signedIn('snapshot:captured', { projectId, chatSessionId });
 });
 
 // In-memory store for model state per chat session (keyed by chatSessionId)
@@ -249,8 +249,6 @@ export function bridgeStreamToRoom(
 						timestamp: event.data.timestamp,
 						message_id: event.data.message_id,
 						parent_message_id: event.data.parent_message_id,
-						sender_id: event.data.sender_id,
-						sender_name: event.data.sender_name,
 						engine: event.data.engine,
 						seq: event.seq
 					});
@@ -367,7 +365,7 @@ export async function startChatStream(request: StreamRequest): Promise<string | 
 
 		// The connection event from startStream() fires before anyone subscribes,
 		// so it is announced here. The user message reaches the room through the
-		// bridge (it carries resume, sender info and the saved message id).
+		// bridge (it carries resume and the saved message id).
 		const stream = streamManager.getStream(streamId);
 		if (stream) {
 			ws.emit.chatSession(request.chatSessionId, 'chat:connection', {
@@ -403,7 +401,7 @@ export const streamHandler = createRouter()
 			chatSessionId: t.String()
 		})
 	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+		requireSessionAccess(data.chatSessionId);
 		// Leave all previous chat sessions first (1 session at a time per connection)
 		ws.leaveAllChatSessions(conn);
 		ws.joinChatSession(conn, data.chatSessionId);
@@ -492,10 +490,6 @@ export const streamHandler = createRouter()
 					name: t.String()
 				})
 			}),
-			sender: t.Object({
-				id: t.String(),
-				name: t.String()
-			}),
 			// Active Profile for this session (null = explicit none; absent = use
 			// the project default). Persisted like engine/model.
 			profileId: t.Optional(t.Union([t.Number(), t.Null()])),
@@ -504,11 +498,11 @@ export const streamHandler = createRouter()
 			reasoningEffort: t.Optional(t.Union([t.String(), t.Null()]))
 		})
 	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+		requireSessionAccess(data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
-		// The WS user id is server-trusted (unlike the client-supplied sender)
-		// and routes background Web Push to the requester's devices. Missing
+		// The WS user id is server-trusted and routes background Web Push to
+		// the requester's devices. Missing
 		// context must not break the stream — push is best-effort.
 		let requestedByUserId: string | undefined;
 		try {
@@ -523,7 +517,6 @@ export const streamHandler = createRouter()
 			chatSessionId: data.chatSessionId,
 			prompt: data.prompt,
 			engine: data.engine,
-			sender: data.sender,
 			profileId: data.profileId,
 			reasoningEffort: data.reasoningEffort,
 			requestedByUserId
@@ -542,7 +535,7 @@ export const streamHandler = createRouter()
 			chatSessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+		requireSessionAccess(data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
 		try {
@@ -583,7 +576,7 @@ export const streamHandler = createRouter()
 			answers: t.Record(t.String(), t.String())
 		})
 	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+		requireSessionAccess(data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 
 		try {
@@ -633,7 +626,7 @@ export const streamHandler = createRouter()
 		const projectId = ws.getProjectId(conn);
 
 		if (data.chatSessionId) {
-			requireSessionAccess(conn, data.chatSessionId);
+			requireSessionAccess(data.chatSessionId);
 		}
 
 		const streamState = data.chatSessionId
@@ -683,7 +676,7 @@ export const streamHandler = createRouter()
 			chatSessionId: t.String()
 		})
 	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+		requireSessionAccess(data.chatSessionId);
 		const projectId = ws.getProjectId(conn);
 		const chatSessionId = data.chatSessionId;
 
@@ -729,7 +722,7 @@ export const streamHandler = createRouter()
 		}
 	})
 
-	// Collaborative model sync - broadcast model changes to other users in the same chat session
+	// Model sync - broadcast model changes to the other devices on the same chat session
 	.on('chat:model-sync', {
 		data: t.Object({
 			senderId: t.String(),
@@ -739,14 +732,14 @@ export const streamHandler = createRouter()
 			modelId: t.String(),
 			modelName: t.String(),
 			// The reasoning level travels with the model pick (it is re-seeded per
-			// model), so collaborators never end up on a level the model lacks.
+			// model), so other devices never end up on a level the model lacks.
 			reasoningEffort: t.Optional(t.Union([t.String(), t.Null()])),
 			// Per-tab id of the sender; lets the sender drop its own echo without
 			// also dropping the same user's other tabs/devices.
 			clientId: t.Optional(t.String())
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Store latest model state on server for late joiners / refresh
@@ -783,7 +776,7 @@ export const streamHandler = createRouter()
 		});
 	})
 
-	// Collaborative account sync - broadcast account changes to other users in the same chat session
+	// Account sync - broadcast account changes to the other devices on the same chat session
 	.on('chat:account-sync', {
 		data: t.Object({
 			senderId: t.String(),
@@ -792,8 +785,8 @@ export const streamHandler = createRouter()
 			accountName: t.Optional(t.Union([t.String(), t.Null()])),
 			clientId: t.Optional(t.String())
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Store latest account state on server for late joiners / refresh
@@ -829,8 +822,8 @@ export const streamHandler = createRouter()
 			reasoningEffort: t.Union([t.String(), t.Null()]),
 			clientId: t.Optional(t.String())
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		const chatSessionId = data.chatSessionId;
 
 		// Persist to the session record so refreshes and late joiners get it.
@@ -849,9 +842,9 @@ export const streamHandler = createRouter()
 		});
 	})
 
-	// Collaborative profile sync — broadcast + persist the per-session active
-	// profile, mirroring chat:model-sync. Non-admin: choosing a profile is a run
-	// choice like the model, not an admin mutation of the profile itself.
+	// Profile sync — broadcast + persist the per-session active profile,
+	// mirroring chat:model-sync: choosing a profile is a run choice like the
+	// model, not an edit of the profile itself.
 	.on('chat:profile-sync', {
 		data: t.Object({
 			senderId: t.String(),
@@ -859,8 +852,8 @@ export const streamHandler = createRouter()
 			profileId: t.Union([t.Number(), t.Null()]),
 			clientId: t.Optional(t.String())
 		})
-	}, ({ data, conn }) => {
-		requireSessionAccess(conn, data.chatSessionId);
+	}, ({ data }) => {
+		requireSessionAccess(data.chatSessionId);
 		try {
 			sessionQueries.updateProfile(data.chatSessionId, data.profileId);
 		} catch (err) {
@@ -926,8 +919,6 @@ export const streamHandler = createRouter()
 		timestamp: t.String(),
 		message_id: t.Optional(t.String()),
 		parent_message_id: t.Optional(t.Union([t.String(), t.Null()])),
-		sender_id: t.Optional(t.String()),
-		sender_name: t.Optional(t.String()),
 		engine: t.Optional(t.String()),
 		seq: t.Optional(t.Number())
 	}))

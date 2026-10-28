@@ -14,14 +14,12 @@
 		entry: ContainerEntry;
 		selected: boolean;
 		busy: boolean;
-		/** Admin: starting and stopping is theirs alone. */
-		canManage: boolean;
 		onSelect: () => void;
 		onToggle: () => void;
 		onLogs: () => void;
 	}
 
-	const { entry, selected, busy, canManage, onSelect, onToggle, onLogs }: Props = $props();
+	const { entry, selected, busy, onSelect, onToggle, onLogs }: Props = $props();
 
 	const isUp = $derived(entry.state === 'running' || entry.state === 'paused');
 
@@ -129,7 +127,7 @@
 		<Icon name="lucide:scroll-text" class="w-3.5 h-3.5" />
 	</button>
 
-	{#if canManage && entry.canManage}
+	{#if entry.canManage}
 		<button
 			type="button"
 			class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-wait
@@ -146,12 +144,5 @@
 				class="w-3.5 h-3.5 {busy ? 'animate-spin' : ''}"
 			/>
 		</button>
-	{:else if !canManage}
-		<span
-			class="shrink-0 flex items-center justify-center w-7 h-7 text-slate-300 dark:text-slate-700"
-			title="Only an admin can start or stop a container"
-		>
-			<Icon name="lucide:lock" class="w-3.5 h-3.5" />
-		</span>
 	{/if}
 </div>

@@ -20,7 +20,6 @@ const TABLE = 'git_identities';
 
 export interface GitIdentityRow {
 	id: string;
-	owner_user_id: string;
 	label: string;
 	name: string;
 	email: string;
@@ -40,7 +39,6 @@ export interface GitIdentityRow {
 
 export interface GitIdentityBindingRow {
 	project_id: string;
-	user_id: string;
 	identity_id: string;
 	created_at: string;
 	updated_at: string;
@@ -97,46 +95,45 @@ export const gitIdentityQueries = {
 		return row ? openRow(TABLE, row) : null;
 	},
 
-	listByUser(userId: string): GitIdentityRow[] {
+	list(): GitIdentityRow[] {
 		const db = getDatabase();
 		const rows = db
-			.prepare(`SELECT * FROM ${TABLE} WHERE owner_user_id = ? ORDER BY is_default DESC, label`)
-			.all(userId) as GitIdentityRow[];
+			.prepare(`SELECT * FROM ${TABLE} ORDER BY is_default DESC, label`)
+			.all() as GitIdentityRow[];
 		return openRows(TABLE, rows);
 	},
 
 	/** The row mirrored from the machine's global git config, if there is one. */
-	getLocalMachine(userId: string): GitIdentityRow | null {
+	getLocalMachine(): GitIdentityRow | null {
 		const db = getDatabase();
 		const row = db
-			.prepare(`SELECT * FROM ${TABLE} WHERE owner_user_id = ? AND source = 'local-machine'`)
-			.get(userId) as GitIdentityRow | undefined;
+			.prepare(`SELECT * FROM ${TABLE} WHERE source = 'local-machine'`)
+			.get() as GitIdentityRow | undefined;
 		return row ? openRow(TABLE, row) : null;
 	},
 
-	getDefaultForUser(userId: string): GitIdentityRow | null {
+	getDefault(): GitIdentityRow | null {
 		const db = getDatabase();
 		const row = db
-			.prepare(`SELECT * FROM ${TABLE} WHERE owner_user_id = ? AND is_default = 1`)
-			.get(userId) as GitIdentityRow | undefined;
+			.prepare(`SELECT * FROM ${TABLE} WHERE is_default = 1`)
+			.get() as GitIdentityRow | undefined;
 		return row ? openRow(TABLE, row) : null;
 	},
 
-	create(id: string, userId: string, input: GitIdentityWrite): GitIdentityRow {
+	create(id: string, input: GitIdentityWrite): GitIdentityRow {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		db.prepare(
 			`
 			INSERT INTO ${TABLE} (
-				id, owner_user_id, label, name, email, auth_method,
+				id, label, name, email, auth_method,
 				ssh_private_key, ssh_public_key, ssh_passphrase,
 				https_username, https_token, integration_account_id,
 				hosts, is_default, source, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
 		`
 		).run(
 			id,
-			userId,
 			input.label,
 			input.name,
 			input.email,
@@ -205,22 +202,19 @@ export const gitIdentityQueries = {
 	},
 
 	/**
-	 * Make one identity the user's default, clearing any previous one.
+	 * Make one identity the default, clearing any previous one.
 	 *
 	 * Both statements run in a transaction because the partial unique index
 	 * rejects a moment where two rows claim the default — clearing first and
 	 * setting second is not optional, it is what makes the write legal.
 	 */
-	setDefault(userId: string, id: string): void {
+	setDefault(id: string): void {
 		const db = getDatabase();
 		const swap = () => {
-			db.prepare(`UPDATE ${TABLE} SET is_default = 0 WHERE owner_user_id = ? AND is_default = 1`).run(
-				userId
-			);
-			db.prepare(`UPDATE ${TABLE} SET is_default = 1, updated_at = ? WHERE id = ? AND owner_user_id = ?`).run(
+			db.prepare(`UPDATE ${TABLE} SET is_default = 0 WHERE is_default = 1`).run();
+			db.prepare(`UPDATE ${TABLE} SET is_default = 1, updated_at = ? WHERE id = ?`).run(
 				new Date().toISOString(),
-				id,
-				userId
+				id
 			);
 		};
 		// Not every driver exposes transactions (see `DatabaseConnection`). Running
@@ -236,47 +230,42 @@ export const gitIdentityQueries = {
 		return result.changes > 0;
 	},
 
-	/** True when the label is already taken by another of this user's identities. */
-	labelTaken(userId: string, label: string, exceptId?: string): boolean {
+	/** True when the label is already taken by another identity. */
+	labelTaken(label: string, exceptId?: string): boolean {
 		const db = getDatabase();
 		const row = db
-			.prepare(
-				`SELECT id FROM ${TABLE} WHERE owner_user_id = ? AND label = ? AND id IS NOT ?`
-			)
-			.get(userId, label, exceptId ?? null);
+			.prepare(`SELECT id FROM ${TABLE} WHERE label = ? AND id IS NOT ?`)
+			.get(label, exceptId ?? null);
 		return !!row;
 	}
 };
 
 export const gitIdentityBindingQueries = {
-	get(projectId: string, userId: string): GitIdentityBindingRow | null {
+	get(projectId: string): GitIdentityBindingRow | null {
 		const db = getDatabase();
 		const row = db
-			.prepare('SELECT * FROM git_identity_bindings WHERE project_id = ? AND user_id = ?')
-			.get(projectId, userId) as GitIdentityBindingRow | undefined;
+			.prepare('SELECT * FROM git_identity_bindings WHERE project_id = ?')
+			.get(projectId) as GitIdentityBindingRow | undefined;
 		return row ?? null;
 	},
 
-	set(projectId: string, userId: string, identityId: string): void {
+	set(projectId: string, identityId: string): void {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		db.prepare(
 			`
-			INSERT INTO git_identity_bindings (project_id, user_id, identity_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(project_id, user_id) DO UPDATE SET
+			INSERT INTO git_identity_bindings (project_id, identity_id, created_at, updated_at)
+			VALUES (?, ?, ?, ?)
+			ON CONFLICT(project_id) DO UPDATE SET
 				identity_id = excluded.identity_id,
 				updated_at = excluded.updated_at
 		`
-		).run(projectId, userId, identityId, now, now);
+		).run(projectId, identityId, now, now);
 	},
 
-	clear(projectId: string, userId: string): void {
+	clear(projectId: string): void {
 		const db = getDatabase();
-		db.prepare('DELETE FROM git_identity_bindings WHERE project_id = ? AND user_id = ?').run(
-			projectId,
-			userId
-		);
+		db.prepare('DELETE FROM git_identity_bindings WHERE project_id = ?').run(projectId);
 	},
 
 	/** Projects this identity is bound to — what a delete confirmation shows. */

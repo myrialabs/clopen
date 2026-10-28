@@ -7,17 +7,14 @@
  * speculatively when a connection is selected and "this is not Supabase" is an
  * ordinary answer.
  *
- * Access is checked the way the rest of this router checks it — the caller must
- * be able to reach the CONNECTION — plus a project-access check inside
- * `resolveDbClientProject` for the routes that touch the working tree. Reads
- * are open to whoever can use the connection; applying a migration and writing
- * types are not, and say so.
+ * The connection must exist, and the routes that touch the working tree also
+ * resolve their project through `resolveDbClientProject`.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { resolveSupabaseScope, supabaseSurface, type SupabaseScope } from '../../db-client/integrations';
-import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
 import { resolveDbClientProject } from './context';
 import type { WSConnection } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
@@ -27,7 +24,7 @@ async function scopeFor(
 	connectionId: string,
 	projectId?: string
 ): Promise<SupabaseScope | null> {
-	requireDbClientConnectionAccess(conn, connectionId);
+	requireDbClientConnection(connectionId);
 	const project = resolveDbClientProject(conn, projectId);
 	return resolveSupabaseScope(connectionId, project?.root ?? null);
 }
@@ -48,18 +45,6 @@ async function requireScope(
 	const scope = await scopeFor(conn, connectionId, projectId);
 	if (!scope) throw new Error('This connection is not a Supabase project');
 	return scope;
-}
-
-/**
- * Writes are admin-only.
- *
- * Applying a migration changes a schema everyone shares, and writing generated
- * types writes a file into the repository. Both are outward-facing in the sense
- * `Task 3` uses: the consequence outlives the request.
- */
-function requireAdmin(conn: WSConnection, action: string): void {
-	const { isAdmin } = getDbClientPrincipal(conn);
-	if (!isAdmin) throw new Error(`Only an admin can ${action}`);
 }
 
 const connectionTarget = {
@@ -110,7 +95,6 @@ export const supabaseHandler = createRouter()
 		data: t.Object({ ...connectionTarget, version: t.String({ minLength: 1 }) }),
 		response: t.Object({ version: t.String(), durationMs: t.Number() })
 	}, async ({ data, conn }) => {
-		requireAdmin(conn, 'apply a migration');
 		const scope = await requireScope(conn, data.connectionId, data.projectId);
 		const result = await supabaseSurface.apply(scope, data.version);
 		debug.log('db-client', `Supabase migration ${result.version} applied to ${scope.context.ref}`);
@@ -182,7 +166,6 @@ export const supabaseHandler = createRouter()
 		}),
 		response: t.Object({ path: t.String(), bytes: t.Number() })
 	}, async ({ data, conn }) => {
-		requireAdmin(conn, 'write generated types into the project');
 		const scope = await requireScope(conn, data.connectionId, data.projectId);
 		return supabaseSurface.writeTypes(scope, data.path, data.contents);
 	});

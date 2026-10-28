@@ -4,7 +4,6 @@
  */
 
 import { streamManager, type StreamState } from '../chat/stream-manager.js';
-import { ws } from '../utils/ws.js';
 import { sessionQueries } from '../database/queries/session-queries.js';
 import type { UnifiedMessage } from '$shared/types/unified';
 import { isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
@@ -41,190 +40,62 @@ function resolveStreamWorktreeId(chatSessionId: string, memo: Map<string, string
   return worktreeId;
 }
 
-// Store active users per project (shared with main endpoint)
-const projectUsers = new Map<string, Set<{ userId: string; userName: string; lastSeen: number }>>();
-
-// Cleanup inactive users after 5 minutes
-const USER_TIMEOUT = 5 * 60 * 1000;
-
-function cleanupInactiveUsers() {
-  const now = Date.now();
-  projectUsers.forEach((users, projectId) => {
-    const activeUsers = new Set([...users].filter(user => now - user.lastSeen < USER_TIMEOUT));
-    if (activeUsers.size === 0) {
-      projectUsers.delete(projectId);
-    } else {
-      projectUsers.set(projectId, activeUsers);
-    }
-  });
+function toStreamStatus(stream: StreamState, worktreeMemo: Map<string, string | null>) {
+  return {
+    streamId: stream.streamId,
+    chatSessionId: stream.chatSessionId,
+    worktreeId: resolveStreamWorktreeId(stream.chatSessionId, worktreeMemo),
+    status: stream.status,
+    startedAt: stream.startedAt,
+    messagesCount: stream.messages.length,
+    isWaitingInput: detectStreamWaitingInput(stream)
+  };
 }
 
-// Get project status data
-export async function getProjectStatusData(projectId?: string) {
-  cleanupInactiveUsers();
-  
+export interface ProjectStatusData {
+  projectId: string;
+  hasActiveStreams: boolean;
+  activeStreamCount: number;
+  streams: ReturnType<typeof toStreamStatus>[];
+}
+
+// Get project status data: the chat streams running in a project (or in every
+// project), which every device mirrors to show busy/waiting indicators.
+export async function getProjectStatusData(projectId: string): Promise<ProjectStatusData>;
+export async function getProjectStatusData(): Promise<ProjectStatusData[]>;
+export async function getProjectStatusData(projectId?: string): Promise<ProjectStatusData | ProjectStatusData[]> {
+  const worktreeMemo = new Map<string, string | null>();
+
   if (projectId) {
-    // Get status for specific project
     const allProjectStreams = streamManager.getProjectStreams(projectId);
-    const users = projectUsers.get(projectId);
-
-    // Filter to only count active streams
     const activeStreams = allProjectStreams.filter(s => s.status === 'active');
-
-    // Get per-chat-session user presence from WS rooms
-    const chatSessionUsers = ws.getProjectChatSessions(projectId);
-    const worktreeMemo = new Map<string, string | null>();
-
     return {
       projectId,
       hasActiveStreams: activeStreams.length > 0,
       activeStreamCount: activeStreams.length,
-      activeUsers: users ? [...users].map(u => ({
-        userId: u.userId,
-        userName: u.userName
-      })) : [],
-      streams: allProjectStreams.map(s => ({
-        streamId: s.streamId,
-        chatSessionId: s.chatSessionId,
-        worktreeId: resolveStreamWorktreeId(s.chatSessionId, worktreeMemo),
-        status: s.status,
-        startedAt: s.startedAt,
-        messagesCount: s.messages.length,
-        isWaitingInput: detectStreamWaitingInput(s)
-      })),
-      chatSessionUsers: Object.fromEntries(
-        Array.from(chatSessionUsers.entries()).map(([csId, csUsers]) => [
-          csId,
-          csUsers.map(u => {
-            // Resolve userName from projectUsers
-            const projectUser = users ? [...users].find(pu => pu.userId === u.userId) : undefined;
-            return { userId: u.userId, userName: projectUser?.userName || u.userId };
-          })
-        ])
-      )
+      streams: allProjectStreams.map(s => toStreamStatus(s, worktreeMemo))
     };
-  } else {
-    // Get status for all projects
-    const allProjects = new Map<string, any>();
-    
-    // Get all active streams grouped by project
-    const allStreams = streamManager.getAllStreams();
-    const worktreeMemo = new Map<string, string | null>();
-    allStreams.forEach(stream => {
-      if (stream.projectId) {
-        if (!allProjects.has(stream.projectId)) {
-          allProjects.set(stream.projectId, {
-            projectId: stream.projectId,
-            hasActiveStreams: false,
-            activeStreamCount: 0,
-            activeUsers: [],
-            streams: []
-          });
-        }
-        
-        const projectData = allProjects.get(stream.projectId);
-        if (stream.status === 'active') {
-          projectData.hasActiveStreams = true;
-          projectData.activeStreamCount++;
-        }
-        projectData.streams.push({
-          streamId: stream.streamId,
-          chatSessionId: stream.chatSessionId,
-          worktreeId: resolveStreamWorktreeId(stream.chatSessionId, worktreeMemo),
-          status: stream.status,
-          startedAt: stream.startedAt,
-          messagesCount: stream.messages.length,
-          isWaitingInput: detectStreamWaitingInput(stream)
-        });
-      }
-    });
-    
-    // Add active users to each project
-    projectUsers.forEach((users, projectId) => {
-      if (!allProjects.has(projectId)) {
-        allProjects.set(projectId, {
-          projectId,
-          hasActiveStreams: false,
-          activeStreamCount: 0,
-          activeUsers: [],
-          streams: [],
-          chatSessionUsers: {}
-        });
-      }
-
-      const projectData = allProjects.get(projectId);
-      projectData.activeUsers = [...users].map(u => ({
-        userId: u.userId,
-        userName: u.userName
-      }));
-    });
-
-    // Add per-chat-session user presence to each project
-    for (const [projectId, projectData] of allProjects) {
-      const chatSessionUsers = ws.getProjectChatSessions(projectId);
-      const users = projectUsers.get(projectId);
-      projectData.chatSessionUsers = Object.fromEntries(
-        Array.from(chatSessionUsers.entries()).map(([csId, csUsers]) => [
-          csId,
-          csUsers.map(u => {
-            const projectUser = users ? [...users].find(pu => pu.userId === u.userId) : undefined;
-            return { userId: u.userId, userName: projectUser?.userName || u.userId };
-          })
-        ])
-      );
-    }
-
-    return [...allProjects.values()];
   }
-}
 
-/**
- * Drop in-memory presence for a project (e.g. after full project delete).
- */
-export function clearProjectPresence(projectId: string): void {
-  projectUsers.delete(projectId);
-}
-
-// Update user presence
-export function updateUserPresence(projectId: string, userId: string, userName: string, action: string) {
-  cleanupInactiveUsers();
-  
-  if (action === 'leave') {
-    // Remove user from project
-    const users = projectUsers.get(projectId);
-    if (users) {
-      const updatedUsers = new Set([...users].filter(u => u.userId !== userId));
-      if (updatedUsers.size === 0) {
-        projectUsers.delete(projectId);
-      } else {
-        projectUsers.set(projectId, updatedUsers);
-      }
+  const allProjects = new Map<string, ProjectStatusData>();
+  for (const stream of streamManager.getAllStreams()) {
+    if (!stream.projectId) continue;
+    let projectData = allProjects.get(stream.projectId);
+    if (!projectData) {
+      projectData = {
+        projectId: stream.projectId,
+        hasActiveStreams: false,
+        activeStreamCount: 0,
+        streams: []
+      };
+      allProjects.set(stream.projectId, projectData);
     }
-  } else {
-    // Add or update user presence
-    if (!projectUsers.has(projectId)) {
-      projectUsers.set(projectId, new Set());
+    if (stream.status === 'active') {
+      projectData.hasActiveStreams = true;
+      projectData.activeStreamCount++;
     }
-    
-    const users = projectUsers.get(projectId)!;
-    // Remove old entry if exists
-    const updatedUsers = new Set([...users].filter(u => u.userId !== userId));
-    // Add new entry with updated timestamp
-    updatedUsers.add({
-      userId,
-      userName,
-      lastSeen: Date.now()
-    });
-    projectUsers.set(projectId, updatedUsers);
+    projectData.streams.push(toStreamStatus(stream, worktreeMemo));
   }
-  
-  // Return current users for the project
-  const currentUsers = projectUsers.get(projectId);
-  return {
-    projectId,
-    activeUsers: currentUsers ? [...currentUsers].map(u => ({ 
-      userId: u.userId, 
-      userName: u.userName 
-    })) : []
-  };
+
+  return [...allProjects.values()];
 }

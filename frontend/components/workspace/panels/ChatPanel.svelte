@@ -15,7 +15,6 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { isHomeProject } from '$shared/utils/home-project';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { openNewProjectDialog } from '$frontend/stores/ui/quick-panels.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import HomeMark from '$frontend/components/workspace/HomeMark.svelte';
@@ -43,7 +42,6 @@
 	// Project-aware state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
 	const isHome = $derived(isHomeProject(projectState.currentProject));
-	const hasOtherProjects = $derived(projectState.projects.some((project) => !isHomeProject(project)));
 
 	// Scroll container
 	const scrollContainer: HTMLElement | undefined = $state();
@@ -175,7 +173,7 @@
 		// Clear messages for local view
 		clearMessages();
 
-		// Create a new session (existing sessions stay active for other users)
+		// Create a new session (existing sessions keep running)
 		const newSession = await createNewChatSession(projectState.currentProject.id);
 
 		if (newSession) {
@@ -235,16 +233,14 @@
 										</p>
 									</div>
 									<div class="flex flex-wrap items-center justify-center gap-2 text-sm">
-										{#if authStore.isAdmin}
-											<button
-												type="button"
-												class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300 font-medium cursor-pointer transition-colors hover:bg-violet-500/20"
-												onclick={openNewProjectDialog}
-											>
-												<Icon name="lucide:folder-plus" class="w-4 h-4" />
-												<span>Add a project</span>
-											</button>
-										{/if}
+										<button
+											type="button"
+											class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300 font-medium cursor-pointer transition-colors hover:bg-violet-500/20"
+											onclick={openNewProjectDialog}
+										>
+											<Icon name="lucide:folder-plus" class="w-4 h-4" />
+											<span>Add a project</span>
+										</button>
 										<button
 											type="button"
 											class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-medium cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
@@ -254,9 +250,6 @@
 											<span>Chat from Telegram</span>
 										</button>
 									</div>
-									{#if !authStore.isAdmin && !hasOtherProjects}
-										<p class="text-sm text-slate-500 dark:text-slate-400">Ask an admin for a project to work on one.</p>
-									{/if}
 								</div>
 							{:else}
 								<!-- Modern hero section -->

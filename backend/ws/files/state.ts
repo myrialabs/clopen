@@ -1,11 +1,11 @@
 /**
  * Files Panel State Handlers
  *
- * Persist per-user-per-workspace files panel state (expanded folders, open
+ * Persist per-workspace files panel state (expanded folders, open
  * tabs, scroll positions, view mode). Single source of truth in DB so that the
  * state survives browser refresh and follows the user across devices.
  *
- * The row is per (user, project), but the state inside it is per workspace: a
+ * The row is per project, but the state inside it is per workspace: a
  * project and each of its worktrees keep separate entries. Sharing one entry
  * carried open tabs — including unsaved buffers — from the main tree into a
  * worktree, which read as the edit having crossed between them.
@@ -14,7 +14,6 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { projectQueries } from '../../database/queries/project-queries';
-import { ws as wsServer } from '../../utils/ws';
 import { requireProjectAccess } from '../access';
 
 /** Stored shape: opaque per-scope state strings under one version marker. */
@@ -65,10 +64,9 @@ export const filesStateHandler = createRouter()
 		response: t.Object({
 			state: t.Union([t.String(), t.Null()])
 		})
-	}, async ({ data, conn }) => {
-		requireProjectAccess(conn, data.projectId);
-		const userId = wsServer.getUserId(conn);
-		const raw = projectQueries.getFilesPanelState(userId, data.projectId);
+	}, async ({ data }) => {
+		requireProjectAccess(data.projectId);
+		const raw = projectQueries.getFilesPanelState(data.projectId);
 
 		const scopeKey = data.scopeKey || data.projectId;
 		if (isLegacyState(raw)) {
@@ -85,11 +83,10 @@ export const filesStateHandler = createRouter()
 			state: t.Union([t.String(), t.Null()])
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireProjectAccess(conn, data.projectId);
-		const userId = wsServer.getUserId(conn);
+	}, async ({ data }) => {
+		requireProjectAccess(data.projectId);
 
-		const raw = projectQueries.getFilesPanelState(userId, data.projectId);
+		const raw = projectQueries.getFilesPanelState(data.projectId);
 		const scopeKey = data.scopeKey || data.projectId;
 
 		// Read-modify-write so writing one workspace never drops another's entry.
@@ -99,6 +96,6 @@ export const filesStateHandler = createRouter()
 		if (data.state === null) delete stored.scopes[scopeKey];
 		else stored.scopes[scopeKey] = data.state;
 
-		projectQueries.setFilesPanelState(userId, data.projectId, JSON.stringify(stored));
+		projectQueries.setFilesPanelState(data.projectId, JSON.stringify(stored));
 		return { ok: true };
 	});

@@ -1,17 +1,13 @@
 /**
  * User CRUD Operations
  *
- * HTTP endpoints for user management:
- * - Generate anonymous user
- * - Update user name
+ * HTTP endpoints for the owner's saved UI state:
  * - Restore user state (server-side state management)
  * - Save user state
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { generateAnonymousUser, generateColorFromString, getInitials } from '../../utils/user-helpers';
-import type { AnonymousUser } from '../../utils/user-helpers';
 import { ws } from '$backend/utils/ws';
 import { settingsQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
@@ -48,60 +44,6 @@ function setUserState(userId: string, key: string, value: any): void {
 }
 
 export const crudHandler = createRouter()
-	// Generate anonymous user
-	.http('user:anonymous', {
-		data: t.Object({}),
-		response: t.Object({
-			id: t.String(),
-			name: t.String(),
-			color: t.String(),
-			avatar: t.String(),
-			createdAt: t.String()
-		})
-	}, async () => {
-		const newUser = generateAnonymousUser();
-
-		debug.log('user', '✅ Generated new anonymous user:', newUser.name);
-
-		return newUser;
-	})
-
-	// Update user name
-	.http('user:update', {
-		data: t.Object({
-			newName: t.String({ minLength: 1 })
-		}),
-		response: t.Object({
-			id: t.String(),
-			name: t.String(),
-			color: t.String(),
-			avatar: t.String(),
-			createdAt: t.String()
-		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		const { newName } = data;
-
-		const trimmedName = newName.trim();
-
-		if (trimmedName.length === 0) {
-			throw new Error('Name cannot be empty');
-		}
-
-		// Create updated user object
-		const updatedUser: AnonymousUser = {
-			id: userId,
-			name: trimmedName,
-			avatar: getInitials(trimmedName),
-			color: generateColorFromString(trimmedName),
-			createdAt: new Date().toISOString()
-		};
-
-		debug.log('user', '✅ Updated user name:', { userId, newName: trimmedName });
-
-		return updatedUser;
-	})
-
 	// Restore user state - returns all server-side user state at once
 	.http('user:restore-state', {
 		data: t.Object({}),

@@ -21,7 +21,6 @@
 		roleConfig,
 		roleCategory,
 		agentStatus,
-		senderName,
 		formatTime,
 		onCopy,
 		onRestore,
@@ -34,7 +33,6 @@
 		roleConfig: { gradient: string; icon: IconName; name: string };
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
 		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
-		senderName: string | null;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
@@ -64,7 +62,7 @@
 		<span class="w-1 h-1 bg-current rounded-full opacity-50"></span>
 		<div class="flex items-center gap-1.5">
 			<span class="text-xs text-slate-400 dark:text-slate-500 capitalize">
-				{roleCategory === 'user' && senderName ? senderName : roleConfig.name}
+				{roleConfig.name}
 			</span>
 			<!-- Agent Status Indicator -->
 			{#if agentStatus}

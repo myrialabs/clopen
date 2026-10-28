@@ -23,95 +23,44 @@ async function canCreateSymlinks(): Promise<boolean> {
 }
 
 // Mock dependencies before importing the module under test
-const mockGetAllForUser = mock(() => [] as Array<{ id: string; path: string }>);
 const mockGetAll = mock(() => [] as Array<{ id: string; path: string }>);
-const mockUserHasProject = mock(() => false);
 const mockGetByPath = mock(() => null as { id: string; path: string } | null);
 const mockGetById = mock(() => null as { id: string; path: string } | null);
 
 mock.module('../../database/queries/project-queries', () => ({
 	projectQueries: {
-		getAllForUser: mockGetAllForUser,
 		getAll: mockGetAll,
-		userHasProject: mockUserHasProject,
 		getByPath: mockGetByPath,
 		getById: mockGetById,
 	}
 }));
 
-// A project's accessible area now includes its worktrees, so the lookup is part
-// of the data layer this test models.
-const mockWorktreesByProject = mock(() => [] as Array<{ id: string; path: string }>);
 const mockWorktreeByPath = mock(() => null as { id: string; project_id: string; path: string } | null);
 
 mock.module('../../database/queries/worktree-queries', () => ({
 	worktreeQueries: {
-		getByProjectId: mockWorktreesByProject,
+		getByProjectId: mock(() => []),
 		getByPath: mockWorktreeByPath,
 	}
 }));
 
-const mockGetRole = mock((): 'admin' | 'member' => 'member');
-const mockGetUserId = mock(() => 'user-1');
-
-mock.module('$backend/utils/ws', () => ({
-	ws: {
-		getRole: mockGetRole,
-		getUserId: mockGetUserId,
-	}
-}));
-
-mock.module('../access', () => ({
-	requireProjectAccess: mock(() => ({ id: 'proj-1', path: '' })),
-}));
-
 // Import after mocking
-const { requireFilePathAccess, requireSharedFilePathAccess, findContainingProjectId, resolveProjectForRoot, requireWorkspaceRootAccess } = await import('./path-access');
+const { resolveFilePath, findContainingProjectId, resolveProjectForRoot, requireWorkspaceRoot } = await import('./path-access');
 
 let testDir: string;
 
-describe('path-access symlink resolution', () => {
+describe('workspace roots', () => {
 	beforeEach(async () => {
 		const rawTestDir = join(tmpdir(), `clopen-path-access-test-${randomUUID()}`);
 		await mkdir(rawTestDir, { recursive: true });
 		// Canonicalize so test expectations match what resolveRealPath returns.
 		// macOS tmpdir lives under /var → /private/var, which realpath follows.
 		testDir = await realpath(rawTestDir);
-		mockGetRole.mockImplementation(() => 'member');
-		mockGetUserId.mockImplementation(() => 'user-1');
 	});
 
 	afterEach(async () => {
 		await rm(testDir, { recursive: true, force: true });
-		mockWorktreesByProject.mockReturnValue([]);
 		mockWorktreeByPath.mockReturnValue(null);
-	});
-
-	test('allows a path inside a worktree of an accessible project', async () => {
-		const projectPath = join(testDir, 'project');
-		const worktreePath = join(testDir, 'worktrees', 'feature');
-		await mkdir(projectPath, { recursive: true });
-		await mkdir(worktreePath, { recursive: true });
-		await writeFile(join(worktreePath, 'index.ts'), 'export {};');
-
-		mockGetAllForUser.mockReturnValue([{ id: 'proj-1', path: projectPath }]);
-		mockWorktreesByProject.mockReturnValue([{ id: 'wt-1', path: worktreePath }]);
-
-		const target = join(worktreePath, 'index.ts');
-		await expect(requireFilePathAccess({} as any, target)).resolves.toBe(target);
-	});
-
-	test('still denies a worktree of a project the user cannot access', async () => {
-		const worktreePath = join(testDir, 'worktrees', 'other');
-		await mkdir(worktreePath, { recursive: true });
-		await writeFile(join(worktreePath, 'secret.txt'), 'nope');
-
-		mockGetAllForUser.mockReturnValue([]);
-		mockWorktreesByProject.mockReturnValue([{ id: 'wt-1', path: worktreePath }]);
-
-		await expect(
-			requireFilePathAccess({} as any, join(worktreePath, 'secret.txt'))
-		).rejects.toThrow('Access denied');
 	});
 
 	test('resolves a worktree root back to its owning project', async () => {
@@ -133,9 +82,8 @@ describe('path-access symlink resolution', () => {
 		mockGetByPath.mockReturnValue(null);
 		mockWorktreeByPath.mockReturnValue({ id: 'wt-1', project_id: 'proj-1', path: worktreePath });
 		mockGetById.mockReturnValue({ id: 'proj-1', path: projectPath });
-		mockGetRole.mockImplementation(() => 'admin');
 
-		const resolved = requireWorkspaceRootAccess({} as any, worktreePath);
+		const resolved = requireWorkspaceRoot(worktreePath);
 		expect(resolved.root).toBe(worktreePath);
 		expect(resolved.worktreeId).toBe('wt-1');
 		expect(resolved.project.id).toBe('proj-1');
@@ -146,9 +94,8 @@ describe('path-access symlink resolution', () => {
 
 		mockWorktreeByPath.mockReturnValue(null);
 		mockGetByPath.mockReturnValue({ id: 'proj-1', path: projectPath });
-		mockGetRole.mockImplementation(() => 'admin');
 
-		const resolved = requireWorkspaceRootAccess({} as any, projectPath);
+		const resolved = requireWorkspaceRoot(projectPath);
 		expect(resolved.root).toBe(projectPath);
 		expect(resolved.worktreeId).toBeNull();
 	});
@@ -156,104 +103,58 @@ describe('path-access symlink resolution', () => {
 	test('denies an unknown root', async () => {
 		mockWorktreeByPath.mockReturnValue(null);
 		mockGetByPath.mockReturnValue(null);
-		mockGetRole.mockImplementation(() => 'admin');
 
-		expect(() => requireWorkspaceRootAccess({} as any, join(testDir, 'nowhere'))).toThrow(
-			'Access denied'
-		);
+		expect(() => requireWorkspaceRoot(join(testDir, 'nowhere'))).toThrow('Access denied');
+	});
+});
+
+describe('resolveFilePath', () => {
+	beforeEach(async () => {
+		const rawTestDir = join(tmpdir(), `clopen-resolve-path-test-${randomUUID()}`);
+		await mkdir(rawTestDir, { recursive: true });
+		testDir = await realpath(rawTestDir);
 	});
 
-	test('blocks read through symlink to external directory', async () => {
+	afterEach(async () => {
+		await rm(testDir, { recursive: true, force: true });
+	});
+
+	test('follows a symlink to its real location', async () => {
 		if (!(await canCreateSymlinks())) {
 			console.log('SKIP: symlink creation requires admin on this platform');
 			return;
 		}
-		// Setup: project at testDir/project, symlink pointing to testDir/external
 		const projectPath = join(testDir, 'project');
 		const externalPath = join(testDir, 'external');
-		const symlinkPath = join(projectPath, 'escape');
-
 		await mkdir(projectPath, { recursive: true });
 		await mkdir(externalPath, { recursive: true });
-		await writeFile(join(externalPath, 'secret.txt'), 'confidential');
-		await symlink(externalPath, symlinkPath, 'dir');
+		await writeFile(join(externalPath, 'notes.txt'), 'content');
+		await symlink(externalPath, join(projectPath, 'linked'), 'dir');
 
-		mockGetAllForUser.mockReturnValue([{ id: 'proj-1', path: projectPath }]);
-
-		// Attempt to access file through symlink
-		const targetPath = join(symlinkPath, 'secret.txt');
-		await expect(requireFilePathAccess({} as any, targetPath)).rejects.toThrow('Access denied');
+		const result = await resolveFilePath(join(projectPath, 'linked', 'notes.txt'));
+		expect(result).toBe(join(externalPath, 'notes.txt'));
 	});
 
-	test('blocks write through symlink to external directory for non-existing leaf', async () => {
+	test('follows a symlinked parent for a leaf that does not exist yet', async () => {
 		if (!(await canCreateSymlinks())) {
 			console.log('SKIP: symlink creation requires admin on this platform');
 			return;
 		}
-		// Setup: project at testDir/project, symlink pointing to testDir/external
+		// realpath throws for a missing leaf; the symlinked parent must still be
+		// resolved so a write lands where it really will.
 		const projectPath = join(testDir, 'project');
 		const externalPath = join(testDir, 'external');
-		const symlinkPath = join(projectPath, 'escape');
-
 		await mkdir(projectPath, { recursive: true });
 		await mkdir(externalPath, { recursive: true });
-		await symlink(externalPath, symlinkPath, 'dir');
+		await symlink(externalPath, join(projectPath, 'linked'), 'dir');
 
-		mockGetAllForUser.mockReturnValue([{ id: 'proj-1', path: projectPath }]);
-
-		// Attempt to write to a non-existing file through symlink
-		// This is the key regression: realpath throws for non-existing paths,
-		// but resolveRealPath should still resolve the symlinked parent
-		const targetPath = join(symlinkPath, 'new-file.txt');
-		await expect(requireFilePathAccess({} as any, targetPath)).rejects.toThrow('Access denied');
+		const result = await resolveFilePath(join(projectPath, 'linked', 'new-file.txt'));
+		expect(result).toBe(join(externalPath, 'new-file.txt'));
 	});
 
-	test('blocks rename of ancestor path containing another user project', async () => {
-		// Setup: user-1 tries to rename /parent, but user-2 has project at /parent/child
-		const parentPath = join(testDir, 'parent');
-		const childProjectPath = join(parentPath, 'child-project');
-
-		await mkdir(childProjectPath, { recursive: true });
-
-		mockGetAll.mockReturnValue([{ id: 'proj-2', path: childProjectPath }]);
-		mockUserHasProject.mockReturnValue(false);
-
-		// user-1 attempts to rename the parent directory
-		await expect(requireSharedFilePathAccess({} as any, parentPath)).rejects.toThrow('Access denied');
-	});
-
-	test('allows access to files inside user own project', async () => {
-		const projectPath = join(testDir, 'project');
-		const filePath = join(projectPath, 'file.txt');
-
-		await mkdir(projectPath, { recursive: true });
-		await writeFile(filePath, 'content');
-
-		mockGetAllForUser.mockReturnValue([{ id: 'proj-1', path: projectPath }]);
-
-		const result = await requireFilePathAccess({} as any, filePath);
-		expect(result).toBe(filePath);
-	});
-
-	test('allows creating new files inside user own project', async () => {
-		const projectPath = join(testDir, 'project');
-		const newFilePath = join(projectPath, 'new-file.txt');
-
-		await mkdir(projectPath, { recursive: true });
-
-		mockGetAllForUser.mockReturnValue([{ id: 'proj-1', path: projectPath }]);
-
-		// new-file.txt doesn't exist yet, but should still be allowed
-		const result = await requireFilePathAccess({} as any, newFilePath);
-		expect(result).toBe(newFilePath);
-	});
-
-	test('admin bypasses all checks', async () => {
-		mockGetRole.mockImplementation(() => 'admin');
-
-		const anyPath = join(testDir, 'any', 'path', 'file.txt');
-		const result = await requireFilePathAccess({} as any, anyPath);
-		expect(result).toBe(anyPath);
+	test('returns a plain path unchanged', async () => {
+		const filePath = join(testDir, 'any', 'path', 'file.txt');
+		expect(await resolveFilePath(filePath)).toBe(filePath);
 	});
 });
 

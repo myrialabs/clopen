@@ -1,6 +1,6 @@
 /**
  * The account, gateway, storage and Home rules the channel depends on —
- * everything that decides WHO a message is from and WHERE an answer may go,
+ * everything that decides WHICH chat a message is from and WHERE an answer may go,
  * exercised against the real schema rather than a fake.
  */
 
@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'bun:test'
 import { randomUUID } from 'crypto';
 import { existsSync } from 'fs';
 
-import { initializeDatabase, closeDatabase } from '$backend/database';
+import { initializeDatabase, closeDatabase, getDatabase } from '$backend/database';
 import {
 	authQueries,
 	channelMessageQueries,
@@ -19,10 +19,8 @@ import {
 import { integrationAccounts } from '$backend/integrations/accounts';
 import { handleInboundDelivery, onWebhook, type WebhookEvent } from '$backend/integrations/webhooks/gateway';
 import { ensureHomeProject } from '$backend/projects/home';
-import { assignProjectToUser } from '$backend/auth/auth-service';
 
-const userA = `channel-test-a-${randomUUID()}`;
-const userB = `channel-test-b-${randomUUID()}`;
+const owner = `channel-test-${randomUUID()}`;
 const delivered: WebhookEvent[] = [];
 
 function createUser(id: string): void {
@@ -31,7 +29,6 @@ function createUser(id: string): void {
 		name: id,
 		color: '#000000',
 		avatar: 'CT',
-		role: 'member',
 		personal_access_token_hash: `hash-${randomUUID()}`,
 		created_at: new Date().toISOString()
 	});
@@ -49,8 +46,8 @@ function secretOf(accountId: string): string {
 	return integrationAccountQueries.credentialsOf(integrationAccountQueries.getById(accountId)!).webhookSecret ?? '';
 }
 
-function linkFor(accountId: string, userId: string, conversationId: string, status: 'pending' | 'approved' = 'approved') {
-	return channelLinkQueries.upsert({ accountId, userId, conversationId, platformUserId: conversationId, displayName: null, status });
+function linkFor(accountId: string, conversationId: string, platformUserId = conversationId) {
+	return channelLinkQueries.upsert({ accountId, userId: owner, conversationId, platformUserId, displayName: null });
 }
 
 function questionRow(linkId: string) {
@@ -68,8 +65,7 @@ function questionRow(linkId: string) {
 
 beforeAll(async () => {
 	await initializeDatabase();
-	createUser(userA);
-	createUser(userB);
+	createUser(owner);
 	onWebhook('telegram', (event) => void delivered.push(event));
 });
 
@@ -80,8 +76,7 @@ beforeEach(() => {
 
 afterAll(() => {
 	clearAccounts();
-	authQueries.deleteUser(userA);
-	authQueries.deleteUser(userB);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(owner);
 	closeDatabase();
 });
 
@@ -130,45 +125,36 @@ describe('the webhook gateway', () => {
 });
 
 describe('links and channel messages', () => {
-	it('re-pairing a chat to another user closes what the old owner could still act on, and forgets where it was', () => {
+	it('a chat taken over by another platform account closes what the old one could still act on, and forgets where it was', () => {
 		const account = connectBot('Bot');
-		const link = linkFor(account.id, userA, '777');
+		const link = linkFor(account.id, '777');
 		channelLinkQueries.setActive(link.id, 'some-project', 'some-session');
 		const row = questionRow(link.id);
 
-		const moved = linkFor(account.id, userB, '777');
+		const moved = linkFor(account.id, '777', 'someone-else');
 		expect(moved.id).toBe(link.id);
-		expect(moved.user_id).toBe(userB);
+		expect(moved.platform_user_id).toBe('someone-else');
 		expect(moved.active_project_id).toBeNull();
 		expect(moved.active_session_id).toBeNull();
 		expect(channelMessageQueries.getById(row.id)?.state).toBe('closed');
 	});
 
-	it('a member chat waits for approval, can be switched off, and keeps its approval when its owner re-pairs', () => {
+	it('can be switched off, and re-pairing switches it back on', () => {
 		const account = connectBot('Bot');
-		const pending = linkFor(account.id, userA, '42', 'pending');
-		expect(pending.status).toBe('pending');
-		expect(channelLinkQueries.isActive(pending)).toBe(false);
+		const link = linkFor(account.id, '42');
+		expect(channelLinkQueries.isActive(link)).toBe(true);
 
-		channelLinkQueries.approve(pending.id);
-		const approved = channelLinkQueries.getById(pending.id)!;
-		expect(channelLinkQueries.isActive(approved)).toBe(true);
+		channelLinkQueries.setEnabled(link.id, false);
+		expect(channelLinkQueries.isActive(channelLinkQueries.getById(link.id)!)).toBe(false);
 
-		channelLinkQueries.setEnabled(pending.id, false);
-		expect(channelLinkQueries.isActive(channelLinkQueries.getById(pending.id)!)).toBe(false);
-
-		// The same person re-pairing keeps their approval and is switched back on.
-		const again = linkFor(account.id, userA, '42', 'pending');
-		expect(again.status).toBe('approved');
+		const again = linkFor(account.id, '42');
+		expect(again.id).toBe(link.id);
 		expect(again.is_enabled).toBe(1);
-
-		// Someone else taking the chat over starts from what they are entitled to.
-		expect(linkFor(account.id, userB, '42', 'pending').status).toBe('pending');
 	});
 
 	it('a question settles exactly once', () => {
 		const account = connectBot('Bot');
-		const link = linkFor(account.id, userA, '1');
+		const link = linkFor(account.id, '1');
 		const row = questionRow(link.id);
 		expect(channelMessageQueries.settle(row.id, 'answered')).toBe(true);
 		expect(channelMessageQueries.settle(row.id, 'closed')).toBe(false);
@@ -177,7 +163,7 @@ describe('links and channel messages', () => {
 
 	it('a reply finds the newest row for a message, and an edit finds the user message it maps to', () => {
 		const account = connectBot('Bot');
-		const link = linkFor(account.id, userA, '1');
+		const link = linkFor(account.id, '1');
 		channelMessageQueries.create({ linkId: link.id, kind: 'answer', chatSessionId: 's', clopenMessageId: 'old', platformMessageId: '50' });
 		channelMessageQueries.create({ linkId: link.id, kind: 'user', chatSessionId: 's', clopenMessageId: 'u1', platformMessageId: '50' });
 		expect(channelMessageQueries.getByMessage(link.id, '50')?.kind).toBe('user');
@@ -186,7 +172,7 @@ describe('links and channel messages', () => {
 
 	it('forgetting a session clears it as the active one everywhere', () => {
 		const account = connectBot('Bot');
-		const link = linkFor(account.id, userA, '1');
+		const link = linkFor(account.id, '1');
 		channelLinkQueries.setActive(link.id, 'p', 'gone');
 		channelLinkQueries.clearActiveSession('gone');
 		expect(channelLinkQueries.getById(link.id)?.active_session_id).toBeNull();
@@ -195,7 +181,7 @@ describe('links and channel messages', () => {
 
 	it('disconnecting the bot removes its links and their messages', () => {
 		const account = connectBot('Bot');
-		const link = linkFor(account.id, userA, '1');
+		const link = linkFor(account.id, '1');
 		const row = questionRow(link.id);
 		integrationAccounts.disconnect(account.id);
 		expect(channelLinkQueries.getById(link.id)).toBeNull();
@@ -204,21 +190,12 @@ describe('links and channel messages', () => {
 });
 
 describe('Home', () => {
-	it('is one per user, on disk, and theirs alone', () => {
-		const first = ensureHomeProject(userA);
-		const again = ensureHomeProject(userA);
-		const other = ensureHomeProject(userB);
+	it('is one per install, on disk, and in the project list', () => {
+		const first = ensureHomeProject();
+		const again = ensureHomeProject();
 		expect(again.id).toBe(first.id);
-		expect(other.id).not.toBe(first.id);
 		expect(first.kind).toBe('home');
-		expect(first.owner_user_id).toBe(userA);
 		expect(existsSync(first.path)).toBe(true);
-		expect(projectQueries.userHasProject(userA, first.id)).toBe(true);
-		expect(projectQueries.userHasProject(userB, first.id)).toBe(false);
-	});
-
-	it('cannot be shared with another user', () => {
-		const home = ensureHomeProject(userA);
-		expect(() => assignProjectToUser(userB, home.id)).toThrow(/cannot be shared/);
+		expect(projectQueries.isListed(first.id)).toBe(true);
 	});
 });

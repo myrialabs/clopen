@@ -63,7 +63,7 @@ export const crudHandler = createRouter()
 		return setting;
 	})
 
-	// Merge-update system settings (admin only).
+	// Merge-update system settings.
 	// Sending only the changed keys prevents a partial update from clobbering
 	// sibling fields (e.g. the onboarding marker) when a client's in-memory copy
 	// of the settings is stale. The merge itself lives in the system-settings

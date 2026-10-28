@@ -79,7 +79,7 @@ function disposeSession(sessionId: string): void {
  * Pure validator - does NOT create new sessions.
  * Returns user info if valid, null otherwise.
  */
-function validateAuthToken(request: Request): { userId: string; role: string } | null {
+function validateAuthToken(request: Request): { userId: string } | null {
 	const authHeader = request.headers.get('authorization');
 	if (!authHeader || !authHeader.toLowerCase().startsWith('bearer ')) {
 		return null;
@@ -94,7 +94,7 @@ function validateAuthToken(request: Request): { userId: string; role: string } |
 	// loopback endpoint with the process-scoped service token, not a user
 	// session. Accept it regardless of auth mode — it never leaves the host.
 	if (isMcpServiceToken(token)) {
-		return { userId: 'mcp-service', role: 'admin' };
+		return { userId: 'mcp-service' };
 	}
 
 	const tokenHash = hashToken(token);
@@ -109,13 +109,13 @@ function validateAuthToken(request: Request): { userId: string; role: string } |
 		if (!user) {
 			return null;
 		}
-		return { userId: user.id, role: user.role };
+		return { userId: user.id };
 	}
 
 	// Try PAT (Personal Access Token)
 	const user = authQueries.getUserByPatHash(tokenHash);
 	if (user) {
-		return { userId: user.id, role: user.role };
+		return { userId: user.id };
 	}
 
 	return null;

@@ -18,7 +18,7 @@ export const sessionsRouter = createRouter()
 	.emit('sessions:session-available', t.Object({
 		session: t.Any()
 	}))
-	// Notification: a session was deleted by another user
+	// Notification: a session was deleted on another device
 	.emit('sessions:session-deleted', t.Object({
 		sessionId: t.String(),
 		projectId: t.String()

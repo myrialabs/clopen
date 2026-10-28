@@ -12,11 +12,10 @@
 	import type { ContainerImageEntry } from '$shared/types/containers';
 
 	interface Props {
-		canManage: boolean;
 		onRemove: (image: ContainerImageEntry) => void;
 	}
 
-	const { canManage, onRemove }: Props = $props();
+	const { onRemove }: Props = $props();
 
 	const images = $derived(containersStore.images);
 	const total = $derived(containersStore.result?.images.length ?? 0);
@@ -78,23 +77,21 @@
 				{image.size}
 			</span>
 
-			{#if canManage}
-				<button
-					type="button"
-					class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent text-slate-400 cursor-pointer transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-wait"
-					onclick={() => onRemove(image)}
-					disabled={containersStore.actingId === image.id}
-					title={image.usedBy.length > 0
-						? 'In use — the runtime will refuse unless it is forced'
-						: 'Remove this image'}
-					aria-label="Remove image {image.repository}:{image.tag}"
-				>
-					<Icon
-						name={containersStore.actingId === image.id ? 'lucide:loader-circle' : 'lucide:trash-2'}
-						class="w-3.5 h-3.5 {containersStore.actingId === image.id ? 'animate-spin' : ''}"
-					/>
-				</button>
-			{/if}
+			<button
+				type="button"
+				class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent text-slate-400 cursor-pointer transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-wait"
+				onclick={() => onRemove(image)}
+				disabled={containersStore.actingId === image.id}
+				title={image.usedBy.length > 0
+					? 'In use — the runtime will refuse unless it is forced'
+					: 'Remove this image'}
+				aria-label="Remove image {image.repository}:{image.tag}"
+			>
+				<Icon
+					name={containersStore.actingId === image.id ? 'lucide:loader-circle' : 'lucide:trash-2'}
+					class="w-3.5 h-3.5 {containersStore.actingId === image.id ? 'animate-spin' : ''}"
+				/>
+			</button>
 		</div>
 	{/each}
 </div>

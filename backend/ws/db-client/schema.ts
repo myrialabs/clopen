@@ -6,7 +6,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { connectionManager } from '../../db-client/connection-manager';
 import type { DbClientSchemaNodeType } from '$shared/types/db-client';
-import { requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
 import { debug } from '$shared/utils/logger';
 
 const nodeTypeSchema = t.Union([
@@ -30,8 +30,8 @@ export const schemaHandler = createRouter()
 			schema: t.Optional(t.String())
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.overview) throw new Error('Driver does not support overview');
 		return adapter.overview({ database: data.database, schema: data.schema });
@@ -40,8 +40,8 @@ export const schemaHandler = createRouter()
 	.http('db-client:list-databases', {
 		data: t.Object({ connectionId: t.String({ minLength: 1 }) }),
 		response: t.Array(t.Any())
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.listDatabases) return [];
 		return adapter.listDatabases();
@@ -53,8 +53,8 @@ export const schemaHandler = createRouter()
 			database: t.Optional(t.String())
 		}),
 		response: t.Array(t.Any())
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.listSchemas) return [];
 		return adapter.listSchemas(data.database);
@@ -67,8 +67,8 @@ export const schemaHandler = createRouter()
 			schema: t.Optional(t.String())
 		}),
 		response: t.Array(t.Any())
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.listObjects) return [];
 		return adapter.listObjects(data.database, data.schema);
@@ -83,8 +83,8 @@ export const schemaHandler = createRouter()
 			type: nodeTypeSchema
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.getObjectDetails) {
 			throw new Error('Driver does not support object details');
@@ -104,8 +104,8 @@ export const schemaHandler = createRouter()
 			schema: t.Optional(t.String())
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.listObjects || !adapter.getObjectDetails) {
 			return { tables: [] };

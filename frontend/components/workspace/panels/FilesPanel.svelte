@@ -1563,12 +1563,10 @@
 	}
 
 	// The OS clipboard belongs to the machine the SERVER runs on, so the
-	// bridge is only meaningful when the viewer IS that machine's operator:
-	// same-origin localhost AND admin (the backend enforces the admin half —
-	// see backend/ws/files/clipboard.ts — this just avoids pointless
-	// round-trips and keeps the Paste affordance honest for members).
+	// bridge is only meaningful when the viewer is sitting at that machine
+	// (same-origin localhost); a remote device has a clipboard of its own.
 	function canUseOsClipboard(): boolean {
-		return isLocalConnection() && authStore.isAdmin;
+		return isLocalConnection();
 	}
 
 	// Silent OS probe: same backend source as menu paste, but NEVER any
@@ -1624,7 +1622,7 @@
 	// PREVIOUS Explorer content, which must not shadow the newer copy.
 	function shouldPreferInternalOverFreshOs(): boolean {
 		if (pendingPublishSeq !== 0) return true;
-		// Our copy never made it onto the OS clipboard (member session, missing
+		// Our copy never made it onto the OS clipboard (remote device, missing
 		// helper, failed publish). Whatever the OS holds is then leftover from
 		// some earlier copy, not a newer one, and adopting it would paste
 		// unrelated files — or a truncated subset of what the user selected.
@@ -1937,11 +1935,8 @@
 		if (!active || active.files.length === 0) return empty;
 		const { files: sourceFiles, operation } = active;
 		// OS-adopted sources may live outside every project (Desktop,
-		// Downloads, …). `files:duplicate` accepts those for an admin — whose
-		// file access is unrestricted by design — and the OS clipboard bridge
-		// is admin-only for exactly that reason, so one route covers both
-		// origins. A dedicated "source is only existence-checked" route would
-		// instead hand every member an arbitrary read of the server's disk.
+		// Downloads, …). `files:duplicate` accepts any path on the server, so
+		// one route covers both origins.
 		const sep = basePath.includes('\\') ? '\\' : '/';
 
 		// A folder must never be pasted into itself or its descendant.

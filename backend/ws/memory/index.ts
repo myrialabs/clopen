@@ -9,8 +9,8 @@ import { memoryCrudHandler } from './crud';
 export const memoryRouter = createRouter()
 	/**
 	 * The graph changed. Broadcast globally rather than per session, because the
-	 * memory graph is instance-wide: a memory written by one member's chat is
-	 * immediately part of what every other member's Memory view is showing.
+	 * memory graph is instance-wide: a memory written by one chat is immediately
+	 * part of what every device's Memory view is showing.
 	 *
 	 * The payload deliberately carries no data, only a reason. Diffing the graph
 	 * over the wire would mean a second serialization format to keep in step with

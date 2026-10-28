@@ -113,7 +113,6 @@ export type {
 	MessageEngine,
 	MessageModel,
 	MessageParent,
-	MessageSender,
 	MessageAccount,
 	TextBlock,
 	ImageBlock,

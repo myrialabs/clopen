@@ -2,7 +2,7 @@
  * Memory Graph Queries
  *
  * CRUD and traversal for `graph_nodes` / `graph_edges` / `graph_vectors` plus the
- * `graph_nodes_fts` mirror (migration 066). Instance-global and admin-managed —
+ * `graph_nodes_fts` mirror (migration 066). Instance-global —
  * no `user_id` column — mirroring skills / mcp_servers / subagents.
  *
  * Two invariants live here rather than in callers:

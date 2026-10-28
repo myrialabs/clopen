@@ -25,9 +25,8 @@ import { isAbsolute, relative } from 'node:path';
 import { requireProjectAccess } from '../access';
 import {
 	filterAccessibleExpandedPaths,
-	requireFilePathAccess,
-	requireWorkspaceRootAccess,
-	requireSharedFilePathAccess
+	resolveFilePath,
+	requireWorkspaceRoot
 } from './path-access';
 
 // Bun-compatible existsSync implementation
@@ -71,10 +70,10 @@ export const readHandler = createRouter()
 				})
 			])
 		)
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		// The requested root, not the project's: for a worktree these differ, and
 		// listing the project would hand back the main tree's files and paths.
-		const { root: projectPath } = requireWorkspaceRootAccess(conn, data.project_path);
+		const { root: projectPath } = requireWorkspaceRoot(data.project_path);
 
 		if (!(await existsSync(projectPath))) {
 			throw new Error('Project path does not exist');
@@ -123,18 +122,15 @@ export const readHandler = createRouter()
 			),
 			error: t.Optional(t.String())
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		// FolderBrowser uses this before a project exists, so it must be able to
 		// browse roots like "home", "drives", ".", and arbitrary candidate paths.
-		// Security: enforce backend path ownership checks for real filesystem
-		// paths so non-admin users can't enumerate directories inside projects
-		// they are not assigned to.
 		const requestedPath = data.path === 'home'
 			? (process.env.HOME || process.env.USERPROFILE || process.cwd())
 			: (data.path === '.' || data.path === '' ? process.cwd() : data.path);
 		const guardedPath = data.path === 'drives'
 			? 'drives'
-			: await requireSharedFilePathAccess(conn, requestedPath);
+			: await resolveFilePath(requestedPath);
 		const result = await handlePathBrowsing(guardedPath);
 		return result;
 	})
@@ -157,8 +153,8 @@ export const readHandler = createRouter()
 				})
 			)
 		)
-	}, async ({ data, conn }) => {
-		const dirPath = await requireFilePathAccess(conn, data.dir_path);
+	}, async ({ data }) => {
+		const dirPath = await resolveFilePath(data.dir_path);
 		const result = await listDirectoryContents(dirPath);
 		return result;
 	})
@@ -177,8 +173,8 @@ export const readHandler = createRouter()
 			isBinary: t.Optional(t.Boolean()),
 			error: t.Optional(t.String())
 		})
-	}, async ({ data, conn }) => {
-		const filePath = await requireFilePathAccess(conn, data.file_path);
+	}, async ({ data }) => {
+		const filePath = await resolveFilePath(data.file_path);
 		const result = await readFileContents(filePath);
 		return result;
 	})
@@ -196,12 +192,12 @@ export const readHandler = createRouter()
 			content: t.Union([t.String(), t.Null()]),
 			ref: t.String()
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		// A worktree is its own checkout, so the gutter diff has to resolve
 		// against the tree the file is in rather than the project's.
 		const { root } = data.rootPath
-			? requireWorkspaceRootAccess(conn, data.rootPath)
-			: { root: requireProjectAccess(conn, data.projectId).path };
+			? requireWorkspaceRoot(data.rootPath)
+			: { root: requireProjectAccess(data.projectId).path };
 
 		const ref = data.ref || 'HEAD';
 
@@ -238,8 +234,8 @@ export const readHandler = createRouter()
 			modified: t.Optional(t.String()),
 			size: t.Optional(t.Number())
 		})
-	}, async ({ data, conn }) => {
-		const path = await requireFilePathAccess(conn, data.path);
+	}, async ({ data }) => {
+		const path = await resolveFilePath(data.path);
 
 		// Read file as binary
 		const file = Bun.file(path);

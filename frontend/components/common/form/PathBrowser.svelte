@@ -539,8 +539,7 @@
 		try {
 			const folderPath = folderToDelete.path;
 
-			// Picker-only route: rejects non-empty directories and paths inside
-			// other users' projects, even when forced.
+			// Picker-only route: rejects non-empty directories, even when forced.
 			await ws.http('files:delete-directory', {
 				dirPath: folderPath
 			});

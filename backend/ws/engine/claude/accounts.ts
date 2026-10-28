@@ -22,7 +22,7 @@ import { resetEnvironment, getClaudeUserConfigDir } from '../../../engine/adapte
 import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { debug } from '$shared/utils/logger';
 import { getCleanSpawnEnv } from '../../../utils/env';
-import { requireSetupSessionAccess } from '../access';
+import { requireSetupSession } from '../access';
 import { stripAnsi, extractHttpsUrl } from '../pty-output';
 
 // ── Helpers ──
@@ -376,7 +376,7 @@ export const accountsHandler = createRouter()
 		const userId = ws.getUserId(conn);
 		let entry: SetupProcess;
 		try {
-			entry = requireSetupSessionAccess(conn, data.setupId, setupProcesses);
+			entry = requireSetupSession(data.setupId, setupProcesses);
 		} catch {
 			ws.emit.user(userId, 'engine:claude-account-setup-error', {
 				setupId: data.setupId,
@@ -408,9 +408,9 @@ export const accountsHandler = createRouter()
 		data: t.Object({
 			setupId: t.String()
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		try {
-			requireSetupSessionAccess(conn, data.setupId, setupProcesses);
+			requireSetupSession(data.setupId, setupProcesses);
 		} catch {
 			return;
 		}

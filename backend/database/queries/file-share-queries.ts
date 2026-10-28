@@ -34,11 +34,6 @@ export interface FileShareRow {
 	created_at: string;
 }
 
-/** A row joined with its creator's display name, for the management list. */
-export interface FileShareListRow extends FileShareRow {
-	created_by_name: string | null;
-}
-
 export interface CreateFileShareParams {
 	tokenHash: string;
 	filePath: string;
@@ -48,14 +43,8 @@ export interface CreateFileShareParams {
 	createdAt: string;
 }
 
-const LIST_SELECT = `
-	SELECT s.*, u.name AS created_by_name
-	FROM file_shares s
-	LEFT JOIN users u ON u.id = s.created_by
-`;
-
 /** Rows that have not passed their deadline — including the ones without one. */
-const LIVE = '(s.expires_at IS NULL OR s.expires_at > ?)';
+const LIVE = '(expires_at IS NULL OR expires_at > ?)';
 
 export const fileShareQueries = {
 	create(params: CreateFileShareParams): FileShareRow {
@@ -89,18 +78,11 @@ export const fileShareQueries = {
 		return db.prepare('SELECT * FROM file_shares WHERE id = ?').get(id) as FileShareRow | null;
 	},
 
-	/** Every live link, newest first — the admin view of what is currently open. */
-	listAll(now: string): FileShareListRow[] {
+	/** Every live link, newest first — what is currently open. */
+	listLive(now: string): FileShareRow[] {
 		const db = getDatabase();
-		return db.prepare(`${LIST_SELECT} WHERE ${LIVE} ORDER BY s.created_at DESC`)
-			.all(now) as FileShareListRow[];
-	},
-
-	/** One user's live links, newest first. */
-	listForUser(userId: string, now: string): FileShareListRow[] {
-		const db = getDatabase();
-		return db.prepare(`${LIST_SELECT} WHERE s.created_by = ? AND ${LIVE} ORDER BY s.created_at DESC`)
-			.all(userId, now) as FileShareListRow[];
+		return db.prepare(`SELECT * FROM file_shares WHERE ${LIVE} ORDER BY created_at DESC`)
+			.all(now) as FileShareRow[];
 	},
 
 	/**

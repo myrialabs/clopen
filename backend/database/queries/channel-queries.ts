@@ -1,14 +1,11 @@
 /**
- * Chat-app storage — which chat is paired with which user through which bot,
+ * Chat-app storage — which chat is paired through which bot,
  * what each chat is currently talking to, and what every message in the chat
  * app means in Clopen. See migration 084 for why each table exists.
  */
 
 import { randomBytes } from 'crypto';
 import { getDatabase } from '../index';
-
-/** `pending` until an admin approves a member's chat; an admin's own is approved on pairing. */
-export type ChannelLinkStatus = 'pending' | 'approved';
 
 export interface ChannelLinkRow {
 	id: string;
@@ -17,7 +14,6 @@ export interface ChannelLinkRow {
 	conversation_id: string;
 	platform_user_id: string;
 	display_name: string | null;
-	status: ChannelLinkStatus;
 	/** 0 turns the chat off entirely: it can neither be told nor tell Clopen anything. */
 	is_enabled: number;
 	active_project_id: string | null;
@@ -85,9 +81,9 @@ export function newChannelMessageId(): string {
 }
 
 export const channelLinkQueries = {
-	/** Approved and switched on: the only state in which a chat can do anything. */
+	/** Switched on: the only state in which a chat can do anything. */
 	isActive(row: ChannelLinkRow): boolean {
-		return row.status === 'approved' && row.is_enabled === 1;
+		return row.is_enabled === 1;
 	},
 
 	getById(id: string): ChannelLinkRow | null {
@@ -106,18 +102,11 @@ export const channelLinkQueries = {
 			.all(accountId) as ChannelLinkRow[];
 	},
 
-	listByUser(userId: string): ChannelLinkRow[] {
-		return getDatabase()
-			.prepare('SELECT * FROM channel_links WHERE user_id = ? ORDER BY created_at')
-			.all(userId) as ChannelLinkRow[];
-	},
-
 	/**
-	 * Pair a chat with a user. Re-pairing the same chat moves it to the new
-	 * user rather than failing: whoever just proved they hold the chat AND a
-	 * fresh code from their own Clopen session is its owner now, and nothing
-	 * the previous owner was talking to carries over. `status` is what a new
-	 * pairing gets; the same user re-pairing keeps an approval they already had.
+	 * Pair a chat. Re-pairing the same chat moves it rather than failing:
+	 * whoever just proved they hold the chat AND a fresh code from a Clopen
+	 * session holds it now, and nothing the previous holder was talking to
+	 * carries over.
 	 */
 	upsert(input: {
 		accountId: string;
@@ -125,21 +114,19 @@ export const channelLinkQueries = {
 		conversationId: string;
 		platformUserId: string;
 		displayName: string | null;
-		status: ChannelLinkStatus;
 	}): ChannelLinkRow {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		const existing = this.getByConversation(input.accountId, input.conversationId);
 		if (existing) {
-			const changedHands = existing.user_id !== input.userId;
-			const status: ChannelLinkStatus = !changedHands && existing.status === 'approved' ? 'approved' : input.status;
+			const changedHands = existing.platform_user_id !== input.platformUserId;
 			db.prepare(
 				`UPDATE channel_links
-				 SET user_id = ?, platform_user_id = ?, display_name = ?, status = ?, is_enabled = 1, last_used_at = ?
+				 SET user_id = ?, platform_user_id = ?, display_name = ?, is_enabled = 1, last_used_at = ?
 				 WHERE id = ?`
-			).run(input.userId, input.platformUserId, input.displayName, status, now, existing.id);
+			).run(input.userId, input.platformUserId, input.displayName, now, existing.id);
 			if (changedHands) {
-				// A chat that changed hands must not keep answering — or continuing — the old owner's sessions.
+				// A chat that changed hands must not keep answering — or continuing — the old holder's sessions.
 				db.prepare("UPDATE channel_messages SET state = 'closed' WHERE link_id = ? AND state = 'open'").run(existing.id);
 				db.prepare('UPDATE channel_links SET active_project_id = NULL, active_session_id = NULL WHERE id = ?').run(existing.id);
 			}
@@ -148,18 +135,14 @@ export const channelLinkQueries = {
 		const id = crypto.randomUUID();
 		db.prepare(
 			`INSERT INTO channel_links
-			 (id, account_id, user_id, conversation_id, platform_user_id, display_name, status, created_at, last_used_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
-		).run(id, input.accountId, input.userId, input.conversationId, input.platformUserId, input.displayName, input.status, now, now);
+			 (id, account_id, user_id, conversation_id, platform_user_id, display_name, created_at, last_used_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+		).run(id, input.accountId, input.userId, input.conversationId, input.platformUserId, input.displayName, now, now);
 		return this.getById(id)!;
 	},
 
 	setEnabled(id: string, enabled: boolean): void {
 		getDatabase().prepare('UPDATE channel_links SET is_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id);
-	},
-
-	approve(id: string): void {
-		getDatabase().prepare("UPDATE channel_links SET status = 'approved' WHERE id = ?").run(id);
 	},
 
 	/** What a plain message from this chat continues. A null session means "start one in this project". */

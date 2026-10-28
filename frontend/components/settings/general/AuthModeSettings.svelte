@@ -7,7 +7,6 @@
 	import type { AuthMode } from '$shared/types/stores/settings';
 	import { debug } from '$shared/utils/logger';
 
-	const isAdmin = $derived(authStore.isAdmin);
 	const currentMode = $derived(systemSettings.authMode);
 
 	// Simple confirmation dialog (required → none)
@@ -53,7 +52,7 @@
 		// Save auth mode
 		await updateSystemSettings({ authMode: 'required' });
 
-		// Logout all sessions (including current) — forces everyone to re-login
+		// Sign out every device (including this one) — each signs in again with the token
 		await authStore.logoutAll();
 
 		generatedPat = '';
@@ -75,87 +74,85 @@
 	}
 </script>
 
-{#if isAdmin}
 <div class="py-1">
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Authentication</h3>
-	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Configure how users access Clopen</p>
+<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Authentication</h3>
+<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Choose how your devices sign in to Clopen</p>
 
-	<div class="flex flex-col gap-3.5">
-		<!-- No Login -->
-		<button
-			type="button"
-			disabled={isPreparingSwitch}
-			class="w-full text-left p-4 bg-slate-100/80 dark:bg-slate-800/80 border rounded-xl transition-all
+<div class="flex flex-col gap-3.5">
+	<!-- No Login -->
+	<button
+		type="button"
+		disabled={isPreparingSwitch}
+		class="w-full text-left p-4 bg-slate-100/80 dark:bg-slate-800/80 border rounded-xl transition-all
+			{currentMode === 'none'
+				? 'border-violet-500/50 ring-1 ring-violet-500/20'
+				: 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'}
+			disabled:opacity-50 disabled:cursor-not-allowed"
+		onclick={() => requestModeChange('none')}
+	>
+		<div class="flex items-center gap-3.5">
+			<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0
 				{currentMode === 'none'
-					? 'border-violet-500/50 ring-1 ring-violet-500/20'
-					: 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'}
-				disabled:opacity-50 disabled:cursor-not-allowed"
-			onclick={() => requestModeChange('none')}
-		>
-			<div class="flex items-center gap-3.5">
-				<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0
-					{currentMode === 'none'
-						? 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
-						: 'bg-slate-200/80 dark:bg-slate-700 text-slate-400'}">
-					<Icon name="lucide:lock-open" class="w-5 h-5" />
-				</div>
-				<div class="flex-1 min-w-0">
-					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
-					<div class="text-xs text-slate-600 dark:text-slate-500">
-						Best if you're just using Clopen on your own computer. It opens straight to the app with no sign-in — but anyone who can reach the address can use it, so keep it to your own machine or home network.
-					</div>
-				</div>
-				{#if currentMode === 'none'}
-					<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 shrink-0">
-						<span class="w-1.5 h-1.5 rounded-full bg-violet-500"></span>
-						Active
-					</div>
-				{/if}
+					? 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
+					: 'bg-slate-200/80 dark:bg-slate-700 text-slate-400'}">
+				<Icon name="lucide:lock-open" class="w-5 h-5" />
 			</div>
-		</button>
-
-		<!-- With Login -->
-		<button
-			type="button"
-			disabled={isPreparingSwitch}
-			class="w-full text-left p-4 bg-slate-100/80 dark:bg-slate-800/80 border rounded-xl transition-all
-				{currentMode === 'required'
-					? 'border-violet-500/50 ring-1 ring-violet-500/20'
-					: 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'}
-				disabled:opacity-50 disabled:cursor-not-allowed"
-			onclick={() => requestModeChange('required')}
-		>
-			<div class="flex items-center gap-3.5">
-				<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0
-					{currentMode === 'required'
-						? 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
-						: 'bg-slate-200/80 dark:bg-slate-700 text-slate-400'}">
-					<Icon name="lucide:lock" class="w-5 h-5" />
+			<div class="flex-1 min-w-0">
+				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
+				<div class="text-xs text-slate-600 dark:text-slate-500">
+					Best if you're just using Clopen on your own computer. It opens straight to the app with no sign-in — but anyone who can reach the address can use it, so keep it to your own machine or home network.
 				</div>
-				<div class="flex-1 min-w-0">
-					<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
-					<div class="text-xs text-slate-600 dark:text-slate-500">
-						Best if you want to reach Clopen from anywhere — a public server, a shared machine, or the same setup used by more than one person. A sign-in keeps it private, and you can invite others to join.
-					</div>
-				</div>
-				{#if currentMode === 'required'}
-					<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 shrink-0">
-						<span class="w-1.5 h-1.5 rounded-full bg-violet-500"></span>
-						Active
-					</div>
-				{/if}
 			</div>
-		</button>
-	</div>
-
-	{#if isPreparingSwitch}
-		<div class="flex items-center gap-2 mt-4 text-sm text-slate-500">
-			<div class="w-4 h-4 border-2 border-violet-500/20 border-t-violet-600 rounded-full animate-spin"></div>
-			<span>Preparing authentication switch...</span>
+			{#if currentMode === 'none'}
+				<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 shrink-0">
+					<span class="w-1.5 h-1.5 rounded-full bg-violet-500"></span>
+					Active
+				</div>
+			{/if}
 		</div>
-	{/if}
+	</button>
+
+	<!-- With Login -->
+	<button
+		type="button"
+		disabled={isPreparingSwitch}
+		class="w-full text-left p-4 bg-slate-100/80 dark:bg-slate-800/80 border rounded-xl transition-all
+			{currentMode === 'required'
+				? 'border-violet-500/50 ring-1 ring-violet-500/20'
+				: 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'}
+			disabled:opacity-50 disabled:cursor-not-allowed"
+		onclick={() => requestModeChange('required')}
+	>
+		<div class="flex items-center gap-3.5">
+			<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0
+				{currentMode === 'required'
+					? 'bg-violet-500/15 text-violet-600 dark:text-violet-400'
+					: 'bg-slate-200/80 dark:bg-slate-700 text-slate-400'}">
+				<Icon name="lucide:lock" class="w-5 h-5" />
+			</div>
+			<div class="flex-1 min-w-0">
+				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
+				<div class="text-xs text-slate-600 dark:text-slate-500">
+					Best if you want to reach Clopen from anywhere — a public server, or your phone through Remote Access. A sign-in keeps it private, and Remote Access adds your other devices without typing a token.
+				</div>
+			</div>
+			{#if currentMode === 'required'}
+				<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 shrink-0">
+					<span class="w-1.5 h-1.5 rounded-full bg-violet-500"></span>
+					Active
+				</div>
+			{/if}
+		</div>
+	</button>
 </div>
+
+{#if isPreparingSwitch}
+	<div class="flex items-center gap-2 mt-4 text-sm text-slate-500">
+		<div class="w-4 h-4 border-2 border-violet-500/20 border-t-violet-600 rounded-full animate-spin"></div>
+		<span>Preparing authentication switch...</span>
+	</div>
 {/if}
+</div>
 
 <!-- Simple confirm dialog (required → none) -->
 <Dialog
@@ -163,7 +160,7 @@
 	onClose={() => { showSimpleConfirm = false; }}
 	type="info"
 	title="Change Authentication Mode"
-	message="Switching to No Login mode will disable login requirements. Existing users and sessions will be preserved but bypassed."
+	message="Switching to No Login mode will disable login requirements. Your account and signed-in devices are kept, just no longer required."
 	confirmText="Confirm"
 	cancelText="Cancel"
 	showCancel={true}

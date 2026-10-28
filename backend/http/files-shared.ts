@@ -108,8 +108,8 @@ function parseByteRange(header: string | null, size: number): ByteRange | 'unsat
  * Tell every open management view that the list moved.
  *
  * This route is HTTP, not WebSocket, and the person triggering it is not
- * signed in — so the broadcast goes out globally and each client re-reads its
- * own role-scoped list. A "something changed" ping carries nothing to leak.
+ * signed in — so the broadcast goes out globally and each client re-reads the
+ * list. A "something changed" ping carries nothing to leak.
  */
 function notifyShareChanged(): void {
 	try {

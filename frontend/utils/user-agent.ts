@@ -39,7 +39,6 @@ function detectBrowser(ua: string): string {
 /** Friendly label for how a session was created (provenance badge). */
 export function sessionSourceLabel(source: string | null | undefined): string | null {
 	switch (source) {
-		case 'invite': return 'Joined via invite';
 		case 'device-link': return 'Paired device';
 		case 'login': return 'Signed in with token';
 		case 'pat': return 'Access token';

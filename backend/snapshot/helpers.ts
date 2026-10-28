@@ -25,7 +25,6 @@ export interface CheckpointNode {
 	isCurrent: boolean; // this is the current active checkpoint
 	hasSnapshot: boolean;
 	isInitial?: boolean; // true for the "initial state" node
-	senderName?: string | null;
 	// File change statistics (git-like)
 	filesChanged?: number;
 	insertions?: number;

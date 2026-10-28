@@ -101,7 +101,7 @@ export interface AppSettings {
 /** Authentication mode */
 export type AuthMode = 'none' | 'required';
 
-/** System-wide settings (admin-only, shared across all users) */
+/** System-wide settings, shared by every device */
 export interface SystemSettings {
 	/** Authentication mode: 'none' = single user no login, 'required' = multi-user with login. Default: 'required'. */
 	authMode: AuthMode;

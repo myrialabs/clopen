@@ -95,8 +95,6 @@
 		return message.type;
 	});
 
-	// Get sender info
-	const senderName = $derived(message.type === 'user' ? message.sender?.name ?? null : null);
 
 	// Whether this message participates in the compact timeline rail.
 	// Mirrors isRailRole() in ChatMessages so per-message rendering and the
@@ -396,7 +394,6 @@
 			{roleConfig}
 			{roleCategory}
 			{agentStatus}
-			{senderName}
 			{formatTime}
 			onCopy={copyToClipboard}
 			onRestore={handleRestore}
@@ -430,7 +427,6 @@
 					{roleConfig}
 					{roleCategory}
 					{agentStatus}
-					{senderName}
 					{formatTime}
 					onCopy={copyToClipboard}
 					onRestore={handleRestore}

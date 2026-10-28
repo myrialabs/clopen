@@ -12,17 +12,15 @@
  * - a short deadline (default {@link DEFAULT_FILE_SHARE_TTL_MINUTES} minutes),
  *   a longer one, or none at all — a link only a revoke can end.
  *
- * Security model (mirrors the invite/device-code flows):
+ * Security model (mirrors the device-code flow):
  * - Only the raw token's SHA-256 hash is kept; the raw token is returned once,
  *   at creation time, and is embedded in the shared URL.
  * - Tokens live in SQLite (`file_shares`, migration 080) like device codes, so
  *   a restart does not silently kill links a user already handed out.
- * - Creation reuses the exact project-scoped path check the download route
- *   uses (`requireFilePathAccessFor`), so a user can only share files they
- *   could download themselves. Directories are rejected.
- * - That same check is re-run on every open: if the creator loses access to
- *   the path (removed from the project, project deleted, account deleted),
- *   every link they minted for it stops serving immediately.
+ * - Creation resolves the path the same way the download route does
+ *   (`resolveFilePath`). Directories are rejected.
+ * - Every open re-checks that the account which minted the link still exists
+ *   and the path still resolves; a reset install leaves no working link.
  * - Links are single-file bound: the HTTP route resolves the path from the
  *   token and ignores any caller-supplied path, so a link can never be
  *   retargeted at another file.
@@ -41,7 +39,7 @@ import { authQueries, fileShareQueries } from '../database/queries';
 import { projectQueries } from '../database/queries/project-queries';
 import { worktreeQueries } from '../database/queries/worktree-queries';
 import { generateFileShareToken, hashToken } from '../auth/tokens';
-import { requireFilePathAccessFor } from '../ws/files/path-access';
+import { resolveFilePath } from '../ws/files/path-access';
 
 /**
  * Default lifetime of a new link, in minutes.
@@ -111,16 +109,16 @@ export function consumerFingerprint(ip?: string | null, userAgent?: string | nul
 }
 
 /**
- * Re-run the creator's project-scoped access check against the shared path.
- * A link is only ever as alive as the access that minted it.
+ * A link is only ever as alive as the account that minted it: a reset install
+ * (or a removed account) must not leave a working download behind.
  */
-async function assertCreatorStillHasAccess(filePath: string, createdBy: string): Promise<void> {
+async function assertCreatorStillExists(filePath: string, createdBy: string): Promise<void> {
 	const user = authQueries.getUserById(createdBy);
 	if (!user) {
 		throw new FileShareGoneError();
 	}
 	try {
-		await requireFilePathAccessFor(filePath, user.role, user.id);
+		await resolveFilePath(filePath);
 	} catch {
 		throw new FileShareGoneError();
 	}
@@ -175,19 +173,17 @@ export function describeShareLocation(filePath: string): FileShareLocation {
 
 /**
  * Mint a share token for a single file. The caller must already be
- * authenticated over the WebSocket; access is enforced with the same
- * project-scoped policy as the download route.
+ * authenticated over the WebSocket.
  */
 export async function createFileShareLink(
 	requestedPath: string,
-	role: string | null,
 	userId: string | null,
 	options: FileShareOptions = {}
 ): Promise<{ shareId: string; shareToken: string; oneTime: boolean; expiresAt: string | null }> {
 	if (!userId) {
 		throw new Error('Access denied');
 	}
-	const resolvedPath = await requireFilePathAccessFor(requestedPath, role, userId);
+	const resolvedPath = await resolveFilePath(requestedPath);
 
 	const stats = await stat(resolvedPath).catch(() => null);
 	if (!stats) {
@@ -255,7 +251,7 @@ export async function peekFileShare(shareToken: string, fingerprint: string): Pr
 		}
 	}
 
-	await assertCreatorStillHasAccess(row.file_path, row.created_by);
+	await assertCreatorStillExists(row.file_path, row.created_by);
 
 	return {
 		filePath: row.file_path,
@@ -285,22 +281,13 @@ export function recordFileShareOpen(shareToken: string): void {
 }
 
 /**
- * Revoke a share by its row id. The creator or an admin may revoke; returns
- * false when the id is unknown (already used up, lapsed, or revoked).
+ * Revoke a share by its row id. Returns false when the id is unknown (already
+ * used up, lapsed, or revoked).
  *
  * Revoking a link that is inside its continuation window also ends that
  * window, so a stream in progress stops on the next range request.
  */
-export function revokeFileShareLink(
-	shareId: string,
-	role: string | null,
-	userId: string | null
-): boolean {
-	const row = fileShareQueries.getById(shareId);
-	if (!row) return false;
-	if (role !== 'admin' && row.created_by !== userId) {
-		throw new Error('Access denied');
-	}
+export function revokeFileShareLink(shareId: string): boolean {
 	return fileShareQueries.deleteById(shareId) > 0;
 }
 
@@ -314,8 +301,6 @@ export interface FileShareSummary {
 	worktreeName: string | null;
 	/** Path within the project/worktree, `/`-separated on every platform. */
 	relativePath: string;
-	createdBy: string;
-	createdByName: string | null;
 	createdAt: string;
 	oneTime: boolean;
 	/** ISO deadline, or null for "until revoked". */
@@ -328,18 +313,11 @@ export interface FileShareSummary {
 }
 
 /**
- * List live share links: an admin sees every user's, everyone else sees their
- * own. Lapsed rows are filtered by the query, so the list answers "what is
- * reachable right now" rather than "what was ever created".
+ * List live share links. Lapsed rows are filtered by the query, so the list
+ * answers "what is reachable right now" rather than "what was ever created".
  */
-export function listFileShares(role: string | null, userId: string | null): FileShareSummary[] {
-	if (!userId) {
-		throw new Error('Access denied');
-	}
-	const now = new Date().toISOString();
-	const rows = role === 'admin'
-		? fileShareQueries.listAll(now)
-		: fileShareQueries.listForUser(userId, now);
+export function listFileShares(): FileShareSummary[] {
+	const rows = fileShareQueries.listLive(new Date().toISOString());
 
 	return rows.map((row) => {
 		const location = describeShareLocation(row.file_path);
@@ -350,8 +328,6 @@ export function listFileShares(role: string | null, userId: string | null): File
 			projectName: location.projectName,
 			worktreeName: location.worktreeName,
 			relativePath: location.relativePath,
-			createdBy: row.created_by,
-			createdByName: row.created_by_name,
 			createdAt: row.created_at,
 			oneTime: row.one_time === 1,
 			expiresAt: row.expires_at,

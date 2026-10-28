@@ -28,7 +28,7 @@ import { debug } from '$shared/utils/logger';
 import { isEngineSdkInstalled } from './sdk-loader';
 import { ENGINE_PACKAGES } from './install-recipes';
 import { getRequiredEngineCliSpec, resolveEngineCli } from './engine-cli';
-import { awaitInstall, InstallAlreadyRunningError, startInstall, SYSTEM_INSTALL_USER } from './install-runner';
+import { awaitInstall, InstallAlreadyRunningError, startInstall } from './install-runner';
 
 const DEFAULT_ENGINE = 'opencode' as const;
 
@@ -95,7 +95,7 @@ async function runDefaultEngineInstall(): Promise<void> {
 	);
 
 	try {
-		const session = await startInstall(DEFAULT_ENGINE, SYSTEM_INSTALL_USER);
+		const session = await startInstall(DEFAULT_ENGINE);
 		// Callers chain work that needs a usable engine (memory picks its
 		// extraction model from the engine's catalog), so wait for the run to
 		// settle rather than returning as soon as it is spawned.

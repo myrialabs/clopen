@@ -2,12 +2,11 @@
  * Inbound — every message a paired chat sends, and the checks in front of it.
  *
  * Nothing in a message is trusted on its own. A button names a row, and that
- * row must belong to the link of the chat that pressed it; the link's user
- * must still exist and still have the row's project; the person pressing must
- * be the platform user who paired the chat; anything that drives Clopen needs
- * the bot's `control` capability; and every catalog action is held to the
- * user's role and to the permission rule of each route it calls. Only then
- * does anything happen.
+ * row must belong to the link of the chat that pressed it; the link's account
+ * must still exist and the row's project must still be in Clopen; the person
+ * pressing must be the platform user who paired the chat; and anything that
+ * drives Clopen needs the bot's `control` capability. Only then does anything
+ * happen.
  *
  *   /start <code>, /unlink         pairing (here)
  *   any other /command             the chat's own commands or the control catalog (`conversation.ts`)
@@ -38,7 +37,6 @@ import { debug } from '$shared/utils/logger';
 import { channelRuntime, type ActiveChannel } from './runtime';
 import { redeemPairingCode } from './pairing';
 import { notifyLinksChanged } from './link-events';
-import { announcePending, statusForNewLink } from './approvals';
 import { REPLIES, decodeButtonData } from './messages';
 import { answerQuestionWithText, handleQuestionButton, replyText } from './questions';
 import { collectAttachments, isMedia, textOf, type PromptAttachment } from './media';
@@ -165,15 +163,13 @@ async function handleMessages(messages: UniversalMessage[], channel: ActiveChann
 	// typo'd command. Only a command Clopen knows ends the wait.
 	if (command && command.command !== 'start' && !isKnownCommand(command.command) && hasAwaiting(link.id)) command = null;
 
-	// Waiting for an admin, or switched off: nothing but leaving (or asking why) works.
+	// Switched off: nothing but leaving (or asking why) works.
 	if (!channelLinkQueries.isActive(link) && command?.command !== 'unlink') {
 		await discardMedia(messages);
-		if (content.type !== 'postback') await replyText(channel, message, link.status === 'pending' ? REPLIES.awaitingApproval : REPLIES.chatOff);
+		if (content.type !== 'postback') await replyText(channel, message, REPLIES.chatOff);
 		return;
 	}
 	channelLinkQueries.touch(link.id);
-	// The menu follows the person: a promotion or demotion shows on the next message.
-	void channelRuntime.syncChatMenu(channel.accountId, link.conversation_id, user.role);
 	const conversation: Conversation = { channel, message, link, user };
 
 	try {
@@ -202,11 +198,9 @@ async function pair(channel: ActiveChannel, message: UniversalMessage, link: Cha
 	if (!code) {
 		const reply = !link
 			? REPLIES.notLinked
-			: link.status === 'pending'
-				? REPLIES.awaitingApproval
-				: link.is_enabled !== 1
-					? REPLIES.chatOff
-					: REPLIES.helpIntro;
+			: link.is_enabled !== 1
+				? REPLIES.chatOff
+				: REPLIES.helpIntro;
 		await replyText(channel, message, reply);
 		return;
 	}
@@ -221,17 +215,10 @@ async function pair(channel: ActiveChannel, message: UniversalMessage, link: Cha
 		userId: user.id,
 		conversationId: message.address.conversation_id,
 		platformUserId: message.from.user_id,
-		displayName: message.from.display_name ?? null,
-		status: statusForNewLink(user)
+		displayName: message.from.display_name ?? null
 	});
-	debug.log('chat-apps', `Paired a ${channel.platform.provider} chat with user ${user.id} (${paired.status})`);
-	await channelRuntime.syncChatMenu(channel.accountId, message.address.conversation_id, user.role, { force: true });
-	notifyLinksChanged(user.id);
-	if (paired.status === 'pending') {
-		await replyText(channel, message, REPLIES.pairedPending(user.name));
-		await announcePending(paired);
-		return;
-	}
+	debug.log('chat-apps', `Paired a ${channel.platform.provider} chat (${paired.id})`);
+	notifyLinksChanged();
 	await replyText(channel, message, REPLIES.paired(user.name));
 }
 
@@ -239,22 +226,21 @@ async function handleCommand(conversation: Conversation, command: string, argume
 	const { channel, message, link } = conversation;
 	if (command === 'unlink') {
 		channelLinkQueries.remove(link.id);
-		await channelRuntime.syncChatMenu(channel.accountId, link.conversation_id, null, { force: true });
 		await replyText(channel, message, REPLIES.unlinked);
-		notifyLinksChanged(link.user_id);
+		notifyLinksChanged();
 		return;
 	}
 	await handleControlCommand(conversation, command, argument, rawText);
 }
 
-/** The row, if it is this chat's and its user may still act on its project. */
+/** The row, if it is this chat's and its project is still in Clopen. */
 async function ownedRow(conversation: Conversation, row: ChannelMessageRow | null): Promise<ChannelMessageRow | null> {
-	const { channel, message, link, user } = conversation;
+	const { channel, message, link } = conversation;
 	if (!row || row.link_id !== link.id) {
 		await replyText(channel, message, REPLIES.staleAction);
 		return null;
 	}
-	if (row.project_id && !projectQueries.userHasProject(user.id, row.project_id)) {
+	if (row.project_id && !projectQueries.isListed(row.project_id)) {
 		await replyText(channel, message, REPLIES.noAccess);
 		return null;
 	}
@@ -278,7 +264,7 @@ async function answerWithText(conversation: Conversation, row: ChannelMessageRow
 }
 
 async function handleText(conversation: Conversation, text: string, attachments: PromptAttachment[]): Promise<void> {
-	const { channel, message, link, user } = conversation;
+	const { channel, message, link } = conversation;
 
 	if (message.reply_to) {
 		const target = channelMessageQueries.getByMessage(link.id, message.reply_to);
@@ -322,7 +308,7 @@ async function handleText(conversation: Conversation, text: string, attachments:
 	// most likely answers. One waiting in ANOTHER session is not: switching to
 	// a session and typing must reach that session, so those are answered by
 	// replying to them.
-	const { session } = activeTarget(link, user);
+	const { session } = activeTarget(link);
 	const open = session ? channelMessageQueries.openQuestionsForLink(link.id).filter((row) => row.chat_session_id === session.id) : [];
 	if (open.length === 1) {
 		const row = await ownedRow(conversation, open[0]);

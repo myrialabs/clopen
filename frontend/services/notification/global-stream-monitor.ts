@@ -8,8 +8,8 @@
  * - chat:stream-finished  → stream completed/errored/cancelled
  * - chat:waiting-input    → AskUserQuestion requires user input
  *
- * The backend uses ws.emit.projectMembers() so notifications reach users
- * even when they are on a different project or session.
+ * The backend uses ws.emit.signedIn() so notifications reach every device
+ * even when it is on a different project or session.
  */
 
 import { soundNotification, pushNotification } from '$frontend/services/notification';

@@ -431,8 +431,8 @@ export const infoHandler = createRouter().http(
 			})
 		})
 	},
-	async ({ data, conn }) => {
-		requireProjectAccess(conn, data.id);
+	async ({ data }) => {
+		requireProjectAccess(data.id);
 		const project = projectQueries.getById(data.id);
 		if (!project) {
 			throw new Error('Project not found');

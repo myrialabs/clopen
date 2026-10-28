@@ -7,7 +7,7 @@
  * `profile_items` table holds the (artifact_type, ref) references. Neither
  * duplicates artifact data — see migration 050.
  *
- * Instance-global + admin-managed (no `user_id`), mirroring
+ * Instance-global (no `user_id`), mirroring
  * `skills` / `mcp_servers` / `subagents` / `permission_sets`.
  */
 

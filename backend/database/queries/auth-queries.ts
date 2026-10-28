@@ -5,7 +5,6 @@ export interface DBUser {
 	name: string;
 	color: string;
 	avatar: string;
-	role: 'admin' | 'member';
 	personal_access_token_hash: string | null;
 	created_at: string;
 	updated_at: string;
@@ -20,22 +19,8 @@ export interface DBAuthSession {
 	last_active_at: string;
 	user_agent: string | null;
 	ip_address: string | null;
-	/** How the session was created: 'setup' | 'invite' | 'device-link' | 'login' | 'pat' | 'no-auth'. */
+	/** How the session was created: 'setup' | 'device-link' | 'login' | 'pat' | 'no-auth'. */
 	source: string | null;
-}
-
-export interface DBInviteToken {
-	id: string;
-	token_hash: string;
-	role: 'admin' | 'member';
-	label: string | null;
-	created_by: string;
-	max_uses: number;
-	use_count: number;
-	expires_at: string | null;
-	created_at: string;
-	/** JSON array of project ids to grant the new member on join (null = none). */
-	project_ids: string | null;
 }
 
 export interface DBDeviceCode {
@@ -55,14 +40,13 @@ export const authQueries = {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		db.prepare(`
-			INSERT INTO users (id, name, color, avatar, role, personal_access_token_hash, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			INSERT INTO users (id, name, color, avatar, personal_access_token_hash, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)
 		`).run(
 			user.id,
 			user.name,
 			user.color,
 			user.avatar,
-			user.role,
 			user.personal_access_token_hash,
 			user.created_at,
 			user.updated_at ?? now
@@ -80,20 +64,15 @@ export const authQueries = {
 		return db.prepare('SELECT * FROM users WHERE personal_access_token_hash = ?').get(hash) as DBUser | null;
 	},
 
-	getAllUsers(): DBUser[] {
+	/** The owner — the install's only account — or null before setup. */
+	getOwner(): DBUser | null {
 		const db = getDatabase();
-		return db.prepare('SELECT * FROM users ORDER BY created_at ASC').all() as DBUser[];
+		return db.prepare('SELECT * FROM users ORDER BY created_at ASC LIMIT 1').get() as DBUser | null;
 	},
 
 	countUsers(): number {
 		const db = getDatabase();
 		const result = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
-		return result.count;
-	},
-
-	countAdmins(): number {
-		const db = getDatabase();
-		const result = db.prepare("SELECT COUNT(*) as count FROM users WHERE role = 'admin'").get() as { count: number };
 		return result.count;
 	},
 
@@ -110,11 +89,6 @@ export const authQueries = {
 
 		values.push(id);
 		db.prepare(`UPDATE users SET ${sets.join(', ')} WHERE id = ?`).run(...values);
-	},
-
-	deleteUser(id: string): void {
-		const db = getDatabase();
-		db.prepare('DELETE FROM users WHERE id = ?').run(id);
 	},
 
 	// ===================== Auth Sessions =====================
@@ -143,12 +117,7 @@ export const authQueries = {
 		return db.prepare('SELECT * FROM auth_sessions WHERE token_hash = ?').get(hash) as DBAuthSession | null;
 	},
 
-	getSessionsByUserId(userId: string): DBAuthSession[] {
-		const db = getDatabase();
-		return db.prepare('SELECT * FROM auth_sessions WHERE user_id = ? ORDER BY last_active_at DESC').all(userId) as DBAuthSession[];
-	},
-
-	/** All sessions across every user (admin "Connected devices" view). */
+	/** Every signed-in device. */
 	getAllSessions(): DBAuthSession[] {
 		const db = getDatabase();
 		return db.prepare('SELECT * FROM auth_sessions ORDER BY last_active_at DESC').all() as DBAuthSession[];
@@ -175,58 +144,11 @@ export const authQueries = {
 		db.prepare('DELETE FROM auth_sessions WHERE token_hash = ?').run(hash);
 	},
 
-	deleteSessionsByUserId(userId: string): void {
-		const db = getDatabase();
-		db.prepare('DELETE FROM auth_sessions WHERE user_id = ?').run(userId);
-	},
-
 	deleteExpiredSessions(): number {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		const result = db.prepare('DELETE FROM auth_sessions WHERE expires_at < ?').run(now) as { changes: number };
 		return result.changes;
-	},
-
-	// ===================== Invite Tokens =====================
-
-	createInvite(invite: DBInviteToken): DBInviteToken {
-		const db = getDatabase();
-		db.prepare(`
-			INSERT INTO invite_tokens (id, token_hash, role, label, created_by, max_uses, use_count, expires_at, created_at, project_ids)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`).run(
-			invite.id,
-			invite.token_hash,
-			invite.role,
-			invite.label,
-			invite.created_by,
-			invite.max_uses,
-			invite.use_count,
-			invite.expires_at,
-			invite.created_at,
-			invite.project_ids
-		);
-		return db.prepare('SELECT * FROM invite_tokens WHERE id = ?').get(invite.id) as DBInviteToken;
-	},
-
-	getInviteByTokenHash(hash: string): DBInviteToken | null {
-		const db = getDatabase();
-		return db.prepare('SELECT * FROM invite_tokens WHERE token_hash = ?').get(hash) as DBInviteToken | null;
-	},
-
-	incrementUseCount(id: string): void {
-		const db = getDatabase();
-		db.prepare('UPDATE invite_tokens SET use_count = use_count + 1 WHERE id = ?').run(id);
-	},
-
-	getAllInvites(): DBInviteToken[] {
-		const db = getDatabase();
-		return db.prepare('SELECT * FROM invite_tokens ORDER BY created_at DESC').all() as DBInviteToken[];
-	},
-
-	revokeInvite(id: string): void {
-		const db = getDatabase();
-		db.prepare('DELETE FROM invite_tokens WHERE id = ?').run(id);
 	},
 
 	deleteAllSessions(): number {

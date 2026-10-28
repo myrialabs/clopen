@@ -36,7 +36,6 @@ function user(id: string, text: string, extra: Partial<UserMessage> = {}): UserM
 	return {
 		...base(id),
 		type: 'user',
-		sender: { id: 'u', name: 'U' },
 		content: [{ type: 'text', text }],
 		synthetic: false,
 		...extra,
@@ -77,7 +76,6 @@ function toolResult(id: string, toolUseId: string, content: string): UserMessage
 	return {
 		...base(id),
 		type: 'user',
-		sender: { id: '', name: '' },
 		content: [{ type: 'tool_result', toolUseId, content, isError: false }],
 		synthetic: true,
 	};

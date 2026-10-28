@@ -2,13 +2,13 @@
  * Which identity a git command runs as.
  *
  * ── The chain ──
- *   binding (project, user)  →  the user's default  →  nothing
+ *   binding (project)  →  the default identity  →  nothing
  * "Nothing" is a real answer, not a failure: Clopen then runs git exactly as it
  * did before this feature existed, deferring to `.git/config` and the machine.
  * That is what keeps the feature opt-in for people who already have git set up.
  *
  * ── Why the credential can come from a different identity ──
- * Attribution is a property of the person; a credential is a property of the
+ * Attribution is a property of the author; a credential is a property of the
  * host. A fork workflow has `origin` on a personal account and `upstream` on a
  * work one, and the commits belong to the same human either way. So the
  * project's identity always decides `user.name`/`user.email`, while the
@@ -28,7 +28,7 @@ import type { GitEnvIdentity, HelperCommand } from './env';
 import { identityKeyPath } from './keys';
 
 /** Where the identity came from, for the "committing as…" line in the UI. */
-export type IdentitySource = 'project' | 'user-default' | 'none';
+export type IdentitySource = 'project' | 'default' | 'none';
 
 export interface IdentityResolution {
 	row: GitIdentityRow | null;
@@ -36,22 +36,22 @@ export interface IdentityResolution {
 }
 
 /**
- * The identity for a project, for one user.
+ * The identity for a project.
  *
- * A binding pointing at a deleted identity resolves to the user's default
- * rather than to nothing — `ON DELETE CASCADE` removes such bindings, so this
+ * A binding pointing at a deleted identity resolves to the default rather than
+ * to nothing — `ON DELETE CASCADE` removes such bindings, so this
  * only guards against a row that outlived its target.
  */
-export function resolveIdentity(projectId: string, userId: string): IdentityResolution {
-	const binding = gitIdentityBindingQueries.get(projectId, userId);
+export function resolveIdentity(projectId: string): IdentityResolution {
+	const binding = gitIdentityBindingQueries.get(projectId);
 	if (binding) {
 		const row = gitIdentityQueries.getById(binding.identity_id);
-		if (row && row.owner_user_id === userId) return { row, source: 'project' };
+		if (row) return { row, source: 'project' };
 		debug.warn('git', `Identity binding for project ${projectId} points at a missing identity`);
 	}
 
-	const fallback = gitIdentityQueries.getDefaultForUser(userId);
-	return fallback ? { row: fallback, source: 'user-default' } : { row: null, source: 'none' };
+	const fallback = gitIdentityQueries.getDefault();
+	return fallback ? { row: fallback, source: 'default' } : { row: null, source: 'none' };
 }
 
 /** True when this identity can authenticate to `host`. */
@@ -64,7 +64,7 @@ function claimsHost(row: GitIdentityRow, host: string): boolean {
  * The identity whose credential should answer for `host`.
  *
  * Prefers the one already chosen for the project, so the common case never
- * looks past it. Otherwise the user's other identities are searched, and a
+ * looks past it. Otherwise the other identities are searched, and a
  * single match wins. AMBIGUITY IS RESOLVED AS "NO CREDENTIAL": if two
  * identities claim the same host, picking one arbitrarily would authenticate
  * as an account the user did not choose, and a push that fails asking for a
@@ -72,7 +72,6 @@ function claimsHost(row: GitIdentityRow, host: string): boolean {
  * wrong name.
  */
 export function pickCredentialIdentity(
-	userId: string,
 	host: string | null,
 	primary: GitIdentityRow | null
 ): GitIdentityRow | null {
@@ -80,7 +79,7 @@ export function pickCredentialIdentity(
 	if (primary && claimsHost(primary, host)) return primary;
 
 	const candidates = gitIdentityQueries
-		.listByUser(userId)
+		.list()
 		.filter((row) => claimsHost(row, host));
 
 	if (candidates.length === 1) return candidates[0]!;

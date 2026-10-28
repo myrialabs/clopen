@@ -142,12 +142,10 @@ export const sessionQueries = {
 
 	/**
 	 * Update session metadata after a message is saved.
-	 * Increments counts, updates sender, timestamps, and HEAD content snapshot.
+	 * Increments counts, updates timestamps, and HEAD content snapshot.
 	 */
 	updateOnMessage(id: string, opts: {
 		messageType: string;
-		senderId?: string | null;
-		senderName?: string | null;
 		timestamp: string;
 		headTitle?: string | null;
 		headSummary?: string | null;
@@ -165,14 +163,6 @@ export const sessionQueries = {
 			sets.push('user_count = COALESCE(user_count, 0) + 1');
 		}
 
-		if (opts.senderId !== undefined) {
-			sets.push('sender_id = ?');
-			params.push(opts.senderId ?? null);
-		}
-		if (opts.senderName !== undefined) {
-			sets.push('sender_name = ?');
-			params.push(opts.senderName ?? null);
-		}
 
 		if (opts.headTitle !== undefined) {
 			sets.push('head_title = ?');
@@ -312,13 +302,13 @@ export const sessionQueries = {
 	},
 
 	/**
-	 * Search sessions across every project the user has access to.
+	 * Search sessions across every project in the workspace list.
 	 * Two passes, merged: cheap metadata match (title/head_title/head_summary)
 	 * plus an FTS5 index lookup over message content — the latter also returns
 	 * a highlighted snippet (wrapped in ... markers) showing where
 	 * the match occurred. Backs the global Command Palette session search.
 	 */
-	searchGlobal(userId: string, query: string, limit: number = 20): SessionSearchResult[] {
+	searchGlobal(query: string, limit: number = 20): SessionSearchResult[] {
 		const db = getDatabase();
 		const trimmed = query.trim();
 		if (!trimmed) return [];
@@ -329,11 +319,11 @@ export const sessionQueries = {
 		const like = `%${trimmed}%`;
 		const metaRows = db.prepare(`
 			SELECT * FROM chat_sessions cs
-			WHERE cs.project_id IN (SELECT project_id FROM user_projects WHERE user_id = ?)
+			WHERE cs.project_id IN (SELECT project_id FROM workspace_projects)
 			  AND (cs.title LIKE ? OR cs.head_title LIKE ? OR cs.head_summary LIKE ?)
 			ORDER BY COALESCE(cs.last_message_at, cs.started_at) DESC
 			LIMIT ?
-		`).all(userId, like, like, like, limit) as ChatSession[];
+		`).all(like, like, like, limit) as ChatSession[];
 		for (const row of metaRows) {
 			results.set(row.id, row);
 		}
@@ -346,11 +336,11 @@ export const sessionQueries = {
 					SELECT cs.*, snippet(messages_fts, 3, char(1), char(2), '…', 12) AS match_snippet
 					FROM messages_fts fts
 					INNER JOIN chat_sessions cs ON cs.id = fts.session_id
-					WHERE fts.project_id IN (SELECT project_id FROM user_projects WHERE user_id = ?)
+					WHERE fts.project_id IN (SELECT project_id FROM workspace_projects)
 					  AND fts.text MATCH ?
 					ORDER BY rank
 					LIMIT ?
-				`).all(userId, ftsQuery, limit * 2) as (ChatSession & { match_snippet: string })[];
+				`).all(ftsQuery, limit * 2) as (ChatSession & { match_snippet: string })[];
 
 				for (const row of contentRows) {
 					if (results.has(row.id)) continue;
@@ -409,9 +399,9 @@ export const sessionQueries = {
 		db.prepare('DELETE FROM session_relationships WHERE parent_session_id = ? OR child_session_id = ?').run(id, id);
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
 		db.prepare('DELETE FROM messages_fts WHERE session_id = ?').run(id);
-		db.prepare('DELETE FROM user_unread_sessions WHERE session_id = ?').run(id);
-		// Clear current_session_id references in user_projects
-		db.prepare('UPDATE user_projects SET current_session_id = NULL WHERE current_session_id = ?').run(id);
+		db.prepare('DELETE FROM unread_sessions WHERE session_id = ?').run(id);
+		// Clear current_session_id references in workspace_projects
+		db.prepare('UPDATE workspace_projects SET current_session_id = NULL WHERE current_session_id = ?').run(id);
 		db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(id);
 	},
 
@@ -437,9 +427,9 @@ export const sessionQueries = {
 		`).run(projectId, projectId);
 		db.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)').run(projectId);
 		db.prepare('DELETE FROM messages_fts WHERE project_id = ?').run(projectId);
-		db.prepare('DELETE FROM user_unread_sessions WHERE project_id = ?').run(projectId);
-		// Clear current_session_id references in user_projects for this project
-		db.prepare('UPDATE user_projects SET current_session_id = NULL WHERE project_id = ?').run(projectId);
+		db.prepare('DELETE FROM unread_sessions WHERE project_id = ?').run(projectId);
+		// Clear current_session_id references in workspace_projects for this project
+		db.prepare('UPDATE workspace_projects SET current_session_id = NULL WHERE project_id = ?').run(projectId);
 		db.prepare('DELETE FROM chat_sessions WHERE project_id = ?').run(projectId);
 
 		return sessionIds;
@@ -636,51 +626,33 @@ export const sessionQueries = {
 		`).run(newHeadMessageId, sessionId, branchName);
 	},
 
-	// ==================== PER-USER UNREAD SESSION TRACKING ====================
+	// ==================== UNREAD SESSION TRACKING ====================
 
-	/**
-	 * Mark a session as unread for a specific user
-	 */
-	markUnread(userId: string, sessionId: string, projectId: string): void {
+	markUnread(sessionId: string, projectId: string): void {
 		const db = getDatabase();
 		const now = new Date().toISOString();
 		db.prepare(`
-			INSERT OR IGNORE INTO user_unread_sessions (user_id, session_id, project_id, marked_at)
-			VALUES (?, ?, ?, ?)
-		`).run(userId, sessionId, projectId, now);
+			INSERT OR IGNORE INTO unread_sessions (session_id, project_id, marked_at)
+			VALUES (?, ?, ?)
+		`).run(sessionId, projectId, now);
 	},
 
-	/**
-	 * Mark a session as read for a specific user
-	 */
-	markRead(userId: string, sessionId: string): void {
+	markRead(sessionId: string): void {
 		const db = getDatabase();
-		db.prepare(`
-			DELETE FROM user_unread_sessions
-			WHERE user_id = ? AND session_id = ?
-		`).run(userId, sessionId);
+		db.prepare('DELETE FROM unread_sessions WHERE session_id = ?').run(sessionId);
 	},
 
-	/**
-	 * Mark every unread session in a project as read for a specific user
-	 */
-	markAllRead(userId: string, projectId: string): void {
+	/** Mark every unread session in a project as read. */
+	markAllRead(projectId: string): void {
 		const db = getDatabase();
-		db.prepare(`
-			DELETE FROM user_unread_sessions
-			WHERE user_id = ? AND project_id = ?
-		`).run(userId, projectId);
+		db.prepare('DELETE FROM unread_sessions WHERE project_id = ?').run(projectId);
 	},
 
-	/**
-	 * Get all unread session IDs for a user within a project
-	 * Returns array of { sessionId, projectId }
-	 */
-	getUnreadSessions(userId: string, projectId: string): { session_id: string; project_id: string }[] {
+	/** Unread sessions within a project. */
+	getUnreadSessions(projectId: string): { session_id: string; project_id: string }[] {
 		const db = getDatabase();
 		return db.prepare(`
-			SELECT session_id, project_id FROM user_unread_sessions
-			WHERE user_id = ? AND project_id = ?
-		`).all(userId, projectId) as { session_id: string; project_id: string }[];
+			SELECT session_id, project_id FROM unread_sessions WHERE project_id = ?
+		`).all(projectId) as { session_id: string; project_id: string }[];
 	}
 };

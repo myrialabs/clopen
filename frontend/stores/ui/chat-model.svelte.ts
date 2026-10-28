@@ -109,7 +109,7 @@ type SelectionFields = Pick<ChatSession, 'engine' | 'provider' | 'model_id' | 'm
  * Key of the selection the picker should be initialised from.
  *
  * `sessionState.currentSession` is replaced wholesale all the time (fresh
- * fetch on switch, list refresh, collaborator mirrors), so the init effect
+ * fetch on switch, list refresh, mirrors from other devices), so the init effect
  * must not run on object identity — that reset account/profile/reasoning on
  * every replacement. It runs when this key changes instead:
  * - session with a persisted engine/model → id + every persisted field, so a

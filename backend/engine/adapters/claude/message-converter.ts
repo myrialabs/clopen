@@ -262,7 +262,6 @@ export function convertUserMessage(msg: SDKUserMessage): UserMessage {
 		sessionId: msg.session_id || null,
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: { type: 'claude-code', provider: 'anthropic', model: { id: '', name: '' }, account: { id: 0, name: '' } },
-		sender: { id: '', name: '' },
 		content,
 		synthetic: true, // SDK-generated tool_result messages
 	};

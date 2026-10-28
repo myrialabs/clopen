@@ -15,7 +15,6 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitIdentityService, describeIdentity } from '$backend/git/identity';
 import { requireProjectWorkspace } from '../access';
-import { ws } from '$backend/utils/ws';
 import { gitService } from '$backend/git/git-service';
 import { debug } from '$shared/utils/logger';
 import type { GitIdentityAuthMethod } from '$shared/types/git-identity';
@@ -71,26 +70,19 @@ const INPUT = t.Object({
 	isDefault: t.Optional(t.Boolean())
 });
 
-/** The owner of this connection. Throws when unauthenticated. */
-function requireUserId(conn: Parameters<typeof ws.getUserId>[0]): string {
-	const userId = ws.getUserId(conn);
-	if (!userId) throw new Error('Authentication required');
-	return userId;
-}
-
 export const gitIdentityHandler = createRouter()
 	.http('git:identities', {
 		data: t.Object({}),
 		response: t.Object({ identities: t.Array(IDENTITY) })
-	}, async ({ conn }) => {
-		return { identities: await gitIdentityService.list(requireUserId(conn)) };
+	}, async () => {
+		return { identities: await gitIdentityService.list() };
 	})
 
 	.http('git:identity-create', {
 		data: INPUT,
 		response: t.Object({ identity: IDENTITY })
-	}, async ({ data, conn }) => {
-		const identity = await gitIdentityService.create(requireUserId(conn), {
+	}, async ({ data }) => {
+		const identity = await gitIdentityService.create({
 			...data,
 			authMethod: data.authMethod as GitIdentityAuthMethod
 		});
@@ -100,9 +92,9 @@ export const gitIdentityHandler = createRouter()
 	.http('git:identity-update', {
 		data: t.Intersect([INPUT, t.Object({ id: t.String() })]),
 		response: t.Object({ identity: IDENTITY })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const { id, ...input } = data;
-		const identity = await gitIdentityService.update(requireUserId(conn), id, {
+		const identity = await gitIdentityService.update(id, {
 			...input,
 			authMethod: input.authMethod as GitIdentityAuthMethod
 		});
@@ -112,16 +104,16 @@ export const gitIdentityHandler = createRouter()
 	.http('git:identity-delete', {
 		data: t.Object({ id: t.String() }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		await gitIdentityService.remove(requireUserId(conn), data.id);
+	}, async ({ data }) => {
+		await gitIdentityService.remove(data.id);
 		return { ok: true };
 	})
 
 	.http('git:identity-set-default', {
 		data: t.Object({ id: t.String() }),
 		response: t.Object({ identity: IDENTITY })
-	}, async ({ data, conn }) => {
-		return { identity: await gitIdentityService.setDefault(requireUserId(conn), data.id) };
+	}, async ({ data }) => {
+		return { identity: await gitIdentityService.setDefault(data.id) };
 	})
 
 	/**
@@ -133,16 +125,15 @@ export const gitIdentityHandler = createRouter()
 	.http('git:identity-generate-key', {
 		data: t.Object({ id: t.String() }),
 		response: t.Object({ publicKey: t.String(), fingerprint: t.String() })
-	}, async ({ data, conn }) => {
-		return await gitIdentityService.generateKey(requireUserId(conn), data.id);
+	}, async ({ data }) => {
+		return await gitIdentityService.generateKey(data.id);
 	})
 
 	/** How many projects would lose their binding if this identity went away. */
 	.http('git:identity-usage', {
 		data: t.Object({ id: t.String() }),
 		response: t.Object({ projectCount: t.Number() })
-	}, async ({ data, conn }) => {
-		requireUserId(conn);
+	}, async ({ data }) => {
 		return { projectCount: gitIdentityService.bindingCount(data.id) };
 	})
 
@@ -156,7 +147,7 @@ export const gitIdentityHandler = createRouter()
 	}, async ({ data, conn }) => {
 		// Access is the project's call, exactly as for every other git operation.
 		requireProjectWorkspace(conn, data.projectId);
-		await gitIdentityService.bind(requireUserId(conn), data.projectId, data.identityId);
+		await gitIdentityService.bind(data.projectId, data.identityId);
 		return { ok: true };
 	})
 
@@ -164,7 +155,7 @@ export const gitIdentityHandler = createRouter()
 	 * Who the next commit in this project will be attributed to.
 	 *
 	 * Drives the line above the commit box. `source` distinguishes an identity
-	 * chosen for this project from one inherited as the user's default, which is
+	 * chosen for this project from one inherited as the default, which is
 	 * the difference between "this is right" and "check this before you push".
 	 */
 	.http('git:identity-resolved', {
@@ -175,12 +166,11 @@ export const gitIdentityHandler = createRouter()
 		}),
 		response: t.Object({
 			identity: t.Union([IDENTITY, t.Null()]),
-			source: t.Union([t.Literal('project'), t.Literal('user-default'), t.Literal('none')]),
+			source: t.Union([t.Literal('project'), t.Literal('default'), t.Literal('none')]),
 			credentialIdentity: t.Union([IDENTITY, t.Null()])
 		})
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const userId = requireUserId(conn);
 
 		// The remote URL decides which identity's credential answers, so it is
 		// resolved here too — a fork whose origin and upstream sit on different
@@ -196,5 +186,5 @@ export const gitIdentityHandler = createRouter()
 			debug.log('git', 'No remotes to resolve an identity credential against:', error);
 		}
 
-		return describeIdentity(data.projectId, userId, remoteUrl);
+		return describeIdentity(data.projectId, remoteUrl);
 	});

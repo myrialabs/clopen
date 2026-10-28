@@ -17,12 +17,11 @@
 
 	interface Props {
 		entry: ContainerEntry;
-		canManage: boolean;
 		onClose: () => void;
 		onAction: (entry: ContainerEntry, action: ContainerAction) => void;
 	}
 
-	const { entry, canManage, onClose, onAction }: Props = $props();
+	const { entry, onClose, onAction }: Props = $props();
 
 	/** Space left above the sheet so the list behind it stays visible. */
 	const SHEET_TOP_GAP = 56;
@@ -68,7 +67,7 @@
 		style="top: {SHEET_TOP_GAP}px"
 		transition:fly|global={{ y: sheetTravel, duration: 280, easing: cubicOut, opacity: 1 }}
 	>
-		<ContainerDetail sheet {entry} {canManage} {onClose} {onAction} />
+		<ContainerDetail sheet {entry} {onClose} {onAction} />
 	</div>
 {:else}
 	<!-- Two elements, one motion: the outer takes the width away from the list
@@ -86,7 +85,7 @@
 			style:width="{PANEL_WIDTH}px"
 			transition:fly|global={{ x: PANEL_WIDTH, duration: 240, easing: cubicOut, opacity: 1 }}
 		>
-			<ContainerDetail {entry} {canManage} {onClose} {onAction} />
+			<ContainerDetail {entry} {onClose} {onAction} />
 		</div>
 	</div>
 {/if}

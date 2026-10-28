@@ -1,8 +1,8 @@
 /**
- * Port manager — stopping a process, admin only.
+ * Port manager — stopping a process.
  *
- * The route is listed in ADMIN_ONLY_ROUTES; this handler re-scans before
- * acting rather than trusting the pid the client sent. A table is up to a
+ * This handler re-scans before acting rather than trusting the pid the client
+ * sent. A table is up to a
  * second old, and a second is long enough for a pid to be recycled onto an
  * unrelated process — signalling that would be indefensible.
  */
@@ -13,7 +13,6 @@ import { LOCAL_PORT_HOST } from '$shared/types/ports';
 import { portMonitor } from '../../ports/monitor';
 import { stopPortHolder } from '../../ports/kill';
 import { sshConnectionQueries } from '../../database/queries';
-import { ws } from '../../utils/ws';
 import { debug } from '$shared/utils/logger';
 
 export const portsKillHandler = createRouter().http(
@@ -26,13 +25,9 @@ export const portsKillHandler = createRouter().http(
 		}),
 		response: t.Any()
 	},
-	async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
+	async ({ data }) => {
 		if (data.hostId !== LOCAL_PORT_HOST) {
-			// The route is admin-only, but the host check still runs on the real
-			// role rather than a hardcoded one — a gate that trusts its caller is
-			// no gate at all.
-			sshConnectionQueries.ensureAccess(data.hostId, userId, ws.getRole(conn) === 'admin');
+			sshConnectionQueries.require(data.hostId);
 		}
 
 		const fresh = await portMonitor.scanOnce(data.hostId);
