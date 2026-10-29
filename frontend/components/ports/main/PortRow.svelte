@@ -14,12 +14,11 @@
 		entry: PortEntry;
 		selected: boolean;
 		killing: boolean;
-		canKill: boolean;
 		onSelect: () => void;
 		onKill: () => void;
 	}
 
-	const { entry, selected, killing, canKill, onSelect, onKill }: Props = $props();
+	const { entry, selected, killing, onSelect, onKill }: Props = $props();
 
 	const icon = $derived<IconName>(
 		entry.origin.kind === 'clopen'
@@ -144,7 +143,7 @@
 		{/if}
 	</button>
 
-	{#if entry.canKill && canKill}
+	{#if entry.canKill}
 		<button
 			type="button"
 			class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent text-slate-400 cursor-pointer transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-wait"

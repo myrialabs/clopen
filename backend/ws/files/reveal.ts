@@ -10,7 +10,7 @@
 import { sep } from 'node:path';
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { requireFilePathAccess } from './path-access';
+import { resolveFilePath } from './path-access';
 
 export const revealHandler = createRouter()
 
@@ -21,8 +21,8 @@ export const revealHandler = createRouter()
 		response: t.Object({
 			ok: t.Boolean()
 		})
-	}, async ({ data, conn }) => {
-		const targetPath = await requireFilePathAccess(conn, data.path);
+	}, async ({ data }) => {
+		const targetPath = await resolveFilePath(data.path);
 
 		if (process.platform === 'darwin') {
 			const proc = Bun.spawn(['open', '-R', targetPath], {

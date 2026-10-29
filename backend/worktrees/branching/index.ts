@@ -51,6 +51,6 @@ export { registerBranchProvider, getBranchProvider, listBranchProviders } from '
 export { worktreeBranchProjector } from './projector';
 export { branchDatabaseNameFor, branchNameFor, isClopenBranchName, isClopenDatabaseName, slugifyForBranch } from './naming';
 export { listBranchSources, resolveEngine, resolveEngineForBranch } from './engine';
-export type { BranchEngine, BranchPrincipal } from './engine';
+export type { BranchEngine } from './engine';
 export { suggestBranchSource } from './suggest';
 export type { BranchProviderAdapter, BranchProviderContext } from './types';

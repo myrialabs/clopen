@@ -2,11 +2,11 @@
  * Projects CRUD Operations
  *
  * HTTP endpoints for project management:
- * - List all projects (per-user)
- * - Create new project (or return an existing project already joined by the user)
+ * - List projects in the workspace
+ * - Create new project (or re-list an existing one at the same path)
  * - Get project by ID
  * - Update project info
- * - Delete project (remove user association, cleanup if orphaned)
+ * - Delete project (remove from the list, or delete it with its chats)
  */
 
 import { t } from 'elysia';
@@ -27,43 +27,39 @@ import { ensureHomeProject } from '../../projects/home';
 import { homeFirst, isHomeProject } from '$shared/utils/home-project';
 
 export const crudHandler = createRouter()
-	// List all projects for the current user
+	// List projects in the workspace
 	.http('projects:list', {
 		data: t.Object({}),
 		response: t.Array(t.Any())
-	}, async ({ conn }) => {
+	}, async () => {
 		await initializeDatabase();
-		const userId = ws.getUserId(conn);
-		// Every user has a Home, listed first — the place a chat with no
-		// project selected lives, and where someone with no projects lands.
-		ensureHomeProject(userId);
-		return homeFirst(projectQueries.getAllForUser(userId));
+		// Home is always there, listed first — the place a chat with no project
+		// selected lives, and where a fresh install lands.
+		ensureHomeProject();
+		return homeFirst(projectQueries.getListed());
 	})
 
-	// Create new project (or return an existing project already joined by the user)
+	// Create new project (or re-list an existing project at the same path)
 	.http('projects:create', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			path: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		await initializeDatabase();
-		const userId = ws.getUserId(conn);
 		const { name, path } = data;
 
-		// Check if project with this path already exists. If so, ensure the
-		// current user is joined to it and return the existing record. This
-		// covers re-adding a project that was previously removed (mode='remove')
-		// which preserves the project row for session restoration.
+		// Check if project with this path already exists. If so, put it back in
+		// the list and return the existing record. This covers re-adding a
+		// project that was previously removed (mode='remove'), which preserves
+		// the project row for session restoration.
 		const existing = projectQueries.getByPath(path);
-		// Someone's Home is theirs alone; adding its folder as a project would
-		// be a back door into another user's chats.
-		if (existing && isHomeProject(existing)) throw new Error('That folder is a Home workspace and cannot be added as a project');
+		// Home is already listed, as Home; a second entry for its folder would
+		// be the same workspace twice.
+		if (existing && isHomeProject(existing)) throw new Error('That folder is the Home workspace and cannot be added as a project');
 		if (existing) {
-			if (!projectQueries.userHasProject(userId, existing.id)) {
-				projectQueries.addUserProject(userId, existing.id);
-			}
+			projectQueries.list(existing.id);
 			return existing;
 		}
 
@@ -75,8 +71,7 @@ export const crudHandler = createRouter()
 			last_opened_at: now
 		});
 
-		// Associate the project with the creating user
-		projectQueries.addUserProject(userId, project.id);
+		projectQueries.list(project.id);
 
 		return project;
 	})
@@ -87,8 +82,8 @@ export const crudHandler = createRouter()
 			id: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireProjectAccess(conn, data.id);
+	}, async ({ data }) => {
+		requireProjectAccess(data.id);
 
 		// Update last_opened_at when getting project
 		projectQueries.updateLastOpened(data.id);
@@ -107,9 +102,8 @@ export const crudHandler = createRouter()
 			id: t.String(),
 			deleted: t.Boolean()
 		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		const target = requireProjectAccess(conn, data.id);
+	}, async ({ data }) => {
+		const target = requireProjectAccess(data.id);
 		if (isHomeProject(target)) throw new Error('Home cannot be removed');
 
 		const mode = data.mode ?? 'remove';
@@ -167,17 +161,13 @@ export const crudHandler = createRouter()
 			}
 		}
 
-		// Remove user's association with the project
-		projectQueries.removeUserProject(userId, data.id);
-
-		// In full mode, delete the project record if no users remain
-		// In remove mode, keep the project record so sessions can be restored
+		// In full mode, delete the project record.
+		// In remove mode, keep the project record so sessions can be restored.
 		if (mode === 'full') {
-			const remainingUsers = projectQueries.getUserCountForProject(data.id);
-			if (remainingUsers === 0) {
-				await runProjectCleanups(data.id);
-				projectQueries.deleteProject(data.id);
-			}
+			await runProjectCleanups(data.id);
+			projectQueries.deleteProject(data.id);
+		} else {
+			projectQueries.unlist(data.id);
 		}
 
 		broadcastPresence().catch((err) => {

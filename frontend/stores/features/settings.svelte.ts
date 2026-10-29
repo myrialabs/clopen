@@ -1,9 +1,9 @@
 /**
  * Settings Store with Svelte 5 Runes
  *
- * Centralized store for user settings with server-side persistence.
- * Per-user settings: stored via user:save-state / user:restore-state
- * System settings: stored via settings:get / settings:update-system (admin-only write)
+ * Centralized store for settings with server-side persistence.
+ * User settings: stored via user:save-state / user:restore-state
+ * System settings: stored via settings:get / settings:update-system
  */
 
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME, DEFAULT_ENGINE } from '$shared/constants/engines';
@@ -73,7 +73,7 @@ const defaultSystemSettings: SystemSettings = {
 // Create and export reactive settings state directly (starts with defaults)
 export const settings = $state<AppSettings>({ ...defaultSettings });
 
-// System-wide settings (admin-configurable, read by all users)
+// System-wide settings, shared by every device
 export const systemSettings = $state<SystemSettings>({ ...defaultSystemSettings });
 
 export function applyFontSize(size: number): void {
@@ -159,7 +159,7 @@ export async function loadSystemSettings(): Promise<void> {
 }
 
 /**
- * Save system settings (admin only).
+ * Save system settings.
  * Returns whether the change was persisted; on failure the local copy is rolled
  * back so the UI never shows a setting the server did not accept.
  */

@@ -39,9 +39,9 @@ export const restoreHandler = createRouter()
 			})),
 			checkpointsToUndo: t.Array(t.String())
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const { messageId, sessionId } = data;
-		requireSessionAccess(conn, sessionId);
+		requireSessionAccess(sessionId);
 
 		const result = await checkSessionRestoreConflicts(sessionId, messageId);
 		debug.log('snapshot', `Conflict check: ${result.conflicts.length} conflicts, ${result.checkpointsToUndo.length} checkpoints to undo`);
@@ -68,8 +68,8 @@ export const restoreHandler = createRouter()
 			filesRestored: t.Optional(t.Number()),
 			filesSkipped: t.Optional(t.Number())
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const { messageId, sessionId, conflictResolutions } = data;
-		requireSessionAccess(conn, sessionId);
+		requireSessionAccess(sessionId);
 		return restoreSessionTo(sessionId, messageId, conflictResolutions);
 	});

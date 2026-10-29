@@ -327,7 +327,6 @@ export function createPiMessageConverter(options: PiConverterOptions): PiMessage
 			sessionId,
 			parent: { messageId: null, sessionId: null, toolUseId: null },
 			engine,
-			sender: { id: '', name: '' },
 			content: [{ type: 'tool_result', toolUseId: toolCallId, content: text, isError }],
 			synthetic: true,
 		};

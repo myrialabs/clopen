@@ -430,7 +430,6 @@ export function createCursorMessageConverter(options: CursorConverterOptions): C
 			sessionId,
 			parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
 			engine,
-			sender: { id: '', name: '' },
 			content: [block],
 			synthetic: true,
 		};

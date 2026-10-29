@@ -15,7 +15,7 @@ import { getOnboardingState, markOnboardingComplete } from './auth-service';
 import { readSystemSettings, writeSystemSettings, SYSTEM_SETTINGS_KEY } from '../settings/system-settings';
 import { getClopenDir } from '../utils/paths';
 import { authQueries, settingsQueries } from '../database/queries';
-import { initializeDatabase, closeDatabase } from '../database';
+import { initializeDatabase, closeDatabase, getDatabase } from '../database';
 
 let testUserId: string;
 let originalSettings: string | null = null;
@@ -32,14 +32,13 @@ beforeAll(async () => {
 		name: 'Onboarding Test User',
 		color: '#000000',
 		avatar: 'OT',
-		role: 'admin',
 		personal_access_token_hash: `hash-${randomUUID()}`,
 		created_at: new Date().toISOString()
 	});
 });
 
 afterAll(() => {
-	authQueries.deleteUser(testUserId);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(testUserId);
 	if (originalSettings === null) {
 		settingsQueries.delete(SYSTEM_SETTINGS_KEY);
 	} else {

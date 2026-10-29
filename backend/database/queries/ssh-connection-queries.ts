@@ -51,11 +51,6 @@ function redactConnectionSecrets(connection: SshConnection): SshConnection {
 	};
 }
 
-function hasConnectionAccess(row: DBSshConnectionRow, userId: string, isAdmin: boolean): boolean {
-	if (isAdmin) return true;
-	return row.owner_user_id === userId;
-}
-
 /**
  * An empty string in a patch means "the form did not re-send this secret",
  * not "clear it" — otherwise editing the name of a key-authenticated host
@@ -87,7 +82,7 @@ function wouldCycle(connectionId: string, jumpConnectionId: string | null): bool
 	return false;
 }
 
-function insertConnection(input: SshConnectionInput, ownerUserId: string | null): SshConnection {
+function insertConnection(input: SshConnectionInput): SshConnection {
 	const db = getDatabase();
 	const id = crypto.randomUUID();
 	const now = new Date().toISOString();
@@ -97,12 +92,12 @@ function insertConnection(input: SshConnectionInput, ownerUserId: string | null)
 			id, name, host, port, username, auth_method,
 			password, private_key, private_key_path, passphrase, agent_socket,
 			jump_connection_id, initial_path, keepalive_seconds, strict_host_key,
-			color, owner_user_id, created_at, updated_at, last_used_at
+			color, created_at, updated_at, last_used_at
 		) VALUES (
 			?, ?, ?, ?, ?, ?,
 			?, ?, ?, ?, ?,
 			?, ?, ?, ?,
-			?, ?, ?, ?, ?
+			?, ?, ?, ?
 		)
 	`).run(
 		id,
@@ -121,7 +116,6 @@ function insertConnection(input: SshConnectionInput, ownerUserId: string | null)
 		input.keepaliveSeconds ?? 30,
 		input.strictHostKey === false ? 0 : 1,
 		input.color || null,
-		ownerUserId,
 		now,
 		now,
 		null
@@ -133,32 +127,25 @@ function insertConnection(input: SshConnectionInput, ownerUserId: string | null)
 }
 
 export const sshConnectionQueries = {
-	listForUser(userId: string, isAdmin: boolean): SshConnection[] {
+	/** Every connection with its secrets removed — what a client is sent. */
+	listRedacted(): SshConnection[] {
 		const db = getDatabase();
-		const rows = (isAdmin
-			? db.prepare(`
-				SELECT * FROM ssh_connections
-				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
-			`).all()
-			: db.prepare(`
-				SELECT * FROM ssh_connections
-				WHERE owner_user_id = ?
-				ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
-			`).all(userId)) as DBSshConnectionRow[];
-
+		const rows = db.prepare(`
+			SELECT * FROM ssh_connections
+			ORDER BY (last_used_at IS NULL), last_used_at DESC, created_at DESC
+		`).all() as DBSshConnectionRow[];
 		return rows.map((row) => redactConnectionSecrets(rowToConnection(openConnectionRow(row))));
 	},
 
-	getForUser(id: string, userId: string, isAdmin: boolean): SshConnection | null {
+	getRedacted(id: string): SshConnection | null {
 		const row = getRowById(id);
-		if (!row || !hasConnectionAccess(row, userId, isAdmin)) return null;
-		return redactConnectionSecrets(rowToConnection(row));
+		return row ? redactConnectionSecrets(rowToConnection(row)) : null;
 	},
 
-	/** Full connection including secrets — server-side callers only. Throws on denial. */
-	ensureAccess(id: string, userId: string, isAdmin: boolean): SshConnection {
+	/** Full connection including secrets — server-side callers only. Throws when missing. */
+	require(id: string): SshConnection {
 		const row = getRowById(id);
-		if (!row || !hasConnectionAccess(row, userId, isAdmin)) {
+		if (!row) {
 			throw new Error('ssh connection not found');
 		}
 		return rowToConnection(row);
@@ -169,11 +156,11 @@ export const sshConnectionQueries = {
 		return row ? rowToConnection(row) : null;
 	},
 
-	createForUser(input: SshConnectionInput, ownerUserId: string): SshConnection {
+	createRedacted(input: SshConnectionInput): SshConnection {
 		if (input.jumpConnectionId && !getRowById(input.jumpConnectionId)) {
 			throw new Error('Jump host not found');
 		}
-		return redactConnectionSecrets(insertConnection(input, ownerUserId));
+		return redactConnectionSecrets(insertConnection(input));
 	},
 
 	update(id: string, patch: Partial<SshConnectionInput>): SshConnection {
@@ -228,24 +215,14 @@ export const sshConnectionQueries = {
 		return rowToConnection(row);
 	},
 
-	updateForUser(
-		id: string,
-		patch: Partial<SshConnectionInput>,
-		userId: string,
-		isAdmin: boolean
-	): SshConnection {
-		this.ensureAccess(id, userId, isAdmin);
+	updateRedacted(id: string, patch: Partial<SshConnectionInput>): SshConnection {
+		this.require(id);
 		return redactConnectionSecrets(this.update(id, patch));
 	},
 
 	delete(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM ssh_connections WHERE id = ?').run(id);
-	},
-
-	deleteForUser(id: string, userId: string, isAdmin: boolean): void {
-		this.ensureAccess(id, userId, isAdmin);
-		this.delete(id);
 	},
 
 	markUsed(id: string): void {

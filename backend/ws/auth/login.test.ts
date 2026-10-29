@@ -11,7 +11,6 @@ import { beforeEach, describe, expect, mock, test } from 'bun:test';
 const mockUser = {
 	id: 'user-123',
 	name: 'Test User',
-	role: 'admin' as const,
 	color: '#FF5733',
 	avatar: 'avatar-url',
 	createdAt: new Date().toISOString()
@@ -31,23 +30,16 @@ const mockLogEvent = mock((entry: any) => {
 });
 
 // Mock auth-service functions
-const mockCreateAdmin = mock((name: string) => ({
+const mockCreateOwner = mock(() => ({
 	user: mockUser,
 	sessionToken: mockSessionToken,
 	personalAccessToken: mockPersonalAccessToken,
 	expiresAt: mockExpiresAt
 }));
 
-const mockCreateOrGetNoAuthAdmin = mock(() => ({
+const mockCreateOrGetNoAuthOwner = mock(() => ({
 	user: mockUser,
 	sessionToken: mockSessionToken,
-	expiresAt: mockExpiresAt
-}));
-
-const mockCreateUserFromInvite = mock((inviteToken: string, name: string) => ({
-	user: mockUser,
-	sessionToken: mockSessionToken,
-	personalAccessToken: mockPersonalAccessToken,
 	expiresAt: mockExpiresAt
 }));
 
@@ -91,17 +83,14 @@ mock.module('$backend/settings/system-settings', () => ({
 }));
 
 mock.module('$backend/auth/auth-service', () => ({
-	createAdmin: mockCreateAdmin,
-	createOrGetNoAuthAdmin: mockCreateOrGetNoAuthAdmin,
-	createUserFromInvite: mockCreateUserFromInvite,
+	createOwner: mockCreateOwner,
+	createOrGetNoAuthOwner: mockCreateOrGetNoAuthOwner,
 	needsSetup: mockNeedsSetup,
 	markOnboardingPending: mockMarkOnboardingPending,
 	loginWithToken: mock(() => ({})),
 	logout: mock(() => {}),
 	logoutAllSessions: mock(() => 0),
-	validateInviteToken: mock(() => ({ valid: true })),
 	regeneratePAT: mock(() => 'new-pat'),
-	updateUserName: mock(() => mockUser)
 }));
 
 mock.module('$backend/utils/ws', () => ({
@@ -136,9 +125,8 @@ describe('Session creation audit logging', () => {
 		// Clear all mock call history
 		logEventCalls = [];
 		mockLogEvent.mockClear();
-		mockCreateAdmin.mockClear();
-		mockCreateOrGetNoAuthAdmin.mockClear();
-		mockCreateUserFromInvite.mockClear();
+		mockCreateOwner.mockClear();
+		mockCreateOrGetNoAuthOwner.mockClear();
 		mockSetAuth.mockClear();
 		mockGetRemoteAddress.mockClear();
 		mockEmitGlobal.mockClear();
@@ -152,12 +140,12 @@ describe('Session creation audit logging', () => {
 		// Call the handler
 		const handler = (loginHandler as any).httpRoutes.get('auth:setup');
 		await handler.handler({
-			data: { name: 'Admin User' },
+			data: {},
 			conn: mockConnection
 		});
 
-		// Verify createAdmin was called
-		expect(mockCreateAdmin).toHaveBeenCalledWith('Admin User', expect.anything());
+		// Verify createOwner was called
+		expect(mockCreateOwner).toHaveBeenCalledWith(expect.anything());
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);
@@ -167,7 +155,6 @@ describe('Session creation audit logging', () => {
 			eventType: 'auth:setup',
 			ipAddress: mockIpAddress
 		});
-		expect(logEventCalls[0].eventDetails).toContain('Test User');
 
 		// Verify setAuth was called
 		expect(mockSetAuth).toHaveBeenCalled();
@@ -181,8 +168,8 @@ describe('Session creation audit logging', () => {
 			conn: mockConnection
 		});
 
-		// Verify createOrGetNoAuthAdmin was called
-		expect(mockCreateOrGetNoAuthAdmin).toHaveBeenCalled();
+		// Verify createOrGetNoAuthOwner was called
+		expect(mockCreateOrGetNoAuthOwner).toHaveBeenCalled();
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);
@@ -205,8 +192,8 @@ describe('Session creation audit logging', () => {
 			conn: mockConnection
 		});
 
-		// Verify createOrGetNoAuthAdmin was called
-		expect(mockCreateOrGetNoAuthAdmin).toHaveBeenCalled();
+		// Verify createOrGetNoAuthOwner was called
+		expect(mockCreateOrGetNoAuthOwner).toHaveBeenCalled();
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);
@@ -221,39 +208,6 @@ describe('Session creation audit logging', () => {
 		expect(mockSetAuth).toHaveBeenCalled();
 	});
 
-	test('logs auth:accept-invite event with IP address', async () => {
-		// Call the handler
-		const handler = (loginHandler as any).httpRoutes.get('auth:accept-invite');
-		await handler.handler({
-			data: {
-				inviteToken: 'invite-token-123',
-				name: 'New User'
-			},
-			conn: mockConnection
-		});
-
-		// Verify createUserFromInvite was called
-		expect(mockCreateUserFromInvite).toHaveBeenCalledWith('invite-token-123', 'New User', expect.anything());
-
-		// Verify logEvent was called with correct parameters
-		expect(mockLogEvent).toHaveBeenCalledTimes(1);
-		expect(logEventCalls[0]).toMatchObject({
-			userId: mockUser.id,
-			actorUserId: mockUser.id,
-			eventType: 'auth:accept-invite',
-			ipAddress: mockIpAddress
-		});
-
-		// Verify emit.global was called for users-changed event
-		expect(mockEmitGlobal).toHaveBeenCalledWith('auth:users-changed', {
-			type: 'added',
-			userId: mockUser.id
-		});
-
-		// Verify setAuth was called
-		expect(mockSetAuth).toHaveBeenCalled();
-	});
-
 	test('auth flow ignores audit log failure result', async () => {
 		// logEvent signals a failed write with a falsy return (it never throws —
 		// the insert is wrapped internally). The handler must ignore that result.
@@ -262,7 +216,7 @@ describe('Session creation audit logging', () => {
 		// Call the auth:setup handler
 		const handler = (loginHandler as any).httpRoutes.get('auth:setup');
 		const result = await handler.handler({
-			data: { name: 'Admin User' },
+			data: {},
 			conn: mockConnection
 		});
 

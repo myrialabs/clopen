@@ -1,8 +1,7 @@
 /**
  * Port manager WebSocket router.
  *
- * Reading the table is open to any signed-in user; `ports:kill` is registered
- * in ADMIN_ONLY_ROUTES and gated there.
+ * Reading the table, and stopping a process with `ports:kill`.
  */
 
 import { t } from 'elysia';

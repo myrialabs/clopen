@@ -2,20 +2,20 @@
  * Notes Router
  *
  * Notes live in collections, and a collection carries the scope: `project`
- * (members of that project) or `global` (every signed-in user). Permissions are
+ * (inside one project) or `global` (shown in every project). Access is
  * resolved through the collection on every route — a note id is never treated
  * as a capability on its own.
  *
- * Writes broadcast `notes:changed` to whoever can see the collection, the same
- * way worktrees do: a note another member just created is invisible until the
- * next reload without it. The event carries ids only — a note holds up to
+ * Writes broadcast `notes:changed` to every device showing the collection, the
+ * same way worktrees do: a note just created on another device is invisible
+ * until the next reload without it. The event carries ids only — a note holds up to
  * 200 KB, so fanning the list out on every autosave would put megabytes on the
  * socket per keystroke of a long note.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import type { WSConnection } from '$shared/utils/ws-server';
+
 import type { NoteCollection } from '$shared/types/database/schema';
 import { ws as wsServer } from '../../utils/ws';
 import { requireProjectAccess } from '../access';
@@ -61,45 +61,39 @@ const noteSchema = t.Object({
 	)
 });
 
-/** Resolve a collection and refuse the call unless this connection may see it. */
-function requireCollection(conn: WSConnection, collectionId: string): NoteCollection {
+/** Resolve a collection and refuse the call unless it can be reached. */
+function requireCollection(collectionId: string): NoteCollection {
 	const collection = noteCollectionQueries.getById(collectionId);
-	// Same answer for "does not exist" and "not yours", so the id space cannot be
-	// probed for which collections are real.
 	if (!collection) throw new Error('Access denied');
-	if (!canAccessCollection(wsServer.getUserId(conn), collection)) {
+	if (!canAccessCollection(collection)) {
 		throw new Error('Access denied');
 	}
 	return collection;
 }
 
 /** Resolve the collection a note belongs to, subject to the same check. */
-function requireNoteCollection(conn: WSConnection, noteId: string): NoteCollection {
+function requireNoteCollection(noteId: string): NoteCollection {
 	const collection = noteCollectionQueries.getForNote(noteId);
 	if (!collection) throw new Error('Access denied');
-	if (!canAccessCollection(wsServer.getUserId(conn), collection)) {
+	if (!canAccessCollection(collection)) {
 		throw new Error('Access denied');
 	}
 	return collection;
 }
 
-/** Check the caller may write into `scope` before anything is created there. */
-function requireScope(conn: WSConnection, scope: 'project' | 'global', projectId: string | null): void {
+/** Check `scope` can be written into before anything is created there. */
+function requireScope(scope: 'project' | 'global', projectId: string | null): void {
 	if (scope === 'project') {
 		if (!projectId) throw new Error('projectId is required for the project scope');
-		requireProjectAccess(conn, projectId);
-		return;
+		requireProjectAccess(projectId);
 	}
-	// Global is instance-wide; the only requirement is a signed-in connection,
-	// which getUserId asserts.
-	wsServer.getUserId(conn);
 }
 
 /**
- * Tell everyone who can see this collection that its contents moved.
+ * Tell every device showing this collection that its contents moved.
  *
  * A project collection reaches the project room; a global one reaches every
- * connection, because that is exactly the set of people allowed to read it.
+ * connection.
  */
 function broadcast(collection: NoteCollection): void {
 	const payload = {
@@ -126,9 +120,9 @@ export const notesRouter = createRouter()
 			collections: t.Array(collectionSchema),
 			notes: t.Array(noteSchema)
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const projectId = data.projectId ?? null;
-		requireScope(conn, data.scope, projectId);
+		requireScope(data.scope, projectId);
 		const collections = noteCollectionQueries.listByScope(data.scope, projectId);
 		return {
 			collections,
@@ -145,7 +139,7 @@ export const notesRouter = createRouter()
 		response: t.Object({ collection: collectionSchema })
 	}, async ({ data, conn }) => {
 		const projectId = data.scope === 'project' ? (data.projectId ?? null) : null;
-		requireScope(conn, data.scope, projectId);
+		requireScope(data.scope, projectId);
 		const collection = noteCollectionQueries.create({
 			name: data.name,
 			scope: data.scope,
@@ -159,8 +153,8 @@ export const notesRouter = createRouter()
 	.http('notes:rename-collection', {
 		data: t.Object({ id: t.String({ minLength: 1 }), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ collection: t.Union([collectionSchema, t.Null()]) })
-	}, async ({ data, conn }) => {
-		const collection = requireCollection(conn, data.id);
+	}, async ({ data }) => {
+		const collection = requireCollection(data.id);
 		const renamed = noteCollectionQueries.rename(collection.id, data.name);
 		if (renamed) broadcast(renamed);
 		return { collection: renamed };
@@ -169,8 +163,8 @@ export const notesRouter = createRouter()
 	.http('notes:delete-collection', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const collection = requireCollection(conn, data.id);
+	}, async ({ data }) => {
+		const collection = requireCollection(data.id);
 		// Notes and image rows cascade with the collection; the files they point
 		// at do not, so the whole collection directory goes with them.
 		noteCollectionQueries.delete(collection.id);
@@ -184,8 +178,8 @@ export const notesRouter = createRouter()
 	.http('notes:get', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ note: t.Union([noteSchema, t.Null()]) })
-	}, async ({ data, conn }) => {
-		requireNoteCollection(conn, data.id);
+	}, async ({ data }) => {
+		requireNoteCollection(data.id);
 		return { note: noteQueries.getById(data.id) };
 	})
 
@@ -204,11 +198,11 @@ export const notesRouter = createRouter()
 		const userId = wsServer.getUserId(conn);
 		let collection: NoteCollection;
 		if (data.collectionId) {
-			collection = requireCollection(conn, data.collectionId);
+			collection = requireCollection(data.collectionId);
 		} else {
 			const scope = data.scope ?? 'project';
 			const projectId = scope === 'project' ? (data.projectId ?? null) : null;
-			requireScope(conn, scope, projectId);
+			requireScope(scope, projectId);
 			collection = noteCollectionQueries.ensureDefault(scope, projectId, userId);
 		}
 		const note = noteQueries.create({
@@ -229,11 +223,11 @@ export const notesRouter = createRouter()
 			collectionId: t.Optional(t.String())
 		}),
 		response: t.Object({ note: t.Union([noteSchema, t.Null()]) })
-	}, async ({ data, conn }) => {
-		const from = requireNoteCollection(conn, data.id);
+	}, async ({ data }) => {
+		const from = requireNoteCollection(data.id);
 		// Moving a note is only allowed between collections the caller can already
 		// see, otherwise a move would be a way to read or plant one they cannot.
-		const to = data.collectionId ? requireCollection(conn, data.collectionId) : from;
+		const to = data.collectionId ? requireCollection(data.collectionId) : from;
 		const updated = noteQueries.update(data.id, {
 			title: data.title,
 			content: data.content,
@@ -248,8 +242,8 @@ export const notesRouter = createRouter()
 	.http('notes:delete', {
 		data: t.Object({ id: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const collection = requireNoteCollection(conn, data.id);
+	}, async ({ data }) => {
+		const collection = requireNoteCollection(data.id);
 		noteQueries.delete(data.id);
 		await removeNoteFiles(collection.id, data.id);
 		broadcast(collection);
@@ -259,10 +253,10 @@ export const notesRouter = createRouter()
 	.http('notes:delete-image', {
 		data: t.Object({ imageId: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const img = noteImageQueries.getById(data.imageId);
 		if (!img) return { ok: true };
-		const collection = requireNoteCollection(conn, img.note_id);
+		const collection = requireNoteCollection(img.note_id);
 		const absolute = resolveNoteImagePath(img.storage_path);
 		if (absolute) await unlink(absolute).catch(() => {});
 		noteImageQueries.delete(data.imageId);

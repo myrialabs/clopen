@@ -64,7 +64,7 @@ import { filesUploadRoute } from './http/files-upload';
 import { filesDownloadRoute } from './http/files-download';
 import { filesSharedRoute } from './http/files-shared';
 
-// HTTP routes for per-user notification sounds (upload / serve / delete).
+// HTTP routes for custom notification sounds (upload / serve / delete).
 import { audioRoute } from './http/audio';
 
 // HTTP routes for Web Push subscriptions + test (mobile background notifications).
@@ -102,16 +102,15 @@ import { stopMemoryMaintenance } from './memory/maintenance';
 /** How often (ms) the auth gate re-confirms a connection's session against the DB. */
 const SESSION_REVALIDATE_MS = 15_000;
 
-// Register auth gate on WebSocket router — blocks unauthenticated/unauthorized access
+// Register auth gate on WebSocket router — blocks unauthenticated access
 wsRouter.setAuthMiddleware(async (conn, action) => {
 	const isAuth = wsServer.isAuthenticated(conn);
-	const role = wsServer.getRole(conn);
-	const result = checkRouteAccess(action, isAuth, role);
+	const result = checkRouteAccess(action, isAuth);
 	if (!result.allowed) return result;
 
 	// Defense-in-depth: an authenticated connection trusts the in-memory auth set
 	// at login. If its session was revoked/expired/deleted afterwards (sign-out
-	// from another device, admin removal, expiry), the live socket would otherwise
+	// from another device, expiry), the live socket would otherwise
 	// keep full access until it reconnects. Periodically re-confirm the session
 	// still exists in the DB and kick the connection the moment it doesn't.
 	// A virtual connection has no session token: its identity is vouched for by
@@ -198,7 +197,7 @@ const app = new Elysia()
 	})
 
 	// Per-project proxy for servers a repository declares in `.agents/mcp.json`.
-	// Only served while an admin has approved the file's current content — see
+	// Only served while the file's current content has been approved — see
 	// backend/mcp/external/project.ts.
 	.all('/mcp/proj/:projectId/:name', async ({ request, params, server }) => {
 		server?.timeout(request, 0);

@@ -30,7 +30,6 @@
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { deploymentsStore } from '$frontend/stores/features/deployments.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { openIntegrationConnect, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import type { DeploymentEnvironmentFilter } from '$shared/types/deployments';
 
@@ -240,29 +239,23 @@
 					Connect an account that deploys this project, and its builds appear here — with the log of a
 					failed one a click away from the chat.
 				</p>
-				{#if authStore.isAdmin}
-					<!--
-						Straight to the Connect dialog for the provider this surface
-						needs, not to a list. Sending someone to Integrations and
-						leaving them to find Add → Vercel is three clicks of hunting
-						for something we already knew they wanted.
-					-->
-					<Button size="sm" onclick={connectVercel}>Connect Vercel</Button>
-					<button
-						type="button"
-						class="text-xs text-slate-500 dark:text-slate-500 bg-transparent border-none cursor-pointer underline underline-offset-2 hover:text-slate-700 dark:hover:text-slate-300"
-						onclick={() => {
-							onClose();
-							openSettingsModal('integrations');
-						}}
-					>
-						Or see every integration
-					</button>
-				{:else}
-					<p class="text-xs text-slate-500 dark:text-slate-500 m-0">
-						Ask an administrator to connect one in Settings → Integrations.
-					</p>
-				{/if}
+				<!--
+					Straight to the Connect dialog for the provider this surface
+					needs, not to a list. Sending someone to Integrations and
+					leaving them to find Add → Vercel is three clicks of hunting
+					for something we already knew they wanted.
+				-->
+				<Button size="sm" onclick={connectVercel}>Connect Vercel</Button>
+				<button
+					type="button"
+					class="text-xs text-slate-500 dark:text-slate-500 bg-transparent border-none cursor-pointer underline underline-offset-2 hover:text-slate-700 dark:hover:text-slate-300"
+					onclick={() => {
+						onClose();
+						openSettingsModal('integrations');
+					}}
+				>
+					Or see every integration
+				</button>
 			</div>
 		{:else if deploymentsStore.needsBinding}
 			<div class="flex flex-col items-center justify-center gap-2 flex-1 px-8 text-center">

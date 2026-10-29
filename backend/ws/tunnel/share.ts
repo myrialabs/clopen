@@ -4,8 +4,6 @@
  * `share:ensure-origin` returns a public origin that Remote Access share links
  * are built against, transparently starting a Cloudflare quick tunnel to
  * Clopen's own port only when the app isn't already reachable on a real domain.
- * Any authenticated user may call it (members add their own devices); invite
- * creation stays admin-gated on its own route.
  */
 
 import { t } from 'elysia';

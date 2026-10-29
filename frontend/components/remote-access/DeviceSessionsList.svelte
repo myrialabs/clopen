@@ -17,19 +17,7 @@
 		userAgent: string | null;
 		ipAddress: string | null;
 		source: string | null;
-		// Present only in 'all' scope (admin, team-wide view).
-		userId?: string;
-		userName?: string;
-		userColor?: string;
-		userRole?: 'admin' | 'member';
 	}
-
-	interface Props {
-		/** 'me' = the current user's own devices; 'all' = every device on the team (admin). */
-		scope?: 'me' | 'all';
-	}
-
-	const { scope = 'me' }: Props = $props();
 
 	let sessions = $state<SessionInfo[]>([]);
 	let loading = $state(true);
@@ -38,9 +26,7 @@
 
 	async function load() {
 		try {
-			sessions = scope === 'all'
-				? await ws.http('auth:list-all-sessions', {})
-				: await ws.http('auth:list-sessions', {});
+			sessions = await ws.http('auth:list-sessions', {});
 		} catch (err) {
 			debug.error('remote-access', 'Failed to load sessions:', err);
 		} finally {
@@ -57,11 +43,7 @@
 		if (!sessionToRevoke) return;
 		const id = sessionToRevoke.id;
 		try {
-			if (scope === 'all') {
-				await ws.http('auth:revoke-any-session', { id });
-			} else {
-				await ws.http('auth:revoke-session', { id });
-			}
+			await ws.http('auth:revoke-session', { id });
 			sessions = sessions.filter((s) => s.id !== id);
 			addNotification({ type: 'success', title: 'Signed out', message: 'Device session revoked' });
 		} catch (err) {
@@ -85,7 +67,7 @@
 
 	onMount(() => {
 		load();
-		// Refresh when devices/shares change elsewhere (a device connects/disconnects, etc.)
+		// Refresh when devices change elsewhere (a device connects/disconnects, etc.)
 		const off = ws.on('remote-access:changed', () => load());
 		return () => off();
 	});
@@ -113,19 +95,10 @@
 				</div>
 				<div class="flex-1 min-w-0">
 					<div class="flex items-center gap-2 flex-wrap">
-						{#if scope === 'all' && session.userName}
-							<span class="text-xs font-semibold text-slate-800 dark:text-slate-200">{session.userName}</span>
-							<span class="text-2xs text-slate-400 dark:text-slate-500">·</span>
-						{/if}
-						<span class="text-xs {scope === 'all' ? 'text-slate-500 dark:text-slate-400' : 'font-semibold text-slate-800 dark:text-slate-200'}">{ua.label}</span>
+						<span class="text-xs font-semibold text-slate-800 dark:text-slate-200">{ua.label}</span>
 						{#if session.current}
 							<span class="text-2xs px-1.5 py-0.5 rounded-full bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400 font-medium">
 								This device
-							</span>
-						{/if}
-						{#if scope === 'all' && session.userRole === 'admin'}
-							<span class="text-2xs px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-900/30 text-violet-600 dark:text-violet-400 font-medium">
-								Admin
 							</span>
 						{/if}
 					</div>

@@ -31,7 +31,7 @@ import {
 	writeClineAccountCredential,
 	type ClineCredential,
 } from '../../../engine/adapters/cline/credential';
-import { requireSetupSessionAccess } from '../access';
+import { requireSetupSession } from '../access';
 import { debug } from '$shared/utils/logger';
 import { hasLoopbackCallbackListener } from '$backend/utils/port-utils';
 
@@ -295,10 +295,10 @@ export const clineAccountsHandler = createRouter()
 
 	.on('engine:cline-account-login-submit', {
 		data: t.Object({ loginId: t.String(), value: t.String() })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		let entry: ClineLoginSession;
 		try {
-			entry = requireSetupSessionAccess(conn, data.loginId, loginSessions);
+			entry = requireSetupSession(data.loginId, loginSessions);
 		} catch {
 			return;
 		}
@@ -309,9 +309,9 @@ export const clineAccountsHandler = createRouter()
 
 	.on('engine:cline-account-login-cancel', {
 		data: t.Object({ loginId: t.String() })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		try {
-			requireSetupSessionAccess(conn, data.loginId, loginSessions);
+			requireSetupSession(data.loginId, loginSessions);
 		} catch {
 			return;
 		}

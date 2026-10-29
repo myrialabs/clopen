@@ -1,10 +1,9 @@
 /**
  * Container manager WebSocket router.
  *
- * Reading the list, the detail and the logs is open to any signed-in user who
- * can already reach the host; `containers:action` is registered in
- * ADMIN_ONLY_ROUTES, and opening a shell is gated inside the PtyKit server's
- * own `authorize`.
+ * Reading the list, the detail and the logs of a host that still exists;
+ * changing containers; and a shell, authorized inside the PtyKit server's own
+ * `authorize`.
  */
 
 import { t } from 'elysia';

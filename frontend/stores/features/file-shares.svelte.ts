@@ -2,14 +2,14 @@
  * File share links store — Svelte 5 Runes
  *
  * Single source of truth for "Share Link…": the live list from the server, the
- * raw URLs this browser minted, and the per-user defaults new links start from.
+ * raw URLs this browser minted, and the defaults new links start from.
  *
  * The URL split matters. The server stores only a token HASH, so a link's URL
- * can never be rebuilt from the database — not by the UI, not by an admin, not
- * by an attacker who reads the table. What the server can hand back is metadata
- * (which file, whose, when it lapses, how often it was opened), which is enough
+ * can never be rebuilt from the database — not by the UI, not by an attacker
+ * who reads the table. What the server can hand back is metadata
+ * (which file, when it lapses, how often it was opened), which is enough
  * to REVOKE a link but not to re-show it. So the raw URL is cached here, keyed
- * by row id and persisted in sessionStorage, exactly as invite URLs are: a link
+ * by row id and persisted in sessionStorage: a link
  * minted on this device stays copyable, one minted elsewhere lists as "created
  * in another session" and is still revocable.
  *
@@ -32,8 +32,6 @@ export interface FileShare {
 	worktreeName: string | null;
 	/** Path within the project/worktree, `/`-separated on every platform. */
 	relativePath: string;
-	createdBy: string;
-	createdByName: string | null;
 	createdAt: string;
 	/** Dies on the first open, rather than staying openable until it lapses. */
 	oneTime: boolean;
@@ -137,8 +135,7 @@ export const fileSharesStore = {
 	shareURL(id: string): string | undefined { return state.urls[id]; },
 
 	/**
-	 * Live links: every user's for an admin, your own otherwise.
-	 * Always fetches fresh from the server — never serves a cached list —
+	 * Live links. Always fetches fresh from the server — never serves a cached list —
 	 * so a link opened from a phone is reflected immediately.
 	 */
 	async load(): Promise<void> {

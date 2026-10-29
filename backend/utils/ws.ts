@@ -72,8 +72,6 @@ interface ConnectionState {
 	cleanups: Set<() => void>;
 	/** Whether this connection has been authenticated */
 	authenticated: boolean;
-	/** User role (admin or member) — set by auth handler */
-	role: 'admin' | 'member' | null;
 	/** Hash of the session token used for this connection */
 	sessionTokenHash: string | null;
 	/** Epoch ms of the last DB session re-validation (throttles the auth-gate check). */
@@ -113,9 +111,6 @@ class WSServer {
 	 * not "online", must not show in presence, and must not receive broadcasts.
 	 */
 	private virtualIds = new Set<string>();
-
-	/** Project membership: Project ID → Set<userId> (persists across project switches) */
-	private projectMembers = new Map<string, Set<string>>();
 
 	/** Metrics tracking */
 	private metrics: WSMetrics = {
@@ -160,7 +155,7 @@ class WSServer {
 		const id = crypto.randomUUID();
 		this.rawToId.set(raw, id);
 		this.connections.set(id, conn);
-		this.connectionState.set(id, { userId: null, projectId: null, worktreeId: null, chatSessionIds: new Set(), cleanups: new Set(), authenticated: false, role: null, sessionTokenHash: null, lastSessionCheck: 0 });
+		this.connectionState.set(id, { userId: null, projectId: null, worktreeId: null, chatSessionIds: new Set(), cleanups: new Set(), authenticated: false, sessionTokenHash: null, lastSessionCheck: 0 });
 
 		this.metrics.totalConnections = this.connections.size;
 		debug.log('websocket', `Connection registered: ${id} (total: ${this.connections.size})`);
@@ -289,7 +284,7 @@ class WSServer {
 
 	/**
 	 * Set user ID for a connection.
-	 * Tracks which user owns this connection (for per-user events).
+	 * Tracks which account this connection signed in as (for emit.user / emit.signedIn).
 	 */
 	setUser(conn: WSConnection, userId: string | null): void {
 		const wsId = this.ensureRegistered(conn);
@@ -320,16 +315,6 @@ class WSServer {
 				this.userConnections.set(userId, new Map());
 			}
 			this.userConnections.get(userId)!.set(wsId, conn);
-
-			// If connection already has a project, track membership
-			// (handles case where setUser is called after setProject)
-			const currentProjectId = state?.projectId;
-			if (currentProjectId) {
-				if (!this.projectMembers.has(currentProjectId)) {
-					this.projectMembers.set(currentProjectId, new Set());
-				}
-				this.projectMembers.get(currentProjectId)!.add(userId);
-			}
 		}
 
 		this.metrics.activeUsers = this.userConnections.size;
@@ -389,16 +374,6 @@ class WSServer {
 				this.projectRooms.set(projectId, new Map());
 			}
 			this.projectRooms.get(projectId)!.set(wsId, conn);
-
-			// Track project membership (persists across project switches)
-			// Used by emit.projectMembers() for cross-project notifications
-			const userId = state?.userId;
-			if (userId) {
-				if (!this.projectMembers.has(projectId)) {
-					this.projectMembers.set(projectId, new Set());
-				}
-				this.projectMembers.get(projectId)!.add(userId);
-			}
 		}
 
 		this.metrics.activeProjects = this.projectRooms.size;
@@ -506,56 +481,6 @@ class WSServer {
 	}
 
 	/**
-	 * Get user info for all connections in a chat session room.
-	 * Returns deduplicated list of { userId, userName } for users currently viewing the session.
-	 */
-	getChatSessionUsers(chatSessionId: string): { userId: string; userName: string }[] {
-		const room = this.chatSessionRooms.get(chatSessionId);
-		if (!room || room.size === 0) return [];
-
-		const seen = new Map<string, string>(); // userId → userName
-		for (const [wsId] of room) {
-			const state = this.connectionState.get(wsId);
-			if (state?.userId) {
-				// Resolve userName from user connections or fallback
-				if (!seen.has(state.userId)) {
-					seen.set(state.userId, state.userId); // default to userId
-				}
-			}
-		}
-		return Array.from(seen.entries()).map(([userId, userName]) => ({ userId, userName }));
-	}
-
-	/**
-	 * Get all chat session IDs that have active connections for a given project.
-	 * Used for per-session presence data.
-	 */
-	getProjectChatSessions(projectId: string): Map<string, { userId: string }[]> {
-		const result = new Map<string, { userId: string }[]>();
-
-		// Iterate through all chat session rooms
-		for (const [chatSessionId, room] of this.chatSessionRooms) {
-			const users: { userId: string }[] = [];
-			const seenUsers = new Set<string>();
-
-			for (const [wsId] of room) {
-				const state = this.connectionState.get(wsId);
-				// Only include connections that belong to this project
-				if (state?.projectId === projectId && state?.userId && !seenUsers.has(state.userId)) {
-					seenUsers.add(state.userId);
-					users.push({ userId: state.userId });
-				}
-			}
-
-			if (users.length > 0) {
-				result.set(chatSessionId, users);
-			}
-		}
-
-		return result;
-	}
-
-	/**
 	 * Get raw connection state for a connection.
 	 * Used internally by ws:set-context to read back current values.
 	 */
@@ -576,30 +501,28 @@ class WSServer {
 
 	/**
 	 * Set authentication state for a connection.
-	 * Called by auth handlers after successful login/setup/invite.
+	 * Called by auth handlers after successful login/setup/device claim.
 	 */
-	setAuth(conn: WSConnection, userId: string, role: 'admin' | 'member', sessionTokenHash: string): void {
+	setAuth(conn: WSConnection, userId: string, sessionTokenHash: string): void {
 		const wsId = this.ensureRegistered(conn);
 		const state = this.connectionState.get(wsId);
 		if (state) {
 			state.authenticated = true;
-			state.role = role;
 			state.sessionTokenHash = sessionTokenHash;
 		}
 		// Also set userId via existing method (handles room management)
 		this.setUser(conn, userId);
-		debug.log('websocket', `Connection ${wsId} authenticated: userId=${userId}, role=${role}`);
+		debug.log('websocket', `Connection ${wsId} authenticated: userId=${userId}`);
 		// A device just came online — refresh Remote Access counts/lists everywhere.
 		this.notifyPresenceChanged();
 	}
 
 	/**
-	 * Open a virtual connection acting as `userId` with `role`, viewing
-	 * `projectId`. Authenticated by construction — the caller vouches for the
+	 * Open a virtual connection acting as `userId`, viewing `projectId`. Authenticated by construction — the caller vouches for the
 	 * identity (a chat app proved it by pairing) — and never registered in any
 	 * room. Always pair with `closeVirtualConnection()`.
 	 */
-	openVirtualConnection(identity: { userId: string; role: 'admin' | 'member'; projectId?: string | null }): WSConnection {
+	openVirtualConnection(identity: { userId: string; projectId?: string | null }): WSConnection {
 		const raw = {};
 		const id = `virtual-${crypto.randomUUID()}`;
 		const conn = { raw, readyState: 1, send: () => {}, close: () => {} } as unknown as WSConnection;
@@ -612,7 +535,6 @@ class WSServer {
 			chatSessionIds: new Set(),
 			cleanups: new Set(),
 			authenticated: true,
-			role: identity.role,
 			sessionTokenHash: null,
 			lastSessionCheck: Date.now()
 		});
@@ -638,15 +560,6 @@ class WSServer {
 	isVirtual(conn: WSConnection): boolean {
 		const id = this.resolveId(conn);
 		return Boolean(id && this.virtualIds.has(id));
-	}
-
-	/**
-	 * Get the role for a connection.
-	 */
-	getRole(conn: WSConnection): 'admin' | 'member' | null {
-		const id = this.resolveId(conn);
-		if (!id) return null;
-		return this.connectionState.get(id)?.role ?? null;
 	}
 
 	/**
@@ -677,7 +590,6 @@ class WSServer {
 		const state = this.connectionState.get(id);
 		if (state) {
 			state.authenticated = false;
-			state.role = null;
 			state.sessionTokenHash = null;
 		}
 		debug.log('websocket', `Connection ${id} auth cleared`);
@@ -694,59 +606,12 @@ class WSServer {
 		for (const [id, state] of this.connectionState) {
 			if (state.authenticated) {
 				state.authenticated = false;
-				state.role = null;
 				state.sessionTokenHash = null;
 				cleared++;
 			}
 		}
 		if (cleared > 0) {
 			debug.log('websocket', `Cleared auth on ${cleared} active connection(s)`);
-		}
-		return cleared;
-	}
-
-	/**
-	 * Get all active WebSocket connections for a specific user.
-	 * Used for session invalidation when project access changes.
-	 *
-	 * @param userId - The user ID to look up
-	 * @returns Array of active WSConnection objects for the user
-	 */
-	getConnectionsForUser(userId: string): WSConnection[] {
-		const userConns = this.userConnections.get(userId);
-		if (!userConns) return [];
-
-		const result: WSConnection[] = [];
-		for (const wsConn of userConns.values()) {
-			if (wsConn.readyState === 1) { // Only active connections
-				result.push(wsConn);
-			}
-		}
-		return result;
-	}
-
-	/**
-	 * Clear authentication state for a specific set of connections.
-	 * Used for targeted session invalidation (e.g., when project access is revoked).
-	 *
-	 * @param connections - Array of connections to clear
-	 * @returns Number of connections that were cleared
-	 */
-	clearAuthForConnections(connections: WSConnection[]): number {
-		let cleared = 0;
-		for (const conn of connections) {
-			const id = this.resolveId(conn);
-			if (!id) continue;
-			const state = this.connectionState.get(id);
-			if (state && state.authenticated) {
-				state.authenticated = false;
-				state.role = null;
-				state.sessionTokenHash = null;
-				cleared++;
-			}
-		}
-		if (cleared > 0) {
-			debug.log('websocket', `Cleared auth on ${cleared} targeted connection(s)`);
 		}
 		return cleared;
 	}
@@ -829,7 +694,6 @@ class WSServer {
 		const state = this.connectionState.get(id);
 		if (state) {
 			state.authenticated = false;
-			state.role = null;
 			state.sessionTokenHash = null;
 		}
 		this.sendEventToConnection(conn, 'auth:force-logout-user', { reason });
@@ -1033,26 +897,17 @@ class WSServer {
 		},
 
 		/**
-		 * Emit event to all users who have ever joined a project.
-		 * Unlike emit.project() which only reaches connections currently in the room,
-		 * this reaches ALL connections of users who have been associated with the project
-		 * (even if they switched to a different project).
-		 * Used for cross-project notifications (e.g., stream finished).
+		 * Emit event to every signed-in connection, whichever project it is
+		 * viewing. Unlike emit.project() this reaches devices that switched to
+		 * another project, so cross-project notifications (e.g. stream finished)
+		 * still arrive.
 		 */
-		projectMembers: <K extends keyof WSAPI['server']>(
-			projectId: string,
+		signedIn: <K extends keyof WSAPI['server']>(
 			event: K,
 			payload: WSAPI['server'][K]
 		): void => {
 			this.metrics.totalEmits++;
 
-			const memberIds = this.projectMembers.get(projectId);
-			if (!memberIds || memberIds.size === 0) {
-				debug.warn('websocket', `No members for project: ${projectId} for event: ${String(event)}`);
-				return;
-			}
-
-			// Check if payload contains binary data - use binary encoding if so
 			const eventStr = String(event);
 			const hasBinary = isBinaryAction(eventStr, payload);
 			const message = hasBinary
@@ -1062,12 +917,7 @@ class WSServer {
 			let sentCount = 0;
 			let totalConns = 0;
 
-			// Send to all connections of all member users
-			for (const userId of memberIds) {
-				const userConns = this.userConnections.get(userId);
-				if (!userConns || userConns.size === 0) continue;
-
-				// Clean stale connections
+			for (const [userId, userConns] of this.userConnections) {
 				this.cleanStaleFromRoom(userConns);
 				if (userConns.size === 0) {
 					this.userConnections.delete(userId);
@@ -1082,7 +932,7 @@ class WSServer {
 				}
 			}
 
-			debug.log('websocket', `Emitted ${eventStr}${hasBinary ? ' (binary)' : ''} to ${sentCount}/${totalConns} connections of ${memberIds.size} members in project ${projectId}`);
+			debug.log('websocket', `Emitted ${eventStr}${hasBinary ? ' (binary)' : ''} to ${sentCount}/${totalConns} signed-in connections`);
 		},
 
 		/**

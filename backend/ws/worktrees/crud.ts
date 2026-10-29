@@ -181,8 +181,8 @@ export const worktreeCrudHandler = createRouter()
 			worktreeId: t.Union([t.String(), t.Null()])
 		}),
 		response: t.Object({ success: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const session = requireSessionAccess(conn, data.sessionId);
+	}, async ({ data }) => {
+		const session = requireSessionAccess(data.sessionId);
 
 		if (data.worktreeId !== null) {
 			const worktree = worktreeQueries.getById(data.worktreeId);

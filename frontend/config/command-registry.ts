@@ -4,7 +4,6 @@
  */
 
 import type { IconName } from '$shared/types/ui/icons';
-import { authStore } from '$frontend/stores/features/auth.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { createNewChatSession, setCurrentSession } from '$frontend/stores/core/sessions.svelte';
 import { toggleNavigator, resetToDefault } from '$frontend/stores/ui/workspace.svelte';
@@ -61,20 +60,18 @@ function setFontSize(size: number): void {
 	updateSettings({ fontSize: clamped });
 }
 
-/** Actions visible right now — gated by admin role and current project context. */
+/** Actions visible right now — gated by the current project context. */
 export function getCommandActions(): CommandAction[] {
 	const actions: CommandAction[] = [];
 
-	if (authStore.isAdmin) {
-		actions.push({
-			id: 'new-project',
-			label: 'New Project',
-			description: 'Add a project from a folder on disk',
-			icon: 'lucide:folder-plus',
-			keywords: ['add', 'create', 'open', 'folder'],
-			run: openNewProjectDialog
-		});
-	}
+	actions.push({
+		id: 'new-project',
+		label: 'New Project',
+		description: 'Add a project from a folder on disk',
+		icon: 'lucide:folder-plus',
+		keywords: ['add', 'create', 'open', 'folder'],
+		run: openNewProjectDialog
+	});
 
 	if (projectState.currentProject) {
 		actions.push({
@@ -165,7 +162,7 @@ export function getCommandActions(): CommandAction[] {
 		label: 'Remote Access',
 		description: 'Share a link to reach this Clopen',
 		icon: 'lucide:radio',
-		keywords: ['share', 'device', 'invite', 'link'],
+		keywords: ['share', 'device', 'link'],
 		run: openRemoteAccessDialog
 	});
 

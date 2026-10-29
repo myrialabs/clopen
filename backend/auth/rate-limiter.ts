@@ -21,8 +21,6 @@ import { debug } from '$shared/utils/logger';
 /** Routes that should be rate-limited. */
 const RATE_LIMITED_ROUTES = new Set([
 	'auth:login',
-	'auth:accept-invite',
-	'auth:validate-invite',
 	'auth:claim-device-code',
 	'auth:setup'
 ]);

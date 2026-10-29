@@ -3,7 +3,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { join, extname, basename, relative } from 'path';
 import { readdir } from 'fs/promises';
-import { requireWorkspaceRootAccess } from './path-access';
+import { requireWorkspaceRoot } from './path-access';
 import { validateFileSize } from '../../files/file-size-limit';
 
 // Heuristic patterns that indicate potential ReDoS risk:
@@ -405,9 +405,9 @@ export const fileSearchHandler = createRouter()
 			query: t.String()
 		}),
 		response: t.Array(FileSearchResultSchema)
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const { project_path, query } = data;
-		const { root } = requireWorkspaceRootAccess(conn, project_path);
+		const { root } = requireWorkspaceRoot(project_path);
 
 		if (!query || query.trim().length === 0) {
 			return [];
@@ -436,7 +436,7 @@ export const fileSearchHandler = createRouter()
 			})),
 			totalMatches: t.Number()
 		}))
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const {
 			project_path,
 			query,
@@ -446,7 +446,7 @@ export const fileSearchHandler = createRouter()
 			include_pattern,
 			exclude_pattern
 		} = data;
-		const { root } = requireWorkspaceRootAccess(conn, project_path);
+		const { root } = requireWorkspaceRoot(project_path);
 
 		if (!query || query.trim().length === 0) {
 			return [];
@@ -480,7 +480,7 @@ export const fileSearchHandler = createRouter()
 			totalReplacements: t.Number(),
 			totalFiles: t.Number()
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const {
 			project_path,
 			search_query,
@@ -491,7 +491,7 @@ export const fileSearchHandler = createRouter()
 			include_pattern,
 			exclude_pattern
 		} = data;
-		const { root } = requireWorkspaceRootAccess(conn, project_path);
+		const { root } = requireWorkspaceRoot(project_path);
 
 		if (!search_query || search_query.trim().length === 0) {
 			return { results: [], totalReplacements: 0, totalFiles: 0 };

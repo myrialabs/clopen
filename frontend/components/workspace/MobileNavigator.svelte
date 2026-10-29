@@ -6,7 +6,7 @@
 	import { isHomeProject } from '$shared/utils/home-project';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { projectState, removeProject } from '$frontend/stores/core/projects.svelte';
-	import { presenceState, getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
+	import { getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
@@ -24,12 +24,10 @@
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
-	import ProjectUserAvatars from '$frontend/components/common/display/ProjectUserAvatars.svelte';
 	import ProjectInfoModal from '$frontend/components/workspace/ProjectInfoModal.svelte';
 	import ProjectContextMenu, {
 		type ProjectContextMenuItem
 	} from '$frontend/components/workspace/ProjectContextMenu.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 	import {
@@ -91,7 +89,6 @@
 	let contextMenuY = $state(0);
 	let contextMenuArchived = $state(false);
 
-	const canManageProjects = $derived(authStore.isAdmin);
 	// Home is always there and listed on its own, so "no projects" means none besides it.
 	const realProjectCount = $derived(projectState.projects.filter((project) => !isHomeProject(project)).length);
 	const selectionActive = $derived(projectSelectionState.active);
@@ -99,9 +96,7 @@
 
 	const contextMenuPinned = $derived(isProjectPinned(contextMenuProject?.id));
 	// Same menu content as Desktop, reached through the row's ⋮ button (and
-	// long-press where the browser fires `contextmenu`). Pin / Archive /
-	// Restore are per-user view state so every role gets them; only Delete —
-	// which drops the project for everyone — is gated on admin.
+	// long-press where the browser fires `contextmenu`).
 	const contextMenuItems = $derived<ProjectContextMenuItem[]>([
 		...(contextMenuArchived
 			? [{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' } as ProjectContextMenuItem]
@@ -112,9 +107,7 @@
 					{ id: 'archive', label: 'Archive', icon: 'lucide:archive' } as ProjectContextMenuItem
 				]),
 		{ id: 'info', label: 'Details', icon: 'lucide:info' },
-		...(canManageProjects
-			? [{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true } as ProjectContextMenuItem]
-			: [])
+		{ id: 'delete', label: 'Delete', icon: 'lucide:trash-2', danger: true }
 	]);
 
 	function openProjectContextMenu(project: Project, event: MouseEvent, archived = false) {
@@ -156,18 +149,11 @@
 		} else if (action === 'info') {
 			projectInfoProject = project;
 			showProjectInfo = true;
-		} else if (action === 'delete' && canManageProjects) {
+		} else if (action === 'delete') {
 			projectToDelete = project;
 			showDeleteDialog = true;
 		}
 	}
-
-	// Get current project status from shared store
-	const currentProjectStatus = $derived(
-		projectState.currentProject?.id
-			? presenceState.statuses.get(projectState.currentProject.id)
-			: undefined
-	);
 
 	// Filtered projects based on search query (archived excluded from the main list)
 	const filteredProjects = $derived(() => {
@@ -398,9 +384,6 @@
 		<span class="flex-1 text-left overflow-hidden text-ellipsis whitespace-nowrap">
 			{projectState.currentProject?.name ?? 'No Project'}
 		</span>
-		<div class="shrink-0" onclick={(e) => e.stopPropagation()}>
-			<ProjectUserAvatars projectStatus={currentProjectStatus} maxVisible={2} />
-		</div>
 		<Icon name="lucide:chevron-down" class="w-3 h-3 opacity-60 shrink-0" />
 	</button>
 
@@ -460,7 +443,7 @@
 						<Icon name="lucide:list-checks" class="w-4 h-4" />
 					</button>
 				{/if}
-				{#if canManageProjects && !selectionActive}
+				{#if !selectionActive}
 					<button
 						type="button"
 						class="flex items-center justify-center w-8 h-8 bg-violet-500/10 dark:bg-violet-500/15 border border-violet-500/20 rounded-lg text-violet-600 dark:text-violet-400 cursor-pointer transition-all duration-150 hover:bg-violet-500/20"
@@ -585,13 +568,8 @@
 		{#if realProjectCount === 0}
 			<div class="flex flex-col items-center gap-3 py-8 text-slate-600 dark:text-slate-500 text-sm">
 				<Icon name="lucide:folder-x" class="w-12 h-12 text-slate-400 opacity-40" />
-				{#if canManageProjects}
-					<p class="font-medium">No projects yet</p>
-					<p class="text-xs text-slate-500 dark:text-slate-500">Create your first project below</p>
-				{:else}
-					<p class="font-medium">No projects assigned</p>
-					<p class="text-xs text-slate-500 dark:text-slate-500">Ask an admin to invite you to a project.</p>
-				{/if}
+				<p class="font-medium">No projects yet</p>
+				<p class="text-xs text-slate-500 dark:text-slate-500">Create your first project below</p>
 			</div>
 		{:else}
 			<div class="space-y-2">
@@ -629,7 +607,6 @@
 									<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
-									<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
 									<!-- Fixed-size pin slot keeps the layout stable, same as Desktop. -->
 									<span class="flex h-3.5 w-3.5 items-center justify-center shrink-0" aria-hidden="true">
 										{#if isProjectPinned(project.id)}
@@ -684,7 +661,6 @@
 								<Icon name="lucide:pin" class="text-violet-500 w-4 h-4" />
 							{/if}
 						</span>
-						<ProjectUserAvatars projectStatus={presenceState.statuses.get(project.id ?? '')} maxVisible={2} />
 							<!-- One ⋮ for every row action, same as Desktop. A long press
 							     cannot carry these on its own: iOS Safari does not fire
 							     `contextmenu` for a long-pressed div, which would leave

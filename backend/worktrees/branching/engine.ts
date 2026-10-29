@@ -397,30 +397,17 @@ export function resolveEngineForBranch(row: WorktreeBranchRow): BranchEngine | n
 
 /* ------------------------------------------------------------------ sources */
 
-/** Who is asking, so the list only offers what they may actually use. */
-export interface BranchPrincipal {
-	userId: string;
-	isAdmin: boolean;
-}
-
 /**
  * Everywhere a worktree database could come from.
  *
  * Accounts and connections in ONE list, ordered native-first, because the user
  * is choosing which database and not which mechanism. The mechanism is carried
  * on each row as `isNative` and `notice` so the dialog can say what it costs.
- *
- * SCOPED TO THE CALLER, and the two halves scope differently. An integration
- * account belongs to the INSTALL and spends its quota, so it is admin-only —
- * the same rule `db-client:link` follows. A DB Client connection belongs to
- * whoever saved it, so a member sees their own and an admin sees every one;
- * anything else would let a member copy a database from a credential they
- * cannot otherwise reach.
  */
-export function listBranchSources(principal: BranchPrincipal): BranchSourceOption[] {
+export function listBranchSources(): BranchSourceOption[] {
 	const sources: BranchSourceOption[] = [];
 
-	for (const adapter of principal.isAdmin ? listBranchProviders() : []) {
+	for (const adapter of listBranchProviders()) {
 		for (const account of integrationAccountQueries.getByProvider(adapter.provider)) {
 			if (account.is_enabled !== 1) continue;
 			if (!integrationAccountQueries.capabilitiesOf(account).includes('worktree-branching')) continue;
@@ -438,7 +425,7 @@ export function listBranchSources(principal: BranchPrincipal): BranchSourceOptio
 		}
 	}
 
-	for (const connection of dbClientConnectionQueries.listForUser(principal.userId, principal.isAdmin)) {
+	for (const connection of dbClientConnectionQueries.list()) {
 		if (!canBranchFrom(connection)) continue;
 		// A connection that a branch already projected is not a parent: copying a
 		// worktree's own copy would nest one disposable database inside another.

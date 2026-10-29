@@ -9,9 +9,7 @@
  *   integrations:health      — probe one account
  *   integrations:secrets-health — state of secrets at rest, for the hub banner
  *
- * Admin-gated in `backend/auth/permissions.ts`, matching the MCP surface it
- * absorbs: connecting an account changes what every engine and every project
- * can reach.
+ * Connecting an account changes what every engine and every project can reach.
  */
 
 import { t } from 'elysia';

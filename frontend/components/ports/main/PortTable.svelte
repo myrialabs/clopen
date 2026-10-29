@@ -13,11 +13,10 @@
 	import type { PortEntry } from '$shared/types/ports';
 
 	interface Props {
-		canKill: boolean;
 		onKill: (entry: PortEntry) => void;
 	}
 
-	const { canKill, onKill }: Props = $props();
+	const { onKill }: Props = $props();
 
 	const groups = $derived(portsStore.groups);
 	const result = $derived(portsStore.result);
@@ -66,7 +65,6 @@
 						{#each group.entries as entry (entry.key)}
 							<PortRow
 								{entry}
-								{canKill}
 								selected={portsStore.selectedKey === entry.key}
 								killing={portsStore.killingKey === entry.key}
 								onSelect={() => portsStore.select(entry.key)}

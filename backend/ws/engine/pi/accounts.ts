@@ -21,7 +21,7 @@ import { engineQueries } from '../../../database/queries';
 import { disposeAllProjectEnginesByType } from '../../../engine';
 import { createPiRuntime, getPiProviderFields } from '../../../engine/adapters/pi/presets';
 import { DbCredentialStore, serializePiCredential, parsePiCredential, getPiProvider, getPiDeviceId, writePiAccountCredential } from '../../../engine/adapters/pi/credential';
-import { requireSetupSessionAccess } from '../access';
+import { requireSetupSession } from '../access';
 import { hasLoopbackCallbackListener } from '$backend/utils/port-utils';
 import { debug } from '$shared/utils/logger';
 
@@ -320,10 +320,10 @@ export const piAccountsHandler = createRouter()
 
 	.on('engine:pi-account-login-submit', {
 		data: t.Object({ loginId: t.String(), value: t.String() })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		let entry: PiLoginSession;
 		try {
-			entry = requireSetupSessionAccess(conn, data.loginId, loginSessions);
+			entry = requireSetupSession(data.loginId, loginSessions);
 		} catch {
 			return;
 		}
@@ -334,9 +334,9 @@ export const piAccountsHandler = createRouter()
 
 	.on('engine:pi-account-login-cancel', {
 		data: t.Object({ loginId: t.String() })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		try {
-			requireSetupSessionAccess(conn, data.loginId, loginSessions);
+			requireSetupSession(data.loginId, loginSessions);
 		} catch {
 			return;
 		}

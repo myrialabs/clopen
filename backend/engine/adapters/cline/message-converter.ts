@@ -349,7 +349,6 @@ export function createClineMessageConverter(options: ClineConverterOptions): Cli
 				sessionId,
 				parent: { messageId: null, sessionId: null, toolUseId: null },
 				engine,
-				sender: { id: '', name: '' },
 				content: [{ type: 'tool_result', toolUseId: part.toolCallId, content: extractResultText(part.output), isError: !!part.isError }],
 				synthetic: true,
 			});

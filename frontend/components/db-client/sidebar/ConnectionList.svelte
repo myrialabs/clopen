@@ -27,9 +27,7 @@
 	/**
 	 * The account entry points, loaded once when the list is shown.
 	 *
-	 * The call is admin-gated, and a member's failure is not surfaced: the entry
-	 * points simply do not appear, which is the honest rendering of "you cannot
-	 * connect accounts here".
+	 * A failure is not surfaced: the entry points simply do not appear.
 	 */
 	$effect(() => {
 		if (mode.kind !== 'list') return;

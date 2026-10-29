@@ -881,7 +881,6 @@ export function convertToolComplete(
 		sessionId: state.sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId },
 		engine: buildEngine(state.modelId),
-		sender: { id: '', name: '' },
 		content: [userBlock],
 		synthetic: true,
 	};

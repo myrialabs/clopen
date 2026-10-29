@@ -13,7 +13,7 @@ import { fileWatcher } from '$backend/files/file-watcher';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 import { makeScopeKey } from '$shared/utils/workspace-scope';
-import { requireWorkspaceRootAccess } from './path-access';
+import { requireWorkspaceRoot } from './path-access';
 import { requireProjectAccess } from '../access';
 
 // Connection ids that already have a disconnect cleanup registered, so we
@@ -31,7 +31,7 @@ export const watchHandler = createRouter()
 
 		// The root may be the project or one of its worktrees; watchers are keyed
 		// per workspace so two trees of one project never share a watcher.
-		const { project, worktreeId } = requireWorkspaceRootAccess(conn, projectPath);
+		const { project, worktreeId } = requireWorkspaceRoot(projectPath);
 		const projectId = makeScopeKey(project.id, worktreeId);
 
 		try {
@@ -91,7 +91,7 @@ export const watchHandler = createRouter()
 		let projectId: string;
 		let roomProjectId: string;
 		if (data.projectPath) {
-			const { project, worktreeId } = requireWorkspaceRootAccess(conn, data.projectPath);
+			const { project, worktreeId } = requireWorkspaceRoot(data.projectPath);
 			roomProjectId = project.id;
 			projectId = makeScopeKey(project.id, worktreeId);
 		} else {

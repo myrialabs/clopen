@@ -1,6 +1,6 @@
 /**
  * Project MCP trust — which version of a repository's `.agents/mcp.json` an
- * admin approved. Approval is keyed by the file's sha256 (see migration 083), so
+ * owner approved. Approval is keyed by the file's sha256 (see migration 083), so
  * a changed file is simply "not the approved one" until re-approved.
  */
 

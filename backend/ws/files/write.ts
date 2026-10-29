@@ -24,7 +24,7 @@ import {
 } from '../../files/file-operations';
 import { createArchiveOperation, extractArchiveOperation } from '../../files/file-archive';
 import { stat as fsStat, readdir as fsReaddir, rename as fsRename } from 'node:fs/promises';
-import { requireFilePathAccess, requireSharedFilePathAccess } from './path-access';
+import { resolveFilePath } from './path-access';
 
 export const writeHandler = createRouter()
 	// Write file operation
@@ -42,8 +42,8 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const filePath = await requireFilePathAccess(conn, data.filePath);
+	}, async ({ data }) => {
+		const filePath = await resolveFilePath(data.filePath);
 		debug.log('file', 'Write file operation:', {
 			filePath,
 			contentLength: data.content.length
@@ -63,8 +63,8 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const filePath = await requireFilePathAccess(conn, data.filePath);
+	}, async ({ data }) => {
+		const filePath = await resolveFilePath(data.filePath);
 		return await createFileOperation(filePath, data.content);
 	})
 
@@ -78,11 +78,10 @@ export const writeHandler = createRouter()
 			path: t.String(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		// Uses the shared guard so FolderBrowser can create candidate project
-		// folders outside any existing project, while still preventing writes
-		// inside another user's project.
-		const dirPath = await requireSharedFilePathAccess(conn, data.dirPath);
+	}, async ({ data }) => {
+		// FolderBrowser creates candidate project folders here, inside or
+		// outside any existing project.
+		const dirPath = await resolveFilePath(data.dirPath);
 		return await createDirectoryOperation(dirPath);
 	})
 
@@ -98,9 +97,9 @@ export const writeHandler = createRouter()
 			newPath: t.String(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const oldPath = await requireFilePathAccess(conn, data.oldPath);
-		const newPath = await requireFilePathAccess(conn, data.newPath);
+	}, async ({ data }) => {
+		const oldPath = await resolveFilePath(data.oldPath);
+		const newPath = await resolveFilePath(data.newPath);
 		return await renameOperation(oldPath, newPath);
 	})
 
@@ -117,9 +116,9 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const sourcePath = await requireFilePathAccess(conn, data.sourcePath);
-		const targetPath = await requireFilePathAccess(conn, data.targetPath);
+	}, async ({ data }) => {
+		const sourcePath = await resolveFilePath(data.sourcePath);
+		const targetPath = await resolveFilePath(data.targetPath);
 		return await duplicateOperation(sourcePath, targetPath);
 	})
 
@@ -149,15 +148,15 @@ export const writeHandler = createRouter()
 			size: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		if (data.sourcePaths.length === 0) {
 			throw new Error('At least one source path is required');
 		}
 		const resolvedSources: string[] = [];
 		for (const p of data.sourcePaths) {
-			resolvedSources.push(await requireFilePathAccess(conn, p));
+			resolvedSources.push(await resolveFilePath(p));
 		}
-		const resolvedTarget = await requireFilePathAccess(conn, data.targetPath);
+		const resolvedTarget = await resolveFilePath(data.targetPath);
 		return await createArchiveOperation(resolvedSources, resolvedTarget, {
 			format: data.format,
 			method: data.method,
@@ -179,9 +178,9 @@ export const writeHandler = createRouter()
 			entries: t.Number(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const archivePath = await requireFilePathAccess(conn, data.archivePath);
-		const targetDir = await requireFilePathAccess(conn, data.targetDir);
+	}, async ({ data }) => {
+		const archivePath = await resolveFilePath(data.archivePath);
+		const targetDir = await resolveFilePath(data.targetDir);
 		return await extractArchiveOperation(archivePath, targetDir, data.password);
 	})
 
@@ -195,8 +194,8 @@ export const writeHandler = createRouter()
 			message: t.String(),
 			path: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const filePath = await requireFilePathAccess(conn, data.filePath);
+	}, async ({ data }) => {
+		const filePath = await resolveFilePath(data.filePath);
 		return await deleteOperation(filePath, data.force);
 	})
 
@@ -212,8 +211,8 @@ export const writeHandler = createRouter()
 			message: t.String(),
 			path: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const dirPath = await requireSharedFilePathAccess(conn, data.dirPath);
+	}, async ({ data }) => {
+		const dirPath = await resolveFilePath(data.dirPath);
 
 		const stats = await fsStat(dirPath);
 		if (!stats.isDirectory()) {
@@ -228,8 +227,8 @@ export const writeHandler = createRouter()
 	})
 
 	// Rename a directory from FolderBrowser (e.g. fix typo on a candidate
-	// project folder). Restricted to real directories on both sides and
-	// guarded by the shared path access policy. Uses fs.rename directly
+	// project folder). Restricted to real directories on both sides. Uses
+	// fs.rename directly
 	// because Bun.file(...).exists() returns false for directories, which
 	// makes the generic renameOperation unusable here.
 	.http('files:rename-directory', {
@@ -243,9 +242,9 @@ export const writeHandler = createRouter()
 			newPath: t.String(),
 			modified: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const oldPath = await requireSharedFilePathAccess(conn, data.oldPath);
-		const newPath = await requireSharedFilePathAccess(conn, data.newPath);
+	}, async ({ data }) => {
+		const oldPath = await resolveFilePath(data.oldPath);
+		const newPath = await resolveFilePath(data.newPath);
 
 		let oldStats;
 		try {

@@ -84,6 +84,7 @@ import * as migration082 from './082_create_git_identities';
 import * as migration083 from './083_create_project_mcp_trust';
 import * as migration084 from './084_create_channel_links';
 import * as migration085 from './085_add_home_projects';
+import * as migration086 from './086_single_owner';
 
 // Export all migrations in order
 export const migrations = [
@@ -596,6 +597,12 @@ export const migrations = [
 		description: migration085.description,
 		up: migration085.up,
 		down: migration085.down
+	},
+	{
+		id: '086',
+		description: migration086.description,
+		up: migration086.up,
+		down: migration086.down
 	}
 ];
 

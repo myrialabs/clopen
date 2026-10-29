@@ -13,11 +13,10 @@
 	import type { ContainerNetworkEntry } from '$shared/types/containers';
 
 	interface Props {
-		canManage: boolean;
 		onRemove: (network: ContainerNetworkEntry) => void;
 	}
 
-	const { canManage, onRemove }: Props = $props();
+	const { onRemove }: Props = $props();
 
 	const networks = $derived(containersStore.networks);
 	const total = $derived(containersStore.result?.networks.length ?? 0);
@@ -89,7 +88,7 @@
 				{network.driver}
 			</span>
 
-			{#if canManage && !network.predefined}
+			{#if !network.predefined}
 				<button
 					type="button"
 					class="shrink-0 flex items-center justify-center w-7 h-7 rounded-md border-none bg-transparent text-slate-400 cursor-pointer transition-colors hover:bg-red-500/10 hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50 disabled:cursor-wait"

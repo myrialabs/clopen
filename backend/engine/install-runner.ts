@@ -60,7 +60,6 @@ interface Session {
 	endedAt: number | null;
 	buffer: RingBuffer;
 	retentionTimer: ReturnType<typeof setTimeout> | null;
-	startedBy: string;
 	/** Current partial line per stream (for line-based chunking). */
 	pending: { stdout: string; stderr: string };
 }
@@ -114,7 +113,7 @@ function emitStream(session: Session, stream: 'stdout' | 'stderr', chunk: string
 	session.pending[stream] = parts.pop() ?? '';
 	for (const line of parts) {
 		pushLine(session.buffer, line);
-		ws.emit.user(session.startedBy, 'stack:install-stream', {
+		ws.emit.signedIn('stack:install-stream', {
 			sessionId: session.id,
 			tool: session.tool,
 			type: stream,
@@ -128,7 +127,7 @@ function flushPending(session: Session): void {
 		const remaining = session.pending[stream];
 		if (remaining) {
 			pushLine(session.buffer, remaining);
-			ws.emit.user(session.startedBy, 'stack:install-stream', {
+			ws.emit.signedIn('stack:install-stream', {
 				sessionId: session.id,
 				tool: session.tool,
 				type: stream,
@@ -192,7 +191,7 @@ function finalizeSession(session: Session, preferredStatus: SessionStatus, exitC
 
 	debug.log('path', `[install:${session.id}] Finished status=${session.status} exit=${exitCode}`);
 
-	ws.emit.user(session.startedBy, 'stack:install-finished', {
+	ws.emit.signedIn('stack:install-finished', {
 		sessionId: session.id,
 		tool: session.tool,
 		status: session.status,
@@ -363,14 +362,11 @@ async function removeStackDependencies(session: Session, cwd: string, env: Recor
 }
 
 /**
- * Owner id for installs clopen starts itself (startup repair), rather than a
- * user clicking Install. Sessions carry an owner so one admin cannot drive
- * another's install; system-owned sessions are readable by any admin instead
- * (see `requireInstallSessionAccess`) so the repair is visible and cancellable.
+ * Start installing `tool`. Progress streams to every signed-in device, so an
+ * install clopen starts itself (startup repair) is as visible and cancellable
+ * as one started from Settings → Stack.
  */
-export const SYSTEM_INSTALL_USER = 'system';
-
-export async function startInstall(tool: ToolId, userId: string): Promise<Session> {
+export async function startInstall(tool: ToolId): Promise<Session> {
 	await refreshProcessPath();
 
 	const existing = activeByTool.get(tool);
@@ -400,7 +396,6 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 		endedAt: null,
 		buffer: newRingBuffer(),
 		retentionTimer: null,
-		startedBy: userId,
 		pending: { stdout: '', stderr: '' }
 	};
 
@@ -412,7 +407,7 @@ export async function startInstall(tool: ToolId, userId: string): Promise<Sessio
 	emitStream(session, 'stdout', banner + '\n');
 
 	// Broadcast the session-started event so clients that subscribe mid-run can attach.
-	ws.emit.user(userId, 'stack:install-started', {
+	ws.emit.signedIn('stack:install-started', {
 		sessionId: id,
 		tool,
 		displayCommand: recipe.displayCommand ?? '',
@@ -456,10 +451,6 @@ export function cancelInstall(sessionId: string): boolean {
 export function getSession(sessionId: string) {
 	const session = sessions.get(sessionId);
 	return session ? sessionSnapshot(session) : null;
-}
-
-export function getSessionOwner(sessionId: string): string | null {
-	return sessions.get(sessionId)?.startedBy ?? null;
 }
 
 export function getActiveSessionForTool(tool: ToolId) {

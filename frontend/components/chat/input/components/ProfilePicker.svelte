@@ -6,10 +6,9 @@
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { chatModelState, patchCurrentSessionSelection } from '$frontend/stores/ui/chat-model.svelte';
 	import { profilesStore } from '$frontend/stores/features/profiles.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import ws from '$frontend/utils/ws';
 	import { CLIENT_ID } from '$frontend/utils/client-id';
 	import { anchoredPopover } from '$frontend/utils/anchored-popover';
@@ -18,7 +17,6 @@
 	// Profiles are an optional feature — only surface the picker once at least one
 	// profile exists, so instances that don't use them see no extra chrome.
 	const available = $derived(profilesStore.available);
-	const isAdmin = $derived(authStore.isAdmin);
 	let projectDefaultId = $state<number | null>(null);
 
 	// The profile is switchable at any point in a session. The backend resolves
@@ -71,11 +69,10 @@
 		});
 	});
 
-	// Listen for remote profile changes from collaborators (and this user's
-	// other tabs/devices) in this session.
+	// Listen for profile changes made on other tabs/devices in this session.
 	$effect(() => {
 		const unsub = ws.on('chat:profile-sync', (data: { senderId: string; clientId?: string; chatSessionId: string; profileId: number | null }) => {
-			if (data.clientId ? data.clientId === CLIENT_ID : data.senderId === userStore.currentUser?.id) return;
+			if (data.clientId ? data.clientId === CLIENT_ID : data.senderId === authStore.currentUser?.id) return;
 			// Drop events for a session this tab has already switched away from.
 			if (data.chatSessionId !== sessionState.currentSession?.id) return;
 			chatModelState.profileId = data.profileId;
@@ -120,7 +117,7 @@
 		const chatSessionId = sessionState.currentSession?.id;
 		if (chatSessionId) {
 			ws.emit('chat:profile-sync', {
-				senderId: userStore.currentUser?.id || '',
+				senderId: authStore.currentUser?.id || '',
 				clientId: CLIENT_ID,
 				chatSessionId,
 				profileId
@@ -129,7 +126,7 @@
 		close();
 	}
 
-	// Admin: pin/unpin a profile as the shared project default (single-select).
+	// Pin/unpin a profile as the project default (single-select).
 	async function togglePin(profileId: number) {
 		const projectId = projectState.currentProject?.id;
 		if (!projectId) return;
@@ -215,7 +212,7 @@
 								aria-selected={isSelected}
 								data-popover-item
 								class="flex items-start gap-2.5 flex-1 min-w-0 pl-3 py-2 text-left focus-visible:outline-none focus-visible:bg-slate-100 dark:focus-visible:bg-slate-700
-									{isAdmin && projectState.currentProject ? 'pr-1' : 'pr-3'}"
+									{projectState.currentProject ? 'pr-1' : 'pr-3'}"
 								onclick={() => select(profile.id)}
 							>
 								<div class="flex-shrink-0 w-3.5 h-3.5 rounded-full border-2 flex items-center justify-center mt-0.5
@@ -232,7 +229,7 @@
 									{/if}
 								</div>
 							</button>
-							{#if isAdmin && projectState.currentProject}
+							{#if projectState.currentProject}
 								<!-- Always visible on touch (no hover there), with a full-size
 								     tap target so it can't be hit by accident from the row. -->
 								<button

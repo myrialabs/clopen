@@ -3,8 +3,8 @@
  *
  * Every call goes through the engine's own account routes, so switching here
  * does exactly what switching in Settings → Engines does (credential files,
- * hot reload, the lot) and is admin-only for the same reason. Accounts are
- * ADDED in Clopen only: a key or a sign-in never goes through a chat.
+ * hot reload, the lot). Accounts are ADDED in Clopen only: a key or a sign-in
+ * never goes through a chat.
  */
 
 import { t } from 'elysia';
@@ -41,7 +41,6 @@ export const listAccounts = defineAction({
 	group: 'accounts',
 	title: 'Engine accounts',
 	description: 'Switch an engine account',
-	access: 'admin',
 	args: t.Object({ engine: t.Optional(t.String()) }),
 	command: { name: 'accounts', argument: { keys: ['engine'], hint: '[engine]' } },
 	async run(ctx, args) {
@@ -73,7 +72,6 @@ export const switchAccount = defineAction({
 	group: 'accounts',
 	title: 'Switch account',
 	description: 'Make an account the one an engine signs in with, for the current session too.',
-	access: 'admin',
 	args: t.Object({ engine: t.String({ minLength: 1 }), accountId: t.Number() }),
 	async run(ctx, args) {
 		const engine = parseEngine(args.engine);
@@ -84,7 +82,7 @@ export const switchAccount = defineAction({
 		if (engine === 'opencode') await ctx.call('engine:opencode-account-switch', { accountId: account.id });
 		else await ctx.call(`engine:${accountSlug(engine)}-accounts-switch`, { id: account.id });
 		// The session pins an account of its own; follow the switch when it runs on this engine.
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		if (found?.session.engine === engine) sessionQueries.updateAccount(found.session.id, account.id, account.name);
 		return { text: `🔑 ${engineName(engine)} now signs in as **${escapeMd(account.name)}**.` };
 	}

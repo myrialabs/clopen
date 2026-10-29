@@ -16,7 +16,6 @@ import type {
 	CompactBoundaryMessage,
 	UnifiedMessage,
 	MessageEngine,
-	MessageSender,
 } from './message';
 
 // ============================================================
@@ -218,11 +217,10 @@ export interface StreamRequest {
 	chatSessionId: string;
 	prompt: UserMessage;
 	engine: MessageEngine;
-	sender: MessageSender;
 	/**
 	 * Server-trusted id of the user who started the stream (from the WS
-	 * connection, never the client-supplied `sender`). Used to route Web Push
-	 * notifications to the requester's devices when Chrome is closed.
+	 * connection). Used to route Web Push notifications to their devices when
+	 * Chrome is closed.
 	 * Absent for streams started before this field existed.
 	 */
 	requestedByUserId?: string;

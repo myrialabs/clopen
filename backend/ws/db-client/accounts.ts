@@ -14,12 +14,6 @@
  *   db-client:unlink            drop it, releasing the projected connection
  *   db-client:detect-local      a `supabase start` stack in the working tree
  *   db-client:adopt-local       turn that into an ordinary connection
- *
- * ADMIN-GATED, unlike the rest of this router. Linking projects a row that
- * every admin sees, and it reads a credential belonging to the install rather
- * than to the caller — the same reason `integrations:*` is admin-only. The
- * ordinary connection routes stay open to members, who keep managing their own
- * connections exactly as before.
  */
 
 import { t } from 'elysia';
@@ -29,16 +23,14 @@ import { dbClientConnectionQueries } from '../../database/queries';
 import { dbLinks, supabaseSurface } from '../../db-client/integrations';
 import { localConnectionInput } from '../../db-client/providers/supabase/local';
 import { ws as wsServer } from '$backend/utils/ws';
-import { getDbClientPrincipal } from './access';
 import { resolveDbClientProject } from './context';
 import { debug } from '$shared/utils/logger';
 
 /**
  * Tell every client the connection list changed.
  *
- * Global rather than per-user: a projected connection is visible to every
- * admin, so a client that only watched its own request would miss one appearing
- * because a colleague linked it.
+ * Global: a client that only watched its own request would miss a connection
+ * linked from another device.
  */
 function announce(): void {
 	wsServer.emit.global('db-client:connections-changed', {});
@@ -213,12 +205,10 @@ export const accountsHandler = createRouter()
 		const local = await supabaseSurface.detectLocal(project.root);
 		if (!local) throw new Error('No supabase/config.toml in this project');
 
-		// Owned by the caller, NOT by the install: a local stack is a developer's
-		// own database, and it is created from an ordinary member-visible route
-		// rather than from an account. It is not a projection and nothing
+		// An ordinary saved connection, NOT a projection: a local stack is
+		// created from the project rather than from an account, and nothing
 		// re-derives it.
-		const { userId } = getDbClientPrincipal(conn);
-		const created = dbClientConnectionQueries.createForUser(localConnectionInput(local), userId);
+		const created = dbClientConnectionQueries.createRedacted(localConnectionInput(local));
 		debug.log('db-client', `Adopted local Supabase stack ${local.ref} as ${created.id}`);
 		announce();
 		return created;

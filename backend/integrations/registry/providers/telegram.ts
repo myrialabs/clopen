@@ -2,9 +2,8 @@
  * Telegram — the first chat app.
  *
  * ONE FIELD: the bot token. A bot is the account; WHO it talks to is not a
- * property of the credential. Each Clopen user pairs their own chat with the
- * bot from Settings → Chat Apps, so one admin-connected bot serves every
- * member without anyone pasting a token twice.
+ * property of the credential. A chat is paired with the bot from Settings →
+ * Chat Apps, so pairing another chat never means pasting the token twice.
  *
  * The webhook secret is GENERATED rather than asked for. Telegram has no
  * console where a user would find one — Clopen picks it and tells Telegram in
@@ -40,7 +39,7 @@ export default defineProvider({
 			name: 'botToken',
 			label: 'Bot token',
 			placeholder: '123456789:AA…',
-			help: 'Message @BotFather on Telegram, send /newbot, and paste the token it replies with. Each member then links their own chat from Settings → Chat Apps.',
+			help: 'Message @BotFather on Telegram, send /newbot, and paste the token it replies with. Then link your chat from Settings → Chat Apps.',
 			isSecret: true,
 			isRequired: true
 		}

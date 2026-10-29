@@ -19,20 +19,11 @@
 
 	let { isOpen = $bindable(), onClose }: Props = $props();
 
-	const isAdmin = $derived(authStore.isAdmin);
 	const isNoAuth = $derived(authStore.isNoAuth);
 
-	function goToSecurity() {
+	function goToSignIn() {
 		onClose();
-		openSettingsModal('security');
-	}
-
-	// Inviting a member is a team action — it also decides project access — so it
-	// lives in Settings → Team, not here. This panel is only for reaching Clopen
-	// from your own devices.
-	function goToTeam() {
-		onClose();
-		openSettingsModal('team');
+		openSettingsModal('access');
 	}
 
 	// Refresh tunnel status on open so the active-connection list is accurate.
@@ -125,7 +116,7 @@
 	// now-dead QR and let the Connected devices list show the new arrival.
 	onMount(() => {
 		const off = ws.on('remote-access:changed', (payload: { kind: string }) => {
-			if (payload?.kind === 'device-claimed' && link?.kind === 'device') {
+			if (payload?.kind === 'device-claimed' && link) {
 				link = null;
 				addNotification({ type: 'success', title: 'Device connected', message: 'The device signed in — the link is now closed.' });
 			}
@@ -136,7 +127,7 @@
 	let cancelling = $state(false);
 
 	// Cancel a pending link — revoke the device code so its QR stops working, then
-	// clear it. Mirrors "Revoke invite" for the device-pairing flow.
+	// clear it.
 	async function cancelLink() {
 		if (!link) return;
 		const current = link;
@@ -172,16 +163,15 @@
 				<div class="flex-1 text-sm">
 					<p class="font-semibold text-amber-800 dark:text-amber-200 mb-1">No Login mode is active</p>
 					<p class="text-amber-700 dark:text-amber-300">
-						Anyone who opens the link gets <span class="font-semibold">full access without a token</span>. For
-						remote sharing we strongly recommend switching to With Login so access is protected.
+						Anyone with the link gets <span class="font-semibold">full access</span>. Switch to With Login to protect it.
 					</p>
 					<button
 						type="button"
-						onclick={goToSecurity}
+						onclick={goToSignIn}
 						class="inline-flex items-center gap-1.5 mt-2.5 py-1.5 px-3 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-md text-amber-800 dark:text-amber-200 text-xs font-semibold transition-colors"
 					>
 						<Icon name="lucide:shield-check" class="w-3.5 h-3.5" />
-						Switch to With Login in Security
+						Switch to With Login in Sign-in & Devices
 					</button>
 				</div>
 			</div>
@@ -247,7 +237,7 @@
 
 		<!-- Description -->
 		<p class="text-sm text-slate-600 dark:text-slate-400 -mt-1">
-			Sign in one of your own devices as {authStore.currentUser?.name ?? 'you'}. The link is single-use — scan it before it expires.
+			Sign in another of your devices. The link is single-use — scan it before it expires.
 		</p>
 
 		<!-- Result / generate -->
@@ -316,31 +306,13 @@
 			</div>
 		{/if}
 
-		<!-- Invite a member (admin) — a team action, handled in Settings -->
-		{#if isAdmin}
-			<button
-				type="button"
-				onclick={goToTeam}
-				class="flex items-center justify-between gap-3 w-full px-3.5 py-2.5 bg-slate-100/70 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg text-left hover:bg-slate-200/60 dark:hover:bg-slate-800 transition-colors"
-			>
-				<div class="flex items-center gap-2.5 min-w-0">
-					<Icon name="lucide:user-plus" class="w-4 h-4 text-violet-600 dark:text-violet-400 shrink-0" />
-					<div class="min-w-0">
-						<div class="text-sm font-medium text-slate-800 dark:text-slate-200">Invite a member</div>
-						<div class="text-xs text-slate-500 dark:text-slate-400 truncate">Add someone new and set their project access in Team</div>
-					</div>
-				</div>
-				<Icon name="lucide:arrow-right" class="w-4 h-4 text-slate-400 shrink-0" />
-			</button>
-		{/if}
-
 		<!-- Your devices -->
 		<div class="pt-1 border-t border-slate-200 dark:border-slate-700/60">
 			<div class="flex items-center gap-2 mt-3 mb-2.5">
 				<Icon name="lucide:monitor-smartphone" class="w-4 h-4 text-slate-500 dark:text-slate-400" />
-				<span class="text-sm font-semibold text-slate-800 dark:text-slate-200">Your devices</span>
+				<span class="text-sm font-semibold text-slate-800 dark:text-slate-200">Signed-in devices</span>
 			</div>
-			<DeviceSessionsList scope="me" />
+			<DeviceSessionsList />
 		</div>
 	</div>
 </Modal>

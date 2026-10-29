@@ -15,7 +15,6 @@
 	import PortDetailLayer from './PortDetailLayer.svelte';
 	import PortKillDialog from './PortKillDialog.svelte';
 	import { portsStore } from '$frontend/stores/features/ports.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { LOCAL_PORT_HOST, type PortEntry } from '$shared/types/ports';
 
 	interface Props {
@@ -29,8 +28,6 @@
 
 	const result = $derived(portsStore.result);
 	const selected = $derived(portsStore.selected);
-	/** Reading is open to every member; stopping a process is not. */
-	const canKill = $derived(authStore.isAdmin);
 
 	$effect(() => {
 		if (!isOpen) return;
@@ -93,7 +90,7 @@
 			</div>
 		{:else}
 			<div class="flex flex-1 min-h-0 relative bg-slate-50 dark:bg-slate-950">
-				<PortTable {canKill} onKill={(entry) => (pendingKill = entry)} />
+				<PortTable onKill={(entry) => (pendingKill = entry)} />
 				{#if selected}
 					<PortDetailLayer entry={selected} onClose={() => portsStore.select(null)} />
 				{/if}

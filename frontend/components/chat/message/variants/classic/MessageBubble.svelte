@@ -23,7 +23,6 @@
 		roleConfig,
 		roleCategory,
 		agentStatus,
-		senderName,
 		formatTime,
 		onCopy,
 		onRestore,
@@ -36,7 +35,6 @@
 		roleConfig: { gradient: string; icon: IconName; name: string };
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
 		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
-		senderName: string | null;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
@@ -95,7 +93,6 @@
 			{roleConfig}
 			{roleCategory}
 			{agentStatus}
-			{senderName}
 			{formatTime}
 			{onCopy}
 			{onRestore}

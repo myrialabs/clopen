@@ -28,8 +28,8 @@ export const sshSftpHandler = createRouter()
 	.http('ssh:sftp-list', {
 		data: connectionAndPath,
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const connection = requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		const connection = requireSshConnection(data.connectionId);
 		// An empty path means "wherever this connection starts": its configured
 		// initial path, else the account's home directory.
 		const path = data.path || connection.initialPath || '.';
@@ -39,16 +39,16 @@ export const sshSftpHandler = createRouter()
 	.http('ssh:sftp-stat', {
 		data: connectionAndPath,
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.stat(data.connectionId, data.path);
 	})
 
 	.http('ssh:sftp-mkdir', {
 		data: connectionAndPath,
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		await sftpService.makeDirectory(data.connectionId, data.path);
 		return { ok: true };
 	})
@@ -56,8 +56,8 @@ export const sshSftpHandler = createRouter()
 	.http('ssh:sftp-create-file', {
 		data: connectionAndPath,
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		await sftpService.createFile(data.connectionId, data.path);
 		return { ok: true };
 	})
@@ -69,8 +69,8 @@ export const sshSftpHandler = createRouter()
 			toPath: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		await sftpService.rename(data.connectionId, data.fromPath, data.toPath);
 		return { ok: true };
 	})
@@ -82,8 +82,8 @@ export const sshSftpHandler = createRouter()
 			mode: t.Number({ minimum: 0, maximum: 0o7777 })
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		await sftpService.chmod(data.connectionId, data.path, data.mode);
 		return { ok: true };
 	})
@@ -95,8 +95,8 @@ export const sshSftpHandler = createRouter()
 			recursive: t.Optional(t.Boolean())
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		await sftpService.remove(data.connectionId, data.path, data.recursive === true);
 		return { ok: true };
 	})
@@ -107,8 +107,8 @@ export const sshSftpHandler = createRouter()
 			path: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.readText(data.connectionId, data.path);
 	})
 
@@ -119,8 +119,8 @@ export const sshSftpHandler = createRouter()
 			text: t.String()
 		}),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		await sftpService.writeText(data.connectionId, data.path, data.text);
 		return { ok: true };
 	})
@@ -132,8 +132,8 @@ export const sshSftpHandler = createRouter()
 			recursive: t.Optional(t.Boolean())
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.removeMany(data.connectionId, data.paths, data.recursive !== false);
 	})
 
@@ -145,8 +145,8 @@ export const sshSftpHandler = createRouter()
 			operation: t.Union([t.Literal('move'), t.Literal('copy')])
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.findConflicts(
 			data.connectionId,
 			data.paths,
@@ -163,8 +163,8 @@ export const sshSftpHandler = createRouter()
 			onConflict: t.Optional(conflictStrategy)
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.move(
 			data.connectionId,
 			data.paths,
@@ -181,8 +181,8 @@ export const sshSftpHandler = createRouter()
 			onConflict: t.Optional(conflictStrategy)
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.copy(
 			data.connectionId,
 			data.paths,
@@ -200,8 +200,8 @@ export const sshSftpHandler = createRouter()
 			onConflict: t.Optional(conflictStrategy)
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.compress(
 			data.connectionId,
 			data.paths,
@@ -218,8 +218,8 @@ export const sshSftpHandler = createRouter()
 			destinationDirectory: t.String({ minLength: 1 })
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.inspectArchive(
 			data.connectionId,
 			data.archivePath,
@@ -237,8 +237,8 @@ export const sshSftpHandler = createRouter()
 			onConflict: t.Optional(conflictStrategy)
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireSshConnection(data.connectionId);
 		return sftpService.extract(data.connectionId, data.archivePath, data.destinationDirectory, {
 			mode: data.mode ?? 'smart',
 			folderName: data.folderName,
@@ -249,8 +249,8 @@ export const sshSftpHandler = createRouter()
 	.http('ssh:sftp-disk-usage', {
 		data: connectionAndPath,
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		const connection = requireSshConnection(conn, data.connectionId);
+	}, async ({ data }) => {
+		const connection = requireSshConnection(data.connectionId);
 		// An empty path means "wherever this account lives". `.` resolves to the
 		// home directory in the exec session, which is what `df` needs and what the
 		// quota sources ignore — so the host overview can ask without knowing a path.

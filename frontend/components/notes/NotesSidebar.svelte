@@ -123,7 +123,7 @@
 			<button
 				type="button"
 				onclick={() => run(() => setScope('global'), 'Failed to load notes')}
-				title="Visible to everyone signed in to this Clopen instance"
+				title="Shown in every project"
 				class="flex-1 flex items-center justify-center gap-1.5 h-7 px-2 text-xs font-medium rounded-md transition-colors {notesState.scope ===
 				'global'
 					? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm'
@@ -294,7 +294,7 @@
 	onClose={() => (newCollectionOpen = false)}
 	title="New collection"
 	message={notesState.scope === 'global'
-		? 'A global collection is visible to everyone signed in to this instance.'
+		? 'A global collection is shown in every project.'
 		: 'Groups notes inside this project.'}
 	bind:inputValue={newCollectionName}
 	inputPlaceholder="Collection name"

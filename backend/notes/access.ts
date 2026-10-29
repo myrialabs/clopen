@@ -1,5 +1,5 @@
 /**
- * Who may read and write a note collection.
+ * Whether a note collection can be reached.
  *
  * The rule lives here rather than in each route because three call sites need
  * to agree on it — the WebSocket handlers, the image upload, and the image
@@ -11,17 +11,12 @@ import type { NoteCollection } from '$shared/types/database/schema';
 import { projectQueries } from '../database/queries/project-queries';
 
 /**
- * Whether `userId` may see and edit everything in `collection`.
- *
- * - `project` — members of that project, the same check the rest of the
- *   project-scoped API uses.
- * - `global` — every signed-in user on this instance. Global collections are
- *   deliberately instance-wide: there is no per-note ACL, so anything put in
- *   one is readable by every account that can sign in, including members of
- *   unrelated projects.
+ * - `project` — reachable while its project is in the workspace list, the same
+ *   check the rest of the project-scoped API uses.
+ * - `global` — always reachable.
  */
-export function canAccessCollection(userId: string, collection: NoteCollection): boolean {
+export function canAccessCollection(collection: NoteCollection): boolean {
 	if (collection.scope === 'global') return true;
 	if (!collection.project_id) return false;
-	return projectQueries.userHasProject(userId, collection.project_id);
+	return projectQueries.isListed(collection.project_id);
 }

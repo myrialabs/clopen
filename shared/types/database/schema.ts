@@ -13,12 +13,10 @@ export interface Project {
 	last_opened_at: string;
 	default_profile_id?: number | null; // Shared per-project default Profile (null = none)
 	/**
-	 * `home` is a user's own workspace for chatting with no project selected —
-	 * one per user, never shared, never deleted. Everything else is `project`.
+	 * `home` is the workspace for chatting with no project selected — one per
+	 * install, never deleted. Everything else is `project`.
 	 */
 	kind?: ProjectKind;
-	/** The user a `home` workspace belongs to; null for ordinary projects. */
-	owner_user_id?: string | null;
 }
 
 export type ProjectKind = 'project' | 'home';
@@ -74,8 +72,6 @@ export interface ChatSession {
 	head_summary?: string; // Last assistant response text at HEAD (truncated)
 
 	// ── Activity tracking (updated on each message) ──
-	sender_id?: string; // Last active user
-	sender_name?: string;
 	message_count?: number; // Total messages (all types)
 	user_count?: number; // User messages only
 	last_message_at?: string; // Timestamp of the latest message
@@ -237,7 +233,6 @@ export interface DBDbClientConnectionRow {
 	ssh_passphrase: string | null;
 	options_json: string | null;
 	color: string | null;
-	owner_user_id: string | null;
 	/** When set, the SSH tunnel settings come from this saved SSH connection. */
 	ssh_connection_id: string | null;
 	created_at: string;
@@ -262,7 +257,6 @@ export interface DBSshConnectionRow {
 	keepalive_seconds: number;
 	strict_host_key: number;
 	color: string | null;
-	owner_user_id: string | null;
 	created_at: string;
 	updated_at: string;
 	last_used_at: string | null;
@@ -292,13 +286,13 @@ export interface DBSshPortForwardRow {
 	updated_at: string;
 }
 
-/** Who may read and write every note inside a collection. */
+/** Where a collection lives: inside one project, or across all of them. */
 export type NoteScope = 'project' | 'global';
 
 export interface NoteCollection {
 	id: string;
 	name: string;
-	/** `project` — members of `project_id`. `global` — every signed-in user. */
+	/** `project` — belongs to `project_id`. `global` — shown in every project. */
 	scope: NoteScope;
 	/** Set when `scope` is `project`, null when `scope` is `global`. */
 	project_id: string | null;

@@ -4,18 +4,15 @@ import { ws } from '$backend/utils/ws';
 import { projectQueries, sessionQueries, messageQueries } from '$backend/database/queries';
 import { resolveWorktreeRoot } from '$backend/worktrees';
 
-export function requireProjectAccess(conn: WSConnection, projectId: string): Project {
-	const userId = ws.getUserId(conn);
-	const hasAccess = projectQueries.userHasProject(userId, projectId);
-	if (!hasAccess) {
-		throw new Error('Access denied');
-	}
-
+/**
+ * A project in the workspace list. A removed project keeps its record (so its
+ * chats can be restored) but is not reachable until it is added again.
+ */
+export function requireProjectAccess(projectId: string): Project {
 	const project = projectQueries.getById(projectId);
-	if (!project) {
+	if (!project || !projectQueries.isListed(projectId)) {
 		throw new Error('Access denied');
 	}
-
 	return project;
 }
 
@@ -31,7 +28,7 @@ export function requireProjectWorkspace(conn: WSConnection, projectId: string): 
 	root: string;
 	worktreeId: string | null;
 } {
-	const project = requireProjectAccess(conn, projectId);
+	const project = requireProjectAccess(projectId);
 	const resolved = resolveWorktreeRoot(projectId, ws.getWorktreeId(conn));
 	return { project, root: resolved.path || project.path, worktreeId: resolved.worktreeId };
 }
@@ -43,32 +40,26 @@ export function requireCurrentProjectAccess(conn: WSConnection): {
 } {
 	const userId = ws.getUserId(conn);
 	const projectId = ws.getProjectId(conn);
-	const project = requireProjectAccess(conn, projectId);
+	const project = requireProjectAccess(projectId);
 	return { userId, projectId, project };
 }
 
-export function requireSessionAccess(conn: WSConnection, sessionId: string): ChatSession {
+export function requireSessionAccess(sessionId: string): ChatSession {
 	const session = sessionQueries.getById(sessionId);
 	if (!session) {
 		throw new Error('Access denied');
 	}
-
-	const userId = ws.getUserId(conn);
-	const hasAccess = projectQueries.userHasProject(userId, session.project_id);
-	if (!hasAccess) {
-		throw new Error('Access denied');
-	}
-
+	requireProjectAccess(session.project_id);
 	return session;
 }
 
-export function requireMessageAccess(conn: WSConnection, messageId: string): DatabaseMessage {
+export function requireMessageAccess(messageId: string): DatabaseMessage {
 	const message = messageQueries.getById(messageId);
 	if (!message) {
 		throw new Error('Access denied');
 	}
 
 	// Message access inherits session access controls.
-	requireSessionAccess(conn, message.session_id);
+	requireSessionAccess(message.session_id);
 	return message;
 }

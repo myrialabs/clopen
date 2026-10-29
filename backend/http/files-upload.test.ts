@@ -15,7 +15,7 @@ import { filesUploadRoute } from './files-upload';
 import { authQueries } from '../database/queries';
 import { hashToken } from '../auth/tokens';
 import { projectQueries } from '../database/queries/project-queries';
-import { initializeDatabase, closeDatabase } from '../database';
+import { initializeDatabase, closeDatabase, getDatabase } from '../database';
 
 const TEST_DIR = join(import.meta.dir, '.test-upload-integration');
 const TEST_WORKSPACE = join(TEST_DIR, 'workspace');
@@ -61,7 +61,6 @@ beforeAll(async () => {
 		name: 'Test User',
 		color: '#000000',
 		avatar: 'test',
-		role: 'admin',
 		personal_access_token_hash: null,
 		created_at: new Date().toISOString()
 	});
@@ -90,15 +89,12 @@ beforeAll(async () => {
 		last_opened_at: new Date().toISOString()
 	});
 	testProjectId = project.id;
-
-	// Link user to project
-	projectQueries.addUserProject(testUserId, testProjectId);
+	projectQueries.list(testProjectId);
 });
 
 afterAll(async () => {
 	// Clean up database
-	authQueries.deleteSessionsByUserId(testUserId);
-	authQueries.deleteUser(testUserId);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(testUserId);
 	projectQueries.deleteProject(testProjectId);
 
 	// Close database

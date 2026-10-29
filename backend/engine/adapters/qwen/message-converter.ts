@@ -724,7 +724,6 @@ export function convertUserMessage(msg: SDKUserMessage, state: QwenConverterStat
 		// (README §10.5). Sub-agent messages are an explicit exception.
 		parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 		engine: buildEngine(state.modelId),
-		sender: { id: '', name: '' },
 		content: outBlocks,
 		synthetic: true,
 	};
@@ -748,7 +747,6 @@ function buildSyntheticToolResult(
 		sessionId: sessionId ?? '',
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: buildEngine(state.modelId),
-		sender: { id: '', name: '' },
 		content: [result],
 		synthetic: true,
 	};

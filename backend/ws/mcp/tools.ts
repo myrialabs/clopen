@@ -8,7 +8,7 @@
  *
  * All three go through the SAME upstream introspection path the bridge uses
  * (`backend/mcp/external/proxy.ts`), so what Settings shows matches what the
- * engines receive. Mutations are admin-gated in `backend/auth/permissions.ts`.
+ * engines receive.
  */
 
 import { t } from 'elysia';

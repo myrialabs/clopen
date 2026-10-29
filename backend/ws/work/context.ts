@@ -35,7 +35,7 @@ export interface IssueProjectContext {
 export function resolveWorkProject(conn: WSConnection, projectId?: string): IssueProjectContext {
 	const current = ws.getProjectId(conn);
 	const target = (projectId ?? '').trim() || current;
-	const project = requireProjectAccess(conn, target);
+	const project = requireProjectAccess(target);
 
 	if (target !== current) {
 		return { projectId: target, project, root: project.path, isCurrent: false };

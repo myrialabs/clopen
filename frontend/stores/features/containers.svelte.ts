@@ -99,8 +99,6 @@ interface ContainersState {
 	/** Detail from `inspect`, per container, fetched when a pane opens. */
 	details: Record<string, ContainerDetail>;
 	detailLoading: boolean;
-	/** True when the server withheld environment values from this member. */
-	envRedacted: boolean;
 	badge: number;
 	isLoading: boolean;
 	error: string | null;
@@ -135,7 +133,6 @@ const state = $state<ContainersState>({
 	selectedId: null,
 	details: {},
 	detailLoading: false,
-	envRedacted: false,
 	badge: 0,
 	isLoading: false,
 	error: null,
@@ -221,9 +218,6 @@ export const containersStore = {
 	},
 	get detailLoading(): boolean {
 		return state.detailLoading;
-	},
-	get envRedacted(): boolean {
-		return state.envRedacted;
 	},
 	get logs(): LogState | null {
 		return state.logs;
@@ -387,9 +381,8 @@ export const containersStore = {
 				'containers:inspect',
 				{ hostId: state.activeHostId, containerId },
 				requestBudget('inspect')
-			)) as { detail: ContainerDetail | null; envRedacted: boolean };
+			)) as { detail: ContainerDetail | null };
 			if (response.detail) state.details[containerId] = response.detail;
-			state.envRedacted = response.envRedacted === true;
 		} catch (error) {
 			debug.warn('containers', `Could not inspect ${containerId}:`, error);
 		} finally {

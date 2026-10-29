@@ -1,29 +1,15 @@
 /**
- * Containers — changing something. Admin only, all of it.
- *
- * The routes are listed in ADMIN_ONLY_ROUTES; these handlers still check host
- * access against the caller's real role rather than a hardcoded one, because a
- * gate that trusts its caller is no gate at all.
- *
- * Stopping a container takes down whatever it serves, for everyone — the same
- * reason stopping a port is admin-only — and removing an image or a volume
- * takes down something nobody can bring back by pressing start.
+ * Containers — changing something: start/stop/restart, remove, prune. Every
+ * handler first confirms the host is the local machine or a saved SSH host.
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { LOCAL_HOST_ID } from '$shared/types/host';
 import { removeResource, runContainerAction } from '../../containers/actions';
 import { dismissPrune, pruneJobFor, startPrune } from '../../containers/prune-job';
-import { requireHostAccess } from './list';
+import { requireHost } from './list';
 import { containerMonitor } from '../../containers/monitor';
-import { sshConnectionQueries } from '../../database/queries';
 import { ws } from '../../utils/ws';
-
-function requireManageAccess(conn: Parameters<typeof ws.getUserId>[0], hostId: string): void {
-	if (hostId === LOCAL_HOST_ID) return;
-	sshConnectionQueries.ensureAccess(hostId, ws.getUserId(conn), ws.getRole(conn) === 'admin');
-}
 
 const ACTIONS = [
 	t.Literal('start'),
@@ -55,8 +41,8 @@ export const containersActionHandler = createRouter()
 			}),
 			response: t.Any()
 		},
-		async ({ data, conn }) => {
-			requireManageAccess(conn, data.hostId);
+		async ({ data }) => {
+			requireHost(data.hostId);
 
 			// Re-read before acting rather than trusting the row the client clicked:
 			// a listing is a second or two old, and a container can be removed and
@@ -97,8 +83,8 @@ export const containersActionHandler = createRouter()
 			}),
 			response: t.Any()
 		},
-		async ({ data, conn }) => {
-			requireManageAccess(conn, data.hostId);
+		async ({ data }) => {
+			requireHost(data.hostId);
 			return { result: await removeResource(data.hostId, data.kind, data.id, data.force === true) };
 		}
 	)
@@ -124,7 +110,7 @@ export const containersActionHandler = createRouter()
 			response: t.Any()
 		},
 		async ({ data, conn }) => {
-			requireManageAccess(conn, data.hostId);
+			requireHost(data.hostId);
 			return { job: startPrune(data.hostId, data.kinds, ws.getUserId(conn)) };
 		}
 	)
@@ -139,7 +125,7 @@ export const containersActionHandler = createRouter()
 		'containers:prune-status',
 		{ data: t.Object({ hostId: t.String({ minLength: 1 }) }), response: t.Any() },
 		async ({ data, conn }) => {
-			requireHostAccess(conn, data.hostId);
+			requireHost(data.hostId);
 			return { job: pruneJobFor(data.hostId, ws.getUserId(conn)) };
 		}
 	)
@@ -148,8 +134,8 @@ export const containersActionHandler = createRouter()
 	.http(
 		'containers:prune-dismiss',
 		{ data: t.Object({ hostId: t.String({ minLength: 1 }) }), response: t.Any() },
-		async ({ data, conn }) => {
-			requireManageAccess(conn, data.hostId);
+		async ({ data }) => {
+			requireHost(data.hostId);
 			dismissPrune(data.hostId);
 			return { ok: true };
 		}

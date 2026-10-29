@@ -5,9 +5,9 @@
  *   its one-time / deadline options. The raw token is embedded in the share
  *   URL; only its hash is stored, and the row id comes back alongside it so
  *   the link stays manageable afterwards.
- * - files:list-shares — live links: every user's for an admin, your own
- *   otherwise. Carries no token material, so it can never rebuild a URL.
- * - files:revoke-share — creator (or admin) invalidates a link by row id.
+ * - files:list-shares — live links. Carries no token material, so it can
+ *   never rebuild a URL.
+ * - files:revoke-share — invalidates a link by row id.
  * - files:shares-changed — broadcast whenever that list moves, so every open
  *   management view reflects a mint, a revoke or an open without polling.
  *
@@ -33,8 +33,6 @@ const shareSummary = t.Object({
 	projectName: t.Union([t.String(), t.Null()]),
 	worktreeName: t.Union([t.String(), t.Null()]),
 	relativePath: t.String(),
-	createdBy: t.String(),
-	createdByName: t.Union([t.String(), t.Null()]),
 	createdAt: t.String(),
 	oneTime: t.Boolean(),
 	expiresAt: t.Union([t.String(), t.Null()]),
@@ -61,7 +59,7 @@ export const fileShareHandler = createRouter()
 			expiresAt: t.Union([t.String(), t.Null()])
 		})
 	}, async ({ data, conn }) => {
-		const result = await createFileShareLink(data.file_path, ws.getRole(conn), ws.getUserId(conn), {
+		const result = await createFileShareLink(data.file_path, ws.getUserId(conn), {
 			oneTime: data.oneTime,
 			expiresInMinutes: data.expiresInMinutes
 		});
@@ -72,8 +70,8 @@ export const fileShareHandler = createRouter()
 	.http('files:list-shares', {
 		data: t.Object({}),
 		response: t.Object({ shares: t.Array(shareSummary) })
-	}, async ({ conn }) => {
-		return { shares: listFileShares(ws.getRole(conn), ws.getUserId(conn)) };
+	}, async () => {
+		return { shares: listFileShares() };
 	})
 
 	.http('files:revoke-share', {
@@ -81,15 +79,13 @@ export const fileShareHandler = createRouter()
 			shareId: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ success: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const success = revokeFileShareLink(data.shareId, ws.getRole(conn), ws.getUserId(conn));
+	}, async ({ data }) => {
+		const success = revokeFileShareLink(data.shareId);
 		if (success) ws.emit.global('files:shares-changed', { kind: 'revoked' });
 		return { success };
 	})
 
-	// Broadcast-only: the payload says nothing about whose link moved, because
-	// every listener re-reads its own role-scoped list. A global ping cannot
-	// leak what a user is not allowed to see.
+	// Broadcast-only: every listener re-reads the list.
 	.emit('files:shares-changed', t.Object({
 		kind: t.String()
 	}));

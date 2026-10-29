@@ -36,11 +36,10 @@ export const sessionStatus = defineAction({
 	group: 'sessions',
 	title: 'Status',
 	description: 'Where you are and what it is doing',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'status' },
 	async run(ctx) {
-		const { project, session } = resolveTarget(ctx.user.id, ctx.target);
+		const { project, session } = resolveTarget(ctx.target);
 		const model = modelOf(session);
 		const lines = [`📁 **${escapeMd(projectLabel(project))}**`];
 		lines.push(session ? `💬 ${escapeMd(sessionTitle(session))}` : '_No session yet. Your next message starts one here._');
@@ -74,11 +73,10 @@ export const newSession = defineAction({
 	group: 'sessions',
 	title: 'New session',
 	description: 'Start a new session',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'new' },
 	async run(ctx) {
-		const { project } = resolveTarget(ctx.user.id, ctx.target);
+		const { project } = resolveTarget(ctx.target);
 		return { text: `✨ New session in **${escapeMd(projectLabel(project))}**. Type your message.`, target: { projectId: project.id, sessionId: null } };
 	}
 });
@@ -88,11 +86,10 @@ export const listSessions = defineAction({
 	group: 'sessions',
 	title: 'Sessions',
 	description: 'Switch session in this project',
-	access: 'member',
 	args: t.Object({ page: t.Optional(t.Number({ minimum: 0 })) }),
 	command: { name: 'sessions' },
 	async run(ctx, args) {
-		const { project, session: current } = resolveTarget(ctx.user.id, ctx.target);
+		const { project, session: current } = resolveTarget(ctx.target);
 		const sessions = sessionQueries
 			.getByProjectId(project.id)
 			.sort((a, b) => (b.last_message_at ?? b.started_at).localeCompare(a.last_message_at ?? a.started_at));
@@ -118,13 +115,12 @@ export const runningSessions = defineAction({
 	group: 'sessions',
 	title: 'Running',
 	description: 'Sessions running or waiting for you, in all projects',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'running' },
 	async run(ctx) {
 		const rows = streamManager
 			.getActiveStreams()
-			.filter((stream) => stream.projectId && projectQueries.userHasProject(ctx.user.id, stream.projectId))
+			.filter((stream) => stream.projectId && projectQueries.isListed(stream.projectId))
 			.map((stream) => {
 				const messages = stream.messages.map((event) => (event as { message?: UnifiedMessage }).message).filter((message): message is UnifiedMessage => Boolean(message));
 				return { stream, session: sessionQueries.getById(stream.chatSessionId), waiting: isWaitingForInteractiveInput(messages) };
@@ -162,7 +158,6 @@ export const searchSessions = defineAction({
 	group: 'sessions',
 	title: 'Search sessions',
 	description: 'Find a session by what was said',
-	access: 'member',
 	args: t.Object({ query: t.String({ minLength: 1 }), page: t.Optional(t.Number({ minimum: 0 })) }),
 	command: { name: 'search', argument: { keys: ['query'], hint: '<words>' } },
 	async run(ctx, args) {
@@ -192,10 +187,9 @@ export const openSession = defineAction({
 	group: 'sessions',
 	title: 'Open session',
 	description: 'Switch to a session; plain messages continue it.',
-	access: 'member',
 	args: t.Object({ sessionId: t.String({ minLength: 1 }) }),
-	async run(ctx, args) {
-		const found = accessibleSession(ctx.user.id, args.sessionId);
+	async run(_ctx, args) {
+		const found = accessibleSession(args.sessionId);
 		if (!found) throw new Error('That session no longer exists.');
 		const last = lastTurnAnswer(found.session.id).text;
 		const busy = isSessionBusy(found.session) ? '\n\n⏳ It is running right now.' : '';
@@ -212,11 +206,10 @@ export const stopSession = defineAction({
 	group: 'sessions',
 	title: 'Stop',
 	description: 'Stop the running turn',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'stop' },
 	async run(ctx) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		const stream = found ? streamManager.getSessionStream(found.session.id, found.project.id) : undefined;
 		if (!stream || stream.status !== 'active') return { text: 'Nothing is running.' };
 		await streamManager.cancelStream(stream.streamId, 'user');
@@ -229,11 +222,10 @@ export const showQueue = defineAction({
 	group: 'sessions',
 	title: 'Queue',
 	description: 'Messages waiting to run',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'queue' },
 	async run(ctx) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		if (!found) return { text: 'Nothing is queued. There is no session yet.' };
 		const { queue } = await ctx.call<{ queue: QueueItem[] }>('chat:composer-state', { chatSessionId: found.session.id }, { projectId: found.project.id });
 		if (queue.length === 0) return { text: 'Nothing is queued.' };
@@ -255,10 +247,9 @@ export const dropQueued = defineAction({
 	group: 'sessions',
 	title: 'Drop queued message',
 	description: 'Remove one of your queued messages before it runs.',
-	access: 'member',
 	args: t.Object({ sessionId: t.String({ minLength: 1 }), id: t.String({ minLength: 1 }) }),
 	async run(ctx, args) {
-		const found = accessibleSession(ctx.user.id, args.sessionId);
+		const found = accessibleSession(args.sessionId);
 		if (!found) throw new Error('That session no longer exists.');
 		const { queue } = await ctx.call<{ queue: QueueItem[] }>('chat:composer-state', { chatSessionId: found.session.id }, { projectId: found.project.id });
 		const item = queue.find((entry) => entry.id === args.id);
@@ -274,15 +265,14 @@ export const deleteSession = defineAction({
 	group: 'sessions',
 	title: 'Delete session',
 	description: 'Delete this session (files stay)',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'delete' },
 	confirm(_args, ctx) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		return found ? `Delete “${sessionTitle(found.session)}” and all of its messages? This cannot be undone.` : null;
 	},
 	async run(ctx) {
-		const found = accessibleSession(ctx.user.id, ctx.target.sessionId);
+		const found = accessibleSession(ctx.target.sessionId);
 		if (!found) throw new Error('No session to delete.');
 		await ctx.call('sessions:delete', { id: found.session.id }, { projectId: found.project.id });
 		return { text: '🗑️ Session deleted.', target: { projectId: found.project.id, sessionId: null } };

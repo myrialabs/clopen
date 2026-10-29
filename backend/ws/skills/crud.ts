@@ -15,9 +15,8 @@
  *   - skills:adopt        — link an adoptable on-disk skill into Clopen's engine dir
  *   - skills:available    — slash-invocable skills for the chat "/" picker
  *
- * Mutations are admin-gated (see backend/auth/permissions.ts) — except
- * `skills:available`, which any user needs in order to type a command. Changes
- * take effect on the next chat stream, when each engine re-syncs its skills.
+ * Changes take effect on the next chat stream, when each engine re-syncs its
+ * skills.
  */
 
 import { t } from 'elysia';
@@ -207,7 +206,7 @@ export const skillCrudHandler = createRouter()
 		return { linkedTo };
 	})
 	.http('skills:available', {
-		// Non-admin: slash-invocable skills for the chat "/" picker (display fields
+		// Slash-invocable skills for the chat "/" picker (display fields
 		// only), narrowed by the session's active profile same as stream sync.
 		data: t.Object({
 			profileId: t.Optional(t.Union([t.Number(), t.Null()])),

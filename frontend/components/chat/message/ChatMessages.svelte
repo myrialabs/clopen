@@ -133,8 +133,7 @@
 			const messageId = 'messageId' in msg ? msg.messageId : undefined;
 			const text = extractUserText(msg);
 			if (!messageId || !text) return;
-			const sender = (msg as any).sender?.name as string | undefined;
-			result.push({ globalIndex, messageId, text, sender });
+			result.push({ globalIndex, messageId, text });
 		});
 		return result;
 	});

@@ -60,7 +60,7 @@ export interface AvailableProfile {
 let profiles = $state<Profile[]>([]);
 let loaded = $state(false);
 let inventory = $state<ProfileInventory | null>(null);
-// Lightweight list for the non-admin per-session picker.
+// Lightweight list for the per-session picker.
 let available = $state<AvailableProfile[]>([]);
 let availableLoaded = $state(false);
 
@@ -78,7 +78,7 @@ export const profilesStore = {
 	get inventory() { return inventory; },
 	get available() { return available; },
 
-	// ── Per-session picker (non-admin) ─────────────────────────────────────────
+	// ── Per-session picker ─────────────────────────────────────────────────────
 	async fetchAvailable(force = false): Promise<AvailableProfile[]> {
 		if (availableLoaded && !force) return available;
 		try {
@@ -115,7 +115,7 @@ export const profilesStore = {
 			const result = await ws.http('profiles:list', {});
 			profiles = result.profiles;
 			loaded = true;
-			availableLoaded = false; // picker list may be stale after any admin mutation
+			availableLoaded = false; // picker list may be stale after any mutation
 			return profiles;
 		} catch (error) {
 			debug.error('settings', 'Failed to list profiles:', error);

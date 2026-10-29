@@ -1,6 +1,5 @@
 <script lang="ts">
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ShareLinkCard from '$frontend/components/common/share/ShareLinkCard.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -42,7 +41,6 @@
 	);
 	const ingressHostnames = $derived(ingress?.filter((r) => r.hostname) ?? []);
 	const isManagedTunnel = $derived(type === 'remote' || type === 'local');
-	const isAdmin = $derived(authStore.isAdmin);
 
 	// Edge-connection status: cloudflared opens several HA connections to Cloudflare
 	// once a tunnel goes live, so `connections > 0` means it is actually reachable.
@@ -160,7 +158,7 @@
 					<Icon name="lucide:circle-x" class="w-3.5 h-3.5" />
 					Stop
 				</button>
-			{:else if isAdmin}
+			{:else}
 				<span class="text-2xs text-slate-400 dark:text-slate-500 italic">Managed in Settings</span>
 			{/if}
 		</div>

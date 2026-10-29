@@ -5,7 +5,7 @@
  * - Event-driven push model (no polling)
  * - Background processing that continues even when browser is closed
  * - Reconnection to active streams after browser refresh
- * - Multiple concurrent streams per user/session
+ * - Multiple concurrent streams per session
  */
 
 import { EventEmitter } from 'events';
@@ -102,11 +102,7 @@ export interface StreamState {
 // ============================================================================
 
 /** Normalize raw UserMessage prompt from WS handler into a validated UserMessage */
-function convertRawPromptToUserMessage(
-	rawPrompt: any,
-	senderId?: string,
-	senderName?: string,
-): UserMessage {
+function convertRawPromptToUserMessage(rawPrompt: any): UserMessage {
 	const content: UserContentBlock[] = Array.isArray(rawPrompt?.content) && rawPrompt.content.length > 0
 		? rawPrompt.content as UserContentBlock[]
 		: [{ type: 'text', text: '' }];
@@ -136,10 +132,6 @@ function convertRawPromptToUserMessage(
 			toolUseId: rawPrompt?.parent?.toolUseId ?? rawPrompt?.parentToolUseId ?? null,
 		},
 		engine: engineObj,
-		sender: {
-			id: senderId || rawPrompt?.sender?.id || '',
-			name: senderName || rawPrompt?.sender?.name || '',
-		},
 		content,
 		synthetic: rawPrompt?.synthetic ?? false,
 	};
@@ -585,7 +577,7 @@ class StreamManager extends EventEmitter {
 		}
 
 		try {
-			const { projectPath, prompt: rawPrompt, chatSessionId, engine: requestEngine, sender: requestSender } = requestData;
+			const { projectPath, prompt: rawPrompt, chatSessionId, engine: requestEngine } = requestData;
 
 			// Engine context that stream-manager injects into every SDK-emitted message.
 			// (SDK adapters cannot know these values; only the request layer can.)
@@ -648,7 +640,7 @@ class StreamManager extends EventEmitter {
 			streamState.preStreamSessionId = resumeSessionId ?? null;
 
 			// Convert raw SDK prompt → UserMessage (unified)
-			const userMessage = convertRawPromptToUserMessage(rawPrompt, requestSender.id, requestSender.name);
+			const userMessage = convertRawPromptToUserMessage(rawPrompt);
 
 			// Save user message to DB
 			const userMessageTimestamp = new Date().toISOString();
@@ -664,9 +656,7 @@ class StreamManager extends EventEmitter {
 				message: userMessage as any,
 				timestamp: userMessageTimestamp,
 				message_id: savedMessage?.id,
-				parent_message_id: savedMessage?.parent_message_id || null,
-				sender_id: requestSender.id,
-				sender_name: requestSender.name
+				parent_message_id: savedMessage?.parent_message_id || null
 			});
 
 			this.emitStreamEvent(streamState, 'message', {
@@ -674,9 +664,7 @@ class StreamManager extends EventEmitter {
 				message: userMessage,
 				timestamp: userMessageTimestamp,
 				message_id: savedMessage?.id,
-				parent_message_id: savedMessage?.parent_message_id || null,
-				sender_id: requestSender.id,
-				sender_name: requestSender.name
+				parent_message_id: savedMessage?.parent_message_id || null
 			});
 
 			if ((streamState.status as string) === 'cancelled' || streamState.abortController?.signal.aborted) {
@@ -910,13 +898,10 @@ class StreamManager extends EventEmitter {
 				...(projectId && chatSessionId && {
 					mcpContext: { projectId, chatSessionId, streamId: streamState.streamId, ...(activeProfileId != null && { profileId: activeProfileId }) }
 				}),
-				// The agent commits as the person who asked it to. Resolved here
-				// because this is the only layer that knows both the project and
-				// the requester; omitted when either is missing, which leaves git
-				// behaving exactly as it did before identities existed.
-				...(projectId && streamState.requestedByUserId && {
-					gitIdentityEnv: resolveGitEnv(projectId, streamState.requestedByUserId)
-				}),
+				// The agent commits as the project's git identity; with none chosen
+				// the fragment is empty and git behaves exactly as it did before
+				// identities existed.
+				...(projectId && { gitIdentityEnv: resolveGitEnv(projectId) }),
 			});
 
 			await projectContextService.runWithContextAsync(
@@ -1016,9 +1001,7 @@ class StreamManager extends EventEmitter {
 							message: boundary,
 							timestamp: compactTimestamp,
 							message_id: savedCompactId,
-							parent_message_id: savedCompactParentId,
-							sender_id: requestSender.id,
-							sender_name: requestSender.name
+							parent_message_id: savedCompactParentId
 						});
 						continue;
 					}
@@ -1088,9 +1071,7 @@ class StreamManager extends EventEmitter {
 										message: patched,
 										timestamp: patched.createdAt,
 										message_id: lastEntry?.message_id ?? undefined,
-										parent_message_id: lastEntry?.parent_message_id ?? null,
-										sender_id: requestSender.id,
-										sender_name: requestSender.name
+										parent_message_id: lastEntry?.parent_message_id ?? null
 									});
 								}
 							}
@@ -1099,7 +1080,7 @@ class StreamManager extends EventEmitter {
 							// usage:null. Backfill the turn's aggregate to every saved
 							// assistant without usage so it survives a refresh.
 							if (successResult.usage && (streamState.engine === 'codex' || streamState.engine === 'cursor')) {
-								this.backfillUsageForStream(streamState, successResult.usage, requestSender);
+								this.backfillUsageForStream(streamState, successResult.usage);
 							}
 						} else {
 							const errResult = output as ErrorResultEvent;
@@ -1199,9 +1180,7 @@ class StreamManager extends EventEmitter {
 							message: reasoning,
 							timestamp: reasoningTimestamp,
 							message_id: savedReasoningId,
-							parent_message_id: savedReasoningParentId,
-							sender_id: requestSender.id,
-							sender_name: requestSender.name
+							parent_message_id: savedReasoningParentId
 						});
 						continue;
 					}
@@ -1244,9 +1223,7 @@ class StreamManager extends EventEmitter {
 							usage: usage as any,
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
-							parent_message_id: savedParentId,
-							sender_id: requestSender.id,
-							sender_name: requestSender.name
+							parent_message_id: savedParentId
 						});
 
 						streamState.currentMessage = assistantMsg;
@@ -1257,9 +1234,7 @@ class StreamManager extends EventEmitter {
 							usage,
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
-							parent_message_id: savedParentId,
-							sender_id: requestSender.id,
-							sender_name: requestSender.name
+							parent_message_id: savedParentId
 						});
 						continue;
 					}
@@ -1287,9 +1262,7 @@ class StreamManager extends EventEmitter {
 							message: userMsg as any,
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
-							parent_message_id: savedParentId,
-							sender_id: requestSender.id,
-							sender_name: requestSender.name
+							parent_message_id: savedParentId
 						});
 
 						streamState.currentMessage = userMsg;
@@ -1299,9 +1272,7 @@ class StreamManager extends EventEmitter {
 							message: userMsg,
 							timestamp: messageTimestamp,
 							message_id: savedMsgId,
-							parent_message_id: savedParentId,
-							sender_id: requestSender.id,
-							sender_name: requestSender.name
+							parent_message_id: savedParentId
 						});
 						continue;
 					}
@@ -1367,8 +1338,6 @@ class StreamManager extends EventEmitter {
 					timestamp: errorTimestamp,
 					message_id: savedErrorMsgId,
 					parent_message_id: savedErrorParentId,
-					sender_id: requestData.sender.id,
-					sender_name: requestData.sender.name,
 				});
 
 				this.emitStreamEvent(streamState, 'error', {
@@ -1716,8 +1685,6 @@ class StreamManager extends EventEmitter {
 				const text = extractMessageText(message);
 				const updateOpts: Parameters<typeof sessionQueries.updateOnMessage>[1] = {
 					messageType: message.type,
-					senderId: message.type === 'user' ? message.sender?.id : undefined,
-					senderName: message.type === 'user' ? message.sender?.name : undefined,
 					timestamp,
 				};
 
@@ -1820,7 +1787,6 @@ class StreamManager extends EventEmitter {
 	private backfillUsageForStream(
 		streamState: StreamState,
 		usage: TokenUsage,
-		requestSender: StreamRequest['sender'],
 	): void {
 		try {
 			const { getDatabase } = require('../database');
@@ -1851,8 +1817,6 @@ class StreamManager extends EventEmitter {
 					timestamp: patched.createdAt,
 					message_id: entry.message_id,
 					parent_message_id: entry.parent_message_id ?? null,
-					sender_id: requestSender.id,
-					sender_name: requestSender.name,
 				});
 			}
 		} catch (err) {

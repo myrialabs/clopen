@@ -442,7 +442,6 @@ function buildToolResultUserMessage(
 		// IMPORTANT: parent.toolUseId stays null (README §10.5 sharp edge).
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: buildEngine(state.modelId),
-		sender: { id: '', name: '' },
 		content: [block],
 		synthetic: true,
 	};
@@ -613,7 +612,6 @@ function buildErrorUserMessage(item: ErrorItem, state: CodexStreamState): UserMe
 		sessionId: state.sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: buildEngine(state.modelId),
-		sender: { id: '', name: '' },
 		content: [{ type: 'text', text: `Codex error: ${item.message}` }],
 		synthetic: true,
 	};

@@ -30,12 +30,12 @@ function requireRouter(): Pick<WSRouter, 'invoke'> {
 }
 
 export async function callRouteAs<T = unknown>(
-	user: Pick<AuthUser, 'id' | 'role'>,
+	user: Pick<AuthUser, 'id'>,
 	action: string,
 	data: Record<string, unknown> = {},
 	projectId: string | null = null
 ): Promise<T> {
-	const conn = ws.openVirtualConnection({ userId: user.id, role: user.role, projectId });
+	const conn = ws.openVirtualConnection({ userId: user.id, projectId });
 	try {
 		return (await requireRouter().invoke(conn, action, data)) as T;
 	} finally {

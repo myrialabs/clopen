@@ -13,7 +13,6 @@
 
 	interface Props {
 		detail: NodeDetail;
-		canEdit: boolean;
 		onSelect: (nodeId: string) => void;
 		/** History controls live in this panel's own header — see the note below. */
 		canGoBack: boolean;
@@ -23,7 +22,7 @@
 		onClose: () => void;
 	}
 
-	const { detail, canEdit, onSelect, canGoBack, canGoForward, onBack, onForward, onClose }: Props =
+	const { detail, onSelect, canGoBack, canGoForward, onBack, onForward, onClose }: Props =
 		$props();
 
 	// Includes `entity`, which extraction produces for people and things — leaving
@@ -282,7 +281,7 @@
 	</div>
 
 	<!-- Actions pinned to the bottom, so they do not float mid-panel. -->
-	{#if canEdit && !editing}
+	{#if !editing}
 		<div class="flex items-center gap-1.5 px-4 py-2.5 border-t border-slate-200 dark:border-slate-800">
 			<button
 				onclick={beginEdit}

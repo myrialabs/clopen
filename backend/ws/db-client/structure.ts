@@ -7,7 +7,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { connectionManager } from '../../db-client/connection-manager';
 import type { AlterOperation, IndexDefinition, TableDefinition } from '../../db-client/drivers/types';
 import type { DbClientSchemaNodeType } from '$shared/types/db-client';
-import { requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
 
 const columnDefinitionSchema = t.Object({
 	name: t.String({ minLength: 1 }),
@@ -45,8 +45,8 @@ export const structureHandler = createRouter()
 			name: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.createDatabase) throw new Error('Driver does not support database creation');
 		const ddl = await adapter.createDatabase(data.name);
@@ -59,8 +59,8 @@ export const structureHandler = createRouter()
 			name: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.dropDatabase) throw new Error('Driver does not support dropping databases');
 		const ddl = await adapter.dropDatabase(data.name);
@@ -74,8 +74,8 @@ export const structureHandler = createRouter()
 			newName: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.renameDatabase) throw new Error('Driver does not support renaming databases');
 		const ddl = await adapter.renameDatabase(data.name, data.newName);
@@ -89,8 +89,8 @@ export const structureHandler = createRouter()
 			schema: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.resetDatabase) throw new Error('Driver does not support emptying databases');
 		const ddl = await adapter.resetDatabase({ database: data.database, schema: data.schema });
@@ -102,8 +102,8 @@ export const structureHandler = createRouter()
 			connectionId: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.flushDatabase) throw new Error('Driver does not support flushing the database');
 		const ddl = await adapter.flushDatabase();
@@ -118,8 +118,8 @@ export const structureHandler = createRouter()
 			definition: tableDefinitionSchema
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.createTable) throw new Error('Driver does not support createTable');
 		const ddl = await adapter.createTable(data.definition as TableDefinition, {
@@ -138,8 +138,8 @@ export const structureHandler = createRouter()
 			operations: t.Array(alterOpSchema)
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.alterTable) throw new Error('Driver does not support alterTable');
 		const ddl = await adapter.alterTable(data.name, data.operations as AlterOperation[], {
@@ -157,8 +157,8 @@ export const structureHandler = createRouter()
 			name: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.dropTable) throw new Error('Driver does not support dropTable');
 		const ddl = await adapter.dropTable(data.name, {
@@ -176,8 +176,8 @@ export const structureHandler = createRouter()
 			name: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.truncateTable) throw new Error('Driver does not support truncateTable');
 		const ddl = await adapter.truncateTable(data.name, {
@@ -195,8 +195,8 @@ export const structureHandler = createRouter()
 			name: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.resetTable) throw new Error('Driver does not support resetTable');
 		const ddl = await adapter.resetTable(data.name, {
@@ -216,8 +216,8 @@ export const structureHandler = createRouter()
 			withData: t.Optional(t.Boolean())
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.duplicateTable) throw new Error('Driver does not support duplicateTable');
 		const ddl = await adapter.duplicateTable(data.name, data.newName, {
@@ -237,8 +237,8 @@ export const structureHandler = createRouter()
 			type: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean(), statement: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.getCreateStatement) throw new Error('Driver does not support fetching the CREATE statement');
 		const statement = await adapter.getCreateStatement(
@@ -258,8 +258,8 @@ export const structureHandler = createRouter()
 			newName: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.renameTable) throw new Error('Driver does not support renameTable');
 		const ddl = await adapter.renameTable(data.name, data.newName, {
@@ -278,8 +278,8 @@ export const structureHandler = createRouter()
 			indexDef: indexDefinitionSchema
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.createIndex) throw new Error('Driver does not support createIndex');
 		const ddl = await adapter.createIndex(data.tableName, data.indexDef as IndexDefinition, {
@@ -298,8 +298,8 @@ export const structureHandler = createRouter()
 			indexName: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.dropIndex) throw new Error('Driver does not support dropIndex');
 		const ddl = await adapter.dropIndex(data.tableName, data.indexName, {
@@ -318,8 +318,8 @@ export const structureHandler = createRouter()
 			query: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.createView) throw new Error('Driver does not support createView');
 		const ddl = await adapter.createView(data.name, data.query, {
@@ -337,8 +337,8 @@ export const structureHandler = createRouter()
 			name: t.String({ minLength: 1 })
 		}),
 		response: t.Object({ ok: t.Boolean(), ddl: t.String() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.dropView) throw new Error('Driver does not support dropView');
 		const ddl = await adapter.dropView(data.name, {

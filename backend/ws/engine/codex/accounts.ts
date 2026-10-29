@@ -55,7 +55,7 @@ import {
 import { resolveEngineCli } from '$backend/engine/engine-cli';
 import { getCleanSpawnEnv } from '../../../utils/env';
 import { debug } from '$shared/utils/logger';
-import { requireSetupSessionAccess } from '../access';
+import { requireSetupSession } from '../access';
 // Codex emits coloured output and cursor moves; we strip them before
 // pattern-matching but stream the raw bytes (with ANSI) to the UI's xterm.js so
 // the user sees the CLI exactly as it would render in a real terminal.
@@ -497,10 +497,10 @@ export const codexAccountsHandler = createRouter()
 
 	.on('engine:codex-account-setup-cancel', {
 		data: t.Object({ setupId: t.String() })
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		let entry: CodexLoginProcess;
 		try {
-			entry = requireSetupSessionAccess(conn, data.setupId, setupProcesses);
+			entry = requireSetupSession(data.setupId, setupProcesses);
 		} catch {
 			return;
 		}

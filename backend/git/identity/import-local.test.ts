@@ -64,14 +64,9 @@ async function runInSandbox(
 }
 
 const PRELUDE = `
-	import { initializeDatabase, getDatabase } from '$backend/database';
+	import { initializeDatabase } from '$backend/database';
 	import { gitIdentityService } from '$backend/git/identity';
 	await initializeDatabase();
-	const now = new Date().toISOString();
-	getDatabase().prepare(
-		\`INSERT INTO users (id, name, color, avatar, role, created_at, updated_at)
-		 VALUES ('u1', 'User', '#fff', 'a', 'admin', ?, ?)\`
-	).run(now, now);
 `;
 
 describe('mirroring the machine git identity', () => {
@@ -85,7 +80,7 @@ describe('mirroring the machine git identity', () => {
 
 		const result = await runInSandbox(
 			`${PRELUDE}
-			const list = await gitIdentityService.list('u1');
+			const list = await gitIdentityService.list();
 			console.log(JSON.stringify(list.map((i) => ({
 				label: i.label, name: i.name, email: i.email,
 				isDefault: i.isDefault, source: i.source, canDelete: i.canDelete
@@ -117,9 +112,9 @@ describe('mirroring the machine git identity', () => {
 
 		const result = await runInSandbox(
 			`${PRELUDE}
-			await gitIdentityService.list('u1');
-			await gitIdentityService.list('u1');
-			const list = await gitIdentityService.list('u1');
+			await gitIdentityService.list();
+			await gitIdentityService.list();
+			const list = await gitIdentityService.list();
 			console.log(JSON.stringify({ count: list.length }));`,
 			{ home, dataDir }
 		);
@@ -137,11 +132,11 @@ describe('mirroring the machine git identity', () => {
 
 		const result = await runInSandbox(
 			`${PRELUDE}
-			const [mirrored] = await gitIdentityService.list('u1');
+			const [mirrored] = await gitIdentityService.list();
 			let error = null;
-			try { await gitIdentityService.remove('u1', mirrored.id); }
+			try { await gitIdentityService.remove(mirrored.id); }
 			catch (e) { error = e instanceof Error ? e.message : String(e); }
-			const after = await gitIdentityService.list('u1');
+			const after = await gitIdentityService.list();
 			console.log(JSON.stringify({ error, stillThere: after.length }));`,
 			{ home, dataDir }
 		);
@@ -162,8 +157,8 @@ describe('mirroring the machine git identity', () => {
 
 		const result = await runInSandbox(
 			`${PRELUDE}
-			const [mirrored] = await gitIdentityService.list('u1');
-			const updated = await gitIdentityService.update('u1', mirrored.id, {
+			const [mirrored] = await gitIdentityService.list();
+			const updated = await gitIdentityService.update(mirrored.id, {
 				label: 'Renamed', name: 'Edited Name', email: 'edited@example.com',
 				authMethod: 'none', hosts: []
 			});
@@ -189,7 +184,7 @@ describe('mirroring the machine git identity', () => {
 
 		const result = await runInSandbox(
 			`${PRELUDE}
-			const list = await gitIdentityService.list('u1');
+			const list = await gitIdentityService.list();
 			console.log(JSON.stringify({ count: list.length }));`,
 			{ home, dataDir }
 		);

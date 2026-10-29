@@ -184,9 +184,8 @@ export const skillService = {
 	},
 
 	/**
-	 * Minimal list of slash-invocable skills for the chat "/" picker. Non-admin
-	 * surface (any user can invoke one), so it exposes only display fields — no
-	 * bodies, no source/disk metadata.
+	 * Minimal list of slash-invocable skills for the chat "/" picker. It exposes
+	 * only display fields — no bodies, no source/disk metadata.
 	 *
 	 * `profileFilter` mirrors the stream-time semantics: when an active profile
 	 * references ≥1 skill, the picker shows exactly that set (even if a referenced

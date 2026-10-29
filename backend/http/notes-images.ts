@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { fileTypeFromBuffer } from 'file-type';
 
 import { debug } from '$shared/utils/logger';
-import { authenticateRequest, type AuthIdentity } from './bearer-auth';
+import { authenticateRequest } from './bearer-auth';
 import { noteQueries, noteCollectionQueries, noteImageQueries } from '../database/queries/note-queries';
 import { canAccessCollection } from '../notes/access';
 import {
@@ -45,9 +45,8 @@ const SNIFF_BYTES = 4100;
 
 export const notesImagesRoute = new Elysia()
 	.post('/api/notes/images/upload', async ({ request, query }) => {
-		let identity: AuthIdentity;
 		try {
-			identity = authenticateRequest(request);
+			authenticateRequest(request);
 		} catch (error) {
 			const status = (error as { status?: number }).status ?? 401;
 			const message = error instanceof Error ? error.message : 'Unauthorized';
@@ -70,7 +69,7 @@ export const notesImagesRoute = new Elysia()
 		if (!note) return new Response('Note not found', { status: 404 });
 
 		const collection = noteCollectionQueries.getById(note.collection_id);
-		if (!collection || !canAccessCollection(identity.userId, collection)) {
+		if (!collection || !canAccessCollection(collection)) {
 			return new Response('Access denied', { status: 403 });
 		}
 
@@ -85,7 +84,7 @@ export const notesImagesRoute = new Elysia()
 
 		// Stream to a temp file with a hard ceiling instead of buffering the body.
 		// `fileSize` is a client claim: reading the whole request into memory first
-		// would let one member of one project decide how much RAM this process
+		// would let one request decide how much RAM this process
 		// allocates, no matter what the query parameter said.
 		const writer = Bun.file(tempPath).writer();
 		const header: Uint8Array[] = [];
@@ -160,9 +159,8 @@ export const notesImagesRoute = new Elysia()
 	})
 
 	.get('/api/notes/images/:id', async ({ request, params }) => {
-		let identity: AuthIdentity;
 		try {
-			identity = authenticateRequest(request);
+			authenticateRequest(request);
 		} catch (error) {
 			const status = (error as { status?: number }).status ?? 401;
 			const message = error instanceof Error ? error.message : 'Unauthorized';
@@ -175,7 +173,7 @@ export const notesImagesRoute = new Elysia()
 		const collection = noteCollectionQueries.getForNote(img.note_id);
 		if (!collection) return new Response('Image not found', { status: 404 });
 
-		if (!canAccessCollection(identity.userId, collection)) {
+		if (!canAccessCollection(collection)) {
 			return new Response('Access denied', { status: 403 });
 		}
 

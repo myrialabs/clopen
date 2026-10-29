@@ -17,7 +17,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import type { ImageEditRecipe } from '$shared/types/filesystem';
 import { processImageEdit } from '../../files/image-processing';
-import { requireFilePathAccess } from './path-access';
+import { resolveFilePath } from './path-access';
 
 const cropSchema = t.Object({
 	left: t.Number(),
@@ -93,8 +93,8 @@ export const imageEditHandler = createRouter()
 			width: t.Number(),
 			height: t.Number()
 		})
-	}, async ({ data, conn }) => {
-		const sourcePath = await requireFilePathAccess(conn, data.sourcePath);
+	}, async ({ data }) => {
+		const sourcePath = await resolveFilePath(data.sourcePath);
 		// Fast mode: lower encoder effort so the live estimate stays responsive
 		// on very large images / upscales. The real save uses full effort.
 		const result = await processImageEdit(sourcePath, data.recipe as ImageEditRecipe, true);
@@ -120,9 +120,9 @@ export const imageEditHandler = createRouter()
 		height: t.Number(),
 		modified: t.String()
 	})
-}, async ({ data, conn }) => {
-	const sourcePath = await requireFilePathAccess(conn, data.sourcePath);
-	const targetPath = await requireFilePathAccess(conn, data.targetPath);
+}, async ({ data }) => {
+	const sourcePath = await resolveFilePath(data.sourcePath);
+	const targetPath = await resolveFilePath(data.targetPath);
 
 	const targetStat = await fsStat(targetPath).catch(() => null);
 

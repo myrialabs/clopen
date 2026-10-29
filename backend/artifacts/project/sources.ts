@@ -78,7 +78,7 @@ export const PROJECT_SOURCES: readonly ProjectSource[] = [
 	{ id: 'cursor-rules', kind: 'instruction', path: '.cursor/rules', layout: 'md-dir', native: [] },
 	{ id: 'clinerules', kind: 'instruction', path: '.clinerules', layout: 'file', native: [] },
 
-	// ── MCP ── `.agents/mcp.json` is Clopen's convention, delivered after an admin trusts it.
+	// ── MCP ── `.agents/mcp.json` is Clopen's convention, delivered once it is trusted.
 	{ id: 'agents-mcp', kind: 'mcp', path: '.agents/mcp.json', layout: 'file', native: [], editable: true },
 	{ id: 'root-mcp', kind: 'mcp', path: '.mcp.json', layout: 'file', native: ['claude'] }
 ];

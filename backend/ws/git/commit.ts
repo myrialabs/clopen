@@ -39,7 +39,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		const hash = await gitService.commit(cwd, data.message, identityEnvFor(conn, data.projectId));
+		const hash = await gitService.commit(cwd, data.message, identityEnvFor(data.projectId));
 		return { hash };
 	})
 
@@ -55,7 +55,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		const hash = await gitService.amendCommit(cwd, data.message, identityEnvFor(conn, data.projectId));
+		const hash = await gitService.amendCommit(cwd, data.message, identityEnvFor(data.projectId));
 		return { hash };
 	})
 
@@ -86,7 +86,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.revertCommit(cwd, data.ref, identityEnvFor(conn, data.projectId));
+		return await gitService.revertCommit(cwd, data.ref, identityEnvFor(data.projectId));
 	})
 
 	.http('git:cherry-pick', {
@@ -102,7 +102,7 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.cherryPick(cwd, data.hashes, identityEnvFor(conn, data.projectId));
+		return await gitService.cherryPick(cwd, data.hashes, identityEnvFor(data.projectId));
 	})
 
 	.http('git:clean', {
@@ -145,5 +145,5 @@ export const commitHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.npmVersion(cwd, data.bump, identityEnvFor(conn, data.projectId));
+		return await gitService.npmVersion(cwd, data.bump, identityEnvFor(data.projectId));
 	});

@@ -7,8 +7,7 @@
  *   - mcp:toggle    — enable / disable
  *   - mcp:uninstall — remove
  *
- * Mutations are admin-gated in `backend/auth/permissions.ts`. Changes take
- * effect on the next chat stream (engines read MCP config when a stream starts).
+ * Changes take effect on the next chat stream (engines read MCP config when a stream starts).
  */
 
 import { t } from 'elysia';
@@ -52,9 +51,8 @@ const INSTALLED_SERVER_SCHEMA = t.Object({
 	transport: TRANSPORT_SCHEMA,
 	command: t.Union([t.String(), t.Null()]),
 	args: t.Array(t.String()),
-	// Full values are returned (not redacted): the whole MCP surface is
-	// admin-only (see auth/permissions.ts), and the Settings UI shows values so
-	// admins can review and edit what each engine receives.
+	// Full values are returned (not redacted): the Settings UI shows values so
+	// the owner can review and edit what each engine receives.
 	env: t.Record(t.String(), t.String()),
 	headers: t.Record(t.String(), t.String()),
 	configSchema: t.Array(CONFIG_FIELD_SCHEMA),

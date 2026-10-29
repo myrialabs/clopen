@@ -63,7 +63,6 @@ beforeAll(async () => {
 		name: 'MCP Test User',
 		color: '#000000',
 		avatar: 'mcp',
-		role: 'admin',
 		personal_access_token_hash: hashToken(patToken),
 		created_at: new Date().toISOString()
 	});
@@ -83,8 +82,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
-	authQueries.deleteSessionsByUserId(testUserId);
-	authQueries.deleteUser(testUserId);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(testUserId);
 	setAuthMode('required');
 	closeDatabase();
 });

@@ -9,15 +9,14 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import {
 	startInstall,
 	cancelInstall,
+	getSession,
 	InstallAlreadyRunningError,
 	InstallNotAutoInstallableError
 } from '$backend/engine/install-runner';
-import { requireInstallSessionAccess } from './access';
 
 const TOOL_UNION = t.Union([
 	t.Literal('git'),
@@ -49,13 +48,10 @@ export const stackInstallHandler = createRouter()
 			displayCommand: t.String(),
 			startedAt: t.Number()
 		})
-	}, async ({ conn, data }) => {
-		const userId = ws.getUserId(conn);
-		if (!userId) throw new Error('Not authenticated');
-
-		debug.log('path', `install-start requested: tool=${data.tool} user=${userId}`);
+	}, async ({ data }) => {
+		debug.log('path', `install-start requested: tool=${data.tool}`);
 		try {
-			const session = await startInstall(data.tool, userId);
+			const session = await startInstall(data.tool);
 			return {
 				sessionId: session.id,
 				tool: data.tool,
@@ -76,10 +72,7 @@ export const stackInstallHandler = createRouter()
 	.http('stack:install-cancel', {
 		data: t.Object({ sessionId: t.String() }),
 		response: t.Object({ cancelled: t.Boolean() })
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		if (!userId) throw new Error('Not authenticated');
-		requireInstallSessionAccess(conn, data.sessionId);
+	}, async ({ data }) => {
 		const cancelled = cancelInstall(data.sessionId);
 		return { cancelled };
 	})
@@ -102,11 +95,8 @@ export const stackInstallHandler = createRouter()
 				})
 			])
 		})
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		if (!userId) throw new Error('Not authenticated');
-		const session = requireInstallSessionAccess(conn, data.sessionId);
-		return { session };
+	}, async ({ data }) => {
+		return { session: getSession(data.sessionId) };
 	})
 
 	// ═══ Server → client events ═══

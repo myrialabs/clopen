@@ -25,11 +25,9 @@
 		type FileShare,
 		type FileShareDefaults
 	} from '$frontend/stores/features/file-shares.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
 
-	const isAdmin = $derived(authStore.isAdmin);
 	const shares = $derived(fileSharesStore.shares);
 	const defaults = $derived(fileSharesStore.defaults);
 
@@ -117,7 +115,7 @@
 <div class="py-1">
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">File share links</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">
-		{isAdmin ? 'Links that can still open a file on this server.' : 'Your links that can still open a file.'}
+		Links that can still open a file on this server.
 	</p>
 
 	<!-- Defaults for new links -->
@@ -265,11 +263,6 @@
 					{/if}
 
 					<div class="flex items-center gap-1.5 flex-wrap text-2xs text-slate-500 dark:text-slate-400">
-						{#if isAdmin}
-							<Icon name="lucide:user" class="w-3 h-3" />
-							<span>{share.createdByName ?? 'Unknown user'}</span>
-							<span class="text-slate-300 dark:text-slate-600">·</span>
-						{/if}
 						<Icon name={share.oneTime ? 'lucide:flame' : 'lucide:repeat'} class="w-3 h-3" />
 						<span>{share.oneTime ? 'Opens once' : 'Reusable'}</span>
 						<span class="text-slate-300 dark:text-slate-600">·</span>

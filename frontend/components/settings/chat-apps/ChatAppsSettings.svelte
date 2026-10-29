@@ -2,19 +2,16 @@
 	/**
 	 * Chat Apps: control Clopen from a chat app (Telegram first).
 	 *
-	 * The bot is an integration account (one token, connected and removed by
-	 * an admin); each user links their own chat to it. A member's chat waits
-	 * for an admin's approval; an admin sees every chat on the bot and can
-	 * approve, switch off or remove it. What a chat can do is the control
-	 * catalog on the server, and the command reference below is read from it.
+	 * The bot is an integration account (one token); chats are linked to it,
+	 * and each one can be switched off or unlinked. What a chat can do is the
+	 * control catalog on the server, and the command reference below is read
+	 * from it.
 	 *
-	 * Everything here is pushed: a chat pairing from the phone, an approval,
-	 * a bot coming up or switching between webhook and polling all arrive as
+	 * Everything here is pushed: a chat pairing from the phone, a bot coming up or switching between webhook and polling all arrive as
 	 * `chat-apps:changed`, so the page never needs reopening to be current.
 	 */
 	import { onMount } from 'svelte';
 	import ws from '$frontend/utils/ws';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { integrationsStore } from '$frontend/stores/features/integrations.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { showConfirm } from '$frontend/stores/ui/dialog.svelte';
@@ -26,12 +23,8 @@
 
 	interface ChatLink {
 		id: string;
-		userId: string;
-		userName: string;
 		displayName: string | null;
-		status: 'pending' | 'approved';
 		isEnabled: boolean;
-		isMine: boolean;
 		createdAt: string;
 		lastUsedAt: string | null;
 	}
@@ -56,7 +49,6 @@
 		hint: string | null;
 		description: string;
 		group: string;
-		adminOnly: boolean;
 	}
 
 	let bots = $state<ChatBot[]>([]);
@@ -69,7 +61,6 @@
 	let busy = $state<string | null>(null);
 	let showCommands = $state(false);
 
-	const isAdmin = $derived(authStore.isAdmin);
 	const pairingRemaining = $derived(pairing ? Math.max(0, Math.ceil((pairing.expiresAt - now) / 1000)) : 0);
 	const commandGroups = $derived.by(() => {
 		const groups = new Map<string, CommandInfo[]>();
@@ -95,7 +86,7 @@
 			const before = new Set(bots.flatMap((bot) => bot.links.map((link) => link.id)));
 			bots = result as ChatBot[];
 			// The phone just finished pairing: the code on screen has done its job.
-			if (pairing && bots.some((bot) => bot.links.some((link) => link.isMine && !before.has(link.id)))) pairing = null;
+			if (pairing && bots.some((bot) => bot.links.some((link) => !before.has(link.id)))) pairing = null;
 		} catch (error) {
 			toast('error', 'Chat apps', errorText(error));
 		} finally {
@@ -147,10 +138,6 @@
 		if (open) void ws.http('chat-apps:pair-cancel', { accountId: open.accountId }).catch(() => {});
 	}
 
-	function decide(link: ChatLink, decision: 'approve' | 'reject') {
-		void act(link.id, decision === 'approve' ? 'Could not approve' : 'Could not reject', () => ws.http('chat-apps:decide', { linkId: link.id, decision }));
-	}
-
 	async function testLink(link: ChatLink) {
 		busy = link.id;
 		try {
@@ -166,9 +153,7 @@
 	async function unlink(link: ChatLink) {
 		const confirmed = await showConfirm({
 			title: 'Unlink this chat?',
-			message: link.isMine
-				? 'The chat stops controlling Clopen. You can link it again any time.'
-				: `${link.userName}'s chat stops controlling Clopen. They can link it again, and it will need approval.`,
+			message: 'The chat stops controlling Clopen. You can link it again any time.',
 			confirmText: 'Unlink',
 			type: 'warning'
 		});
@@ -206,8 +191,7 @@
 	}
 
 	function chatName(link: ChatLink): string {
-		if (link.isMine) return link.displayName ? `${link.displayName} (you)` : 'Your chat';
-		return link.displayName ? `${link.userName} · ${link.displayName}` : link.userName;
+		return link.displayName ?? 'Telegram chat';
 	}
 
 	function formatCountdown(seconds: number): string {
@@ -255,28 +239,21 @@
 				{:else if bots.length === 0}
 					<div class="flex flex-col gap-2">
 						<p class="text-xs text-slate-600 dark:text-slate-500">
-							{#if isAdmin}
-								No bot is connected yet. Create one with @BotFather in Telegram and paste its token here. Everyone can then link their own chat to it.
-							{:else}
-								No bot is connected yet. Ask an admin to connect one.
-							{/if}
+							No bot is connected yet. Create one with @BotFather in Telegram and paste its token here, then link your chat to it.
 						</p>
-						{#if isAdmin}
-							<div>
-								<button
-									type="button"
-									class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-violet-500/10 border border-violet-500/20 dark:border-violet-500/25 rounded-lg text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:border-violet-600 dark:hover:border-violet-500/40"
-									onclick={connectBot}
-								>
-									<Icon name="lucide:plus" class="w-3.5 h-3.5" />
-									<span>Connect a Telegram bot</span>
-								</button>
-							</div>
-						{/if}
+						<div>
+							<button
+								type="button"
+								class="inline-flex items-center gap-1.5 py-2 px-3.5 bg-violet-500/10 border border-violet-500/20 dark:border-violet-500/25 rounded-lg text-violet-600 dark:text-violet-400 text-xs font-semibold cursor-pointer transition-all duration-150 hover:bg-violet-500/20 hover:border-violet-600 dark:hover:border-violet-500/40"
+								onclick={connectBot}
+							>
+								<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+								<span>Connect a Telegram bot</span>
+							</button>
+						</div>
 					</div>
 				{:else}
 					{#each bots as bot (bot.accountId)}
-						{@const hasMine = bot.links.some((link) => link.isMine)}
 						<div class="flex flex-col gap-2.5" class:opacity-60={busy === bot.accountId}>
 							<div class="flex items-center justify-between gap-2">
 								<div class="flex flex-col min-w-0">
@@ -296,30 +273,24 @@
 										onclick={() => startPairing(bot)}
 									>
 										<Icon name="lucide:link" class="w-3.5 h-3.5" />
-										<span>{hasMine ? 'Link another chat' : 'Link my chat'}</span>
+										<span>{bot.links.length > 0 ? 'Link another chat' : 'Link my chat'}</span>
 									</button>
-									{#if isAdmin}
-										<button
-											type="button"
-											title="Remove this bot"
-											aria-label="Remove this bot"
-											disabled={busy === bot.accountId}
-											class="flex items-center justify-center w-8.5 h-8.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 cursor-pointer transition-colors hover:text-red-600 hover:border-red-500/40 dark:hover:text-red-400 disabled:opacity-50"
-											onclick={() => removeBot(bot)}
-										>
-											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
-										</button>
-									{/if}
+									<button
+										type="button"
+										title="Remove this bot"
+										aria-label="Remove this bot"
+										disabled={busy === bot.accountId}
+										class="flex items-center justify-center w-8.5 h-8.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-500 cursor-pointer transition-colors hover:text-red-600 hover:border-red-500/40 dark:hover:text-red-400 disabled:opacity-50"
+										onclick={() => removeBot(bot)}
+									>
+										<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
+									</button>
 								</div>
 							</div>
 
 							{#if !bot.control}
 								<p class="text-xs text-amber-700 dark:text-amber-400">
-									{#if isAdmin}
-										Turn on "Control Clopen" for this bot in Settings → Integrations to use it.
-									{:else}
-										An admin has to turn on "Control Clopen" for this bot first.
-									{/if}
+									Turn on "Control Clopen" for this bot in Settings → Integrations to use it.
 								</p>
 							{/if}
 
@@ -328,7 +299,6 @@
 									<div class="flex items-start justify-between gap-2">
 										<p class="text-xs text-slate-600 dark:text-slate-500">
 											Scan with your phone or open the link, then tap <span class="font-semibold">Start</span> in Telegram.
-											{#if !isAdmin}An admin approves the chat before it can be used.{/if}
 										</p>
 										<button
 											type="button"
@@ -351,9 +321,7 @@
 
 							{#each bot.links as link (link.id)}
 								<div
-									class="flex flex-col gap-2 p-3 rounded-lg border bg-white/60 dark:bg-slate-900/40 {link.status === 'pending'
-										? 'border-amber-500/40'
-										: 'border-slate-200 dark:border-slate-700/80'}"
+									class="flex flex-col gap-2 p-3 rounded-lg border bg-white/60 dark:bg-slate-900/40 border-slate-200 dark:border-slate-700/80"
 									class:opacity-60={busy === link.id}
 								>
 									<div class="flex items-center justify-between gap-2">
@@ -362,78 +330,45 @@
 											<span class="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{chatName(link)}</span>
 										</div>
 
-										{#if link.status === 'approved'}
-											<label class="flex items-center gap-2 shrink-0 text-xs text-slate-500" title={link.isEnabled ? 'This chat can control Clopen' : 'This chat can do nothing until it is switched on'}>
-												<span>{link.isEnabled ? 'On' : 'Off'}</span>
-												<span class="relative inline-block w-10 h-5.5">
-													<input
-														type="checkbox"
-														checked={link.isEnabled}
-														disabled={busy === link.id}
-														onchange={() => setEnabled(link)}
-														class="opacity-0 w-0 h-0"
-													/>
-													<span
-														class="absolute cursor-pointer inset-0 bg-slate-600/40 rounded-3xl transition-all duration-200
-														before:absolute before:content-[''] before:h-4 before:w-4 before:left-0.75 before:bottom-0.75 before:bg-white before:rounded-full before:transition-all before:duration-200
-														{link.isEnabled ? 'bg-gradient-to-br from-violet-600 to-purple-600 before:translate-x-4.5' : ''}"
-													></span>
-												</span>
-											</label>
-										{:else}
-											<span class="shrink-0 text-xs font-medium text-amber-700 dark:text-amber-400">Waiting for approval</span>
-										{/if}
+										<label class="flex items-center gap-2 shrink-0 text-xs text-slate-500" title={link.isEnabled ? 'This chat can control Clopen' : 'This chat can do nothing until it is switched on'}>
+											<span>{link.isEnabled ? 'On' : 'Off'}</span>
+											<span class="relative inline-block w-10 h-5.5">
+												<input
+													type="checkbox"
+													checked={link.isEnabled}
+													disabled={busy === link.id}
+													onchange={() => setEnabled(link)}
+													class="opacity-0 w-0 h-0"
+												/>
+												<span
+													class="absolute cursor-pointer inset-0 bg-slate-600/40 rounded-3xl transition-all duration-200
+													before:absolute before:content-[''] before:h-4 before:w-4 before:left-0.75 before:bottom-0.75 before:bg-white before:rounded-full before:transition-all before:duration-200
+													{link.isEnabled ? 'bg-gradient-to-br from-violet-600 to-purple-600 before:translate-x-4.5' : ''}"
+												></span>
+											</span>
+										</label>
 									</div>
 
-									{#if link.status === 'pending'}
-										{#if isAdmin}
-											<div class="flex items-center gap-2">
-												<button
-													type="button"
-													disabled={busy === link.id}
-													class="inline-flex items-center gap-1 py-1.5 px-3 rounded-md text-xs font-semibold bg-emerald-500/10 border border-emerald-500/30 text-emerald-700 dark:text-emerald-400 cursor-pointer hover:bg-emerald-500/20 disabled:opacity-50"
-													onclick={() => decide(link, 'approve')}
-												>
-													<Icon name="lucide:check" class="w-3 h-3" />
-													<span>Approve</span>
-												</button>
-												<button
-													type="button"
-													disabled={busy === link.id}
-													class="inline-flex items-center gap-1 py-1.5 px-3 rounded-md text-xs font-semibold border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 cursor-pointer hover:text-red-600 dark:hover:text-red-400 disabled:opacity-50"
-													onclick={() => decide(link, 'reject')}
-												>
-													<Icon name="lucide:x" class="w-3 h-3" />
-													<span>Reject</span>
-												</button>
-											</div>
-										{:else}
-											<p class="text-xs text-slate-500">An admin has to approve this chat before it can be used.</p>
-										{/if}
-									{:else}
-										<div class="flex flex-wrap items-center gap-x-3 gap-y-1">
-											{#if link.isMine}
-												<button
-													type="button"
-													class="inline-flex items-center gap-1 text-xs text-violet-600 dark:text-violet-400 hover:underline cursor-pointer disabled:opacity-50"
-													disabled={busy === link.id || !link.isEnabled}
-													onclick={() => testLink(link)}
-												>
-													<Icon name="lucide:send" class="w-3 h-3" />
-													<span>Send test</span>
-												</button>
-											{/if}
-											<button
-												type="button"
-												class="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 dark:hover:text-red-400 cursor-pointer disabled:opacity-50"
-												disabled={busy === link.id}
-												onclick={() => unlink(link)}
-											>
-												<Icon name="lucide:unlink" class="w-3 h-3" />
-												<span>Unlink</span>
-											</button>
-										</div>
-									{/if}
+									<div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+										<button
+											type="button"
+											class="inline-flex items-center gap-1 text-xs text-violet-600 dark:text-violet-400 hover:underline cursor-pointer disabled:opacity-50"
+											disabled={busy === link.id || !link.isEnabled}
+											onclick={() => testLink(link)}
+										>
+											<Icon name="lucide:send" class="w-3 h-3" />
+											<span>Send test</span>
+										</button>
+										<button
+											type="button"
+											class="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-red-600 dark:hover:text-red-400 cursor-pointer disabled:opacity-50"
+											disabled={busy === link.id}
+											onclick={() => unlink(link)}
+										>
+											<Icon name="lucide:unlink" class="w-3 h-3" />
+											<span>Unlink</span>
+										</button>
+									</div>
 								</div>
 							{/each}
 						</div>
@@ -468,9 +403,6 @@
 								<div class="flex flex-col gap-0.5">
 									<div class="flex items-center gap-2">
 										<span class="font-mono text-xs text-violet-700 dark:text-violet-300">/{entry.command}{entry.hint ? ` ${entry.hint}` : ''}</span>
-										{#if entry.adminOnly}
-											<span class="text-3xs uppercase tracking-wide text-amber-700 dark:text-amber-400">admin</span>
-										{/if}
 									</div>
 									<span class="text-xs text-slate-600 dark:text-slate-500">{entry.description}</span>
 								</div>
@@ -483,7 +415,7 @@
 	</div>
 </div>
 
-<!-- The hub's own connect dialog, embedded. An admin here never lands in Settings → Integrations. -->
+<!-- The hub's own connect dialog, embedded, so connecting never detours through Settings → Integrations. -->
 <ConnectAccountModal
 	provider={connectProvider}
 	onClose={() => (connectProvider = null)}

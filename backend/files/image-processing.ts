@@ -348,7 +348,7 @@ export async function processImageEdit(
 
 	const { data, info } = await encodeToBuffer(pipeline, recipe.output, fast);
 
-	// Guard against producing an output larger than the admin file-size limit.
+	// Guard against producing an output larger than the configured file-size limit.
 	validateFileSize(data.length);
 
 	return {

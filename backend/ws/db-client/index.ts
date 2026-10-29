@@ -32,7 +32,7 @@ export const dbClientRouter = createRouter()
 	/**
 	 * Broadcast when the connection list changes for a reason the requesting
 	 * client did not cause — a link created, a link dropped, an account
-	 * disconnected. A projected connection is visible to every admin, so a
-	 * client that only refreshed after its own requests would show a stale list.
+	 * disconnected. A client that only refreshed after its own requests would
+	 * show a stale list.
 	 */
 	.emit('db-client:connections-changed', t.Object({}));

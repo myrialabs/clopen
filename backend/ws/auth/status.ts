@@ -15,7 +15,6 @@ export const statusHandler = createRouter()
 			user: t.Optional(t.Object({
 				id: t.String(),
 				name: t.String(),
-				role: t.Union([t.Literal('admin'), t.Literal('member')]),
 				color: t.String(),
 				avatar: t.String(),
 				createdAt: t.String()

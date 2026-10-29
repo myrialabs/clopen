@@ -1,8 +1,9 @@
 /**
  * Route Permission Configuration
  *
- * Defines which WebSocket routes require authentication and which require admin role.
- * Used by the auth gate in WSRouter.handleMessage().
+ * Defines which WebSocket routes can be reached before signing in. Clopen has
+ * one account — the owner — so every other route only needs an authenticated
+ * connection. Used by the auth gate in WSRouter.handleMessage().
  */
 
 import { getAuthMode } from '$backend/settings/system-settings';
@@ -14,286 +15,8 @@ export const PUBLIC_ROUTES = new Set([
 	'auth:setup',
 	'auth:setup-no-auth',
 	'auth:auto-login-no-auth',
-	'auth:accept-invite',
-	'auth:validate-invite',
 	'auth:claim-device-code',
 	'ws:set-context'
-]);
-
-/** Routes that require admin role */
-export const ADMIN_ONLY_ROUTES = new Set([
-	// Auth session controls with global impact.
-	'auth:logout-all',
-	'auth:create-invite',
-	'auth:list-invites',
-	'auth:revoke-invite',
-	'auth:list-all-sessions',
-	'auth:revoke-any-session',
-	'auth:list-users',
-	'auth:remove-user',
-	'auth:list-user-projects',
-	'auth:assign-project',
-	'auth:unassign-project',
-	// Project lifecycle — members can only access projects they are assigned to
-	// by an admin. Create/delete remain admin-only operations.
-	'projects:create',
-	'projects:delete',
-	'settings:update',
-	'settings:update-system',
-	'settings:update-batch',
-	'system:run-update',
-	'system:clear-data',
-	// Port manager — anyone signed in may see what is listening, but ending a
-	// process can take down another member's work, so stopping is admin-only.
-	'ports:kill',
-	// Containers — anyone signed in may see what is running, but starting or
-	// stopping one takes down whatever it serves for everyone else. Opening a
-	// shell inside a container is gated separately, in the PtyKit authorize.
-	'containers:action',
-	'containers:remove',
-	'containers:prune',
-	'containers:prune-dismiss',
-	// Stack — binary installation is an admin-only operation.
-	'stack:status',
-	'stack:status-all',
-	'stack:install-start',
-	'stack:install-cancel',
-	'stack:install-session',
-	// Engine — account/provider mutations are global system credentials and
-	// must only be changed by admins. Read-only routes (status, *-list) stay
-	// open so any authenticated user can see what is configured.
-	'engine:claude-accounts-switch',
-	'engine:claude-accounts-delete',
-	'engine:claude-accounts-rename',
-	'engine:claude-account-setup-start',
-	'engine:claude-account-setup-submit',
-	'engine:claude-account-setup-cancel',
-	'engine:codex-accounts-add-api-key',
-	'engine:codex-accounts-switch',
-	'engine:codex-accounts-delete',
-	'engine:codex-accounts-rename',
-	'engine:codex-account-setup-start',
-	'engine:codex-account-setup-cancel',
-	'engine:copilot-accounts-add',
-	'engine:copilot-accounts-switch',
-	'engine:copilot-accounts-delete',
-	'engine:copilot-accounts-rename',
-	'engine:qwen-accounts-add',
-	'engine:qwen-accounts-switch',
-	'engine:qwen-accounts-delete',
-	'engine:qwen-accounts-rename',
-	'engine:pi-accounts-save',
-	'engine:pi-accounts-switch',
-	'engine:pi-accounts-delete',
-	'engine:pi-accounts-rename',
-	'engine:pi-account-login-start',
-	'engine:pi-account-login-submit',
-	'engine:pi-account-login-cancel',
-	'engine:cline-accounts-save',
-	'engine:cline-accounts-switch',
-	'engine:cline-accounts-delete',
-	'engine:cline-accounts-rename',
-	'engine:cline-account-login-start',
-	'engine:cline-account-login-submit',
-	'engine:cline-account-login-cancel',
-	'engine:opencode-provider-add',
-	'engine:opencode-provider-remove',
-	'engine:opencode-provider-toggle',
-	'engine:opencode-provider-update',
-	'engine:opencode-provider-update-options',
-	'engine:opencode-provider-fetch-models',
-	'engine:opencode-account-add',
-	'engine:opencode-account-switch',
-	'engine:opencode-account-delete',
-	'engine:opencode-account-rename',
-	'engine:opencode-models-dev-fetch',
-	// Tunnel — remote/local management mutates global Cloudflare credentials,
-	// cloudflared auth, and ingress rules. Quick Tunnel is ephemeral and stays
-	// open. Read-only routes (status, *-list, ingress, auth-status) stay open so
-	// any authenticated user can see what is active.
-	'tunnel:remote:config:add',
-	'tunnel:remote:config:remove',
-	'tunnel:remote:start',
-	'tunnel:remote:stop',
-	'tunnel:local:login-start',
-	'tunnel:local:login-cancel',
-	'tunnel:local:logout',
-	'tunnel:local:set-zone',
-	'tunnel:local:create',
-	'tunnel:local:delete',
-	'tunnel:local:ingress:add',
-	'tunnel:local:ingress:remove',
-	'tunnel:local:start',
-	'tunnel:local:stop',
-	// External MCP — installing/removing servers from the official registry is a
-	// global, system-wide operation (it applies to every engine and project), so
-	// the whole surface is admin-only, mirroring Stack and Engines.
-	'mcp:catalog',
-	'mcp:list',
-	'mcp:parse-config',
-	'mcp:install',
-	'mcp:toggle',
-	'mcp:update-config',
-	'mcp:uninstall',
-	'mcp:status',
-	'mcp:oauth-start',
-	'mcp:oauth-complete',
-	// Per-tool control + inspector — introspects/filters an installed server's
-	// tools and can invoke them, so it stays within the admin-only MCP surface.
-	'mcp:tools',
-	'mcp:set-tool-overrides',
-	'mcp:call-tool',
-	'mcp:engine-config',
-	// Third-party integrations. A connected account holds a credential and
-	// projects rows onto surfaces every engine and every project can reach, so
-	// the whole surface is admin-only for the same reason MCP is. The read
-	// events are gated too: `integrations:list` names which services this
-	// install is connected to, and `integrations:secrets-health` describes the
-	// state of the key that protects them.
-	'integrations:providers',
-	'integrations:list',
-	'integrations:connect',
-	'integrations:update',
-	'integrations:disconnect',
-	'integrations:health',
-	'integrations:secrets-health',
-	// Account-backed database connections. Linking reads a credential belonging
-	// to the install rather than to the caller, and projects a connection every
-	// admin sees — the same reason the rest of the integrations surface is
-	// admin-only. The ordinary db-client routes stay open: a member still
-	// manages their own hand-typed connections exactly as before.
-	'db-client:providers',
-	'db-client:remote-databases',
-	'db-client:create-options',
-	// Provisions real infrastructure against the account's quota, which is as
-	// outward-facing as anything on this surface gets. Creating an organisation
-	// creates a BILLING entity, which is more so.
-	'db-client:create-group',
-	'db-client:create-database',
-	// Renames a database everyone at the provider sees.
-	'db-client:rename-database',
-	// Destroys a database and everything in it.
-	'db-client:delete-database',
-	'db-client:link',
-	'db-client:update-link',
-	'db-client:unlink',
-	// Applying a migration changes a schema everyone shares, and writing types
-	// writes a file into the repository. The Supabase READS are not listed, so
-	// anyone who can use the connection can look.
-	'db-client:supabase-apply-migration',
-	'db-client:supabase-write-types',
-	// Worktree database branching. Pointing a project at a parent database
-	// commits an account's quota to it, and deleting a branch destroys a real
-	// database — both spend a credential that belongs to the install rather than
-	// to the caller, the same reason `db-client:link` is gated.
-	//
-	// `worktrees:branching-state` and `worktrees:branch-rewrite-env` are
-	// deliberately NOT listed: a member has to be able to see whether their own
-	// worktree got a branch, and to retry the dotenv write when it was refused.
-	//
-	// NEITHER ARE `worktrees:branch-parents` AND `worktrees:branching-save`, and
-	// that is a change rather than an oversight. They used to be here because a
-	// binding could only point at an integration account, and committing the
-	// install's quota is an admin decision. A binding can now point at a DB
-	// Client connection instead — a database the member themselves saved — and
-	// refusing that would make "give this worktree its own database" an
-	// admin-only feature for no reason that survives being stated. The account
-	// half keeps the old rule: `listBranchSources` shows accounts to admins
-	// only, and `requireSource` refuses anything the caller cannot see.
-	'worktrees:branching-clear',
-	'worktrees:branch-orphans',
-	'worktrees:branch-delete',
-	'worktrees:branch-forget',
-	'worktrees:branch-delete-remote',
-	// Memory Graph — the graph is instance-global and is injected into every
-	// future turn on every engine, so editing it changes what every agent is told.
-	// Mutations only: the read surface (memory:graph / :node / :search / :stats /
-	// :config) stays open so any member can see what the project has learned.
-	'memory:save-node',
-	'memory:archive-node',
-	'memory:restore-nodes',
-	'memory:save-config',
-	// Writing a memory by hand. `draft-node` is gated too even though it stores
-	// nothing: it spends a model call, and a member who cannot save the result has
-	// no reason to be able to generate one.
-	'memory:draft-node',
-	'memory:create-node',
-	// Hard deletes. `delete-nodes` is reached only from the forgotten list, but
-	// `purge` empties a project — or the entire instance — in one call, which is
-	// the most destructive action the memory surface has.
-	'memory:delete-nodes',
-	'memory:purge',
-	// Re-running failed extractions costs model calls, so it is an admin action —
-	// reading the queue's status is not.
-	'memory:retry-failed',
-	// Agent Skills — creating/importing/installing skills writes to the shared
-	// canonical store and applies to every engine, so the whole surface is
-	// admin-only, mirroring MCP and Stack. This now covers what used to be a
-	// separate Commands menu: a `/slash` prompt is a skill with a slash trigger.
-	// `skills:available` is deliberately NOT here — every member needs it to type
-	// a command, and it exposes display fields only.
-	'skills:list',
-	'skills:get',
-	'skills:create',
-	'skills:update',
-	'skills:parse-import',
-	'skills:import',
-	'skills:toggle',
-	'skills:delete',
-	'skills:catalog',
-	'skills:install',
-	'skills:detect',
-	'skills:adopt',
-	// Subagents — shared canonical store applied to every engine; admin-only.
-	'subagents:list',
-	'subagents:get',
-	'subagents:create',
-	'subagents:update',
-	'subagents:parse-import',
-	'subagents:import',
-	'subagents:toggle',
-	'subagents:delete',
-	'subagents:detect',
-	// Project Instructions — writes managed regions into engine memory files; admin-only.
-	'instructions:get-global',
-	'instructions:save-global',
-	'instructions:get-project',
-	'instructions:save-project',
-	// Project artifacts — reads and in-place edits of a repository's `.agents/`,
-	// `AGENTS.md` block and `.agents/mcp.json` (whose approval lets Clopen start
-	// the processes it declares). Same shared-store rationale; admin-only.
-	'project-artifacts:scan',
-	'project-artifacts:read',
-	'project-artifacts:save-skill',
-	'project-artifacts:delete-skill',
-	'project-artifacts:save-subagent',
-	'project-artifacts:delete-subagent',
-	'project-artifacts:copy-to-agents',
-	'project-artifacts:get-agents-md',
-	'project-artifacts:save-agents-md',
-	'project-artifacts:get-mcp',
-	'project-artifacts:save-mcp',
-	'project-artifacts:approve-mcp',
-	// Permissions — per-engine tool allow/deny applied to every engine/project;
-	// same shared-store rationale as Skills/MCP, admin-only surface.
-	'permissions:list',
-	'permissions:inventory',
-	'permissions:save',
-	// AI authoring of artifacts — part of the admin artifact editors.
-	'artifacts:generate',
-	// Profiles — reusable artifact bundles applied to every collaborator's
-	// sessions; same shared-store rationale as Skills/MCP, admin-only surface.
-	// (profiles:available / profiles:project-default stay non-admin — choosing a
-	// profile for a session is a run choice like the model.)
-	'profiles:list',
-	'profiles:get',
-	'profiles:inventory',
-	'profiles:create',
-	'profiles:update',
-	'profiles:delete',
-	'profiles:get-permissions',
-	'profiles:save-permissions',
-	'profiles:set-project-default'
 ]);
 
 /**
@@ -302,8 +25,7 @@ export const ADMIN_ONLY_ROUTES = new Set([
  */
 export function checkRouteAccess(
 	action: string,
-	authenticated: boolean,
-	role: string | null
+	authenticated: boolean
 ): { allowed: boolean; error?: string } {
 	// Public routes — always allowed
 	if (PUBLIC_ROUTES.has(action)) {
@@ -315,17 +37,9 @@ export function checkRouteAccess(
 		return { allowed: true };
 	}
 
-	// Must be authenticated for everything else
 	if (!authenticated) {
 		return { allowed: false, error: 'Authentication required' };
 	}
 
-	// Admin-only routes
-	if (ADMIN_ONLY_ROUTES.has(action) && role !== 'admin') {
-		return { allowed: false, error: 'Admin access required' };
-	}
-
-	// All other routes — any authenticated user
 	return { allowed: true };
 }
-

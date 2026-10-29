@@ -30,8 +30,7 @@ function request(modelId: string, content: unknown[]): StreamRequest {
 		projectId: 'p',
 		chatSessionId: 's',
 		prompt: { type: 'user', content } as never,
-		engine: { type: 'codex', provider: 'openai', model: { id: modelId, name: modelId }, account: { id: 0, name: '' } },
-		sender: { id: 'u', name: 'u' }
+		engine: { type: 'codex', provider: 'openai', model: { id: modelId, name: modelId }, account: { id: 0, name: '' } }
 	};
 }
 

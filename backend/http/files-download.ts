@@ -20,7 +20,7 @@ import { basename } from 'node:path';
 
 import { debug } from '$shared/utils/logger';
 import { fileAuditLogQueries } from '../database/queries';
-import { findContainingProjectId, requireFilePathAccessFor } from '../ws/files/path-access';
+import { findContainingProjectId, resolveFilePath } from '../ws/files/path-access';
 import { clientIpFromRequest } from '../utils/client-ip';
 import { authenticateRequest, type AuthIdentity } from './bearer-auth';
 
@@ -59,7 +59,7 @@ export const filesDownloadRoute = new Elysia().get('/api/files/download', async 
 
 	let resolvedPath: string;
 	try {
-		resolvedPath = await requireFilePathAccessFor(pathParam, identity.role, identity.userId);
+		resolvedPath = await resolveFilePath(pathParam);
 	} catch (error) {
 		logFailure('Path access denied');
 		return new Response(error instanceof Error ? error.message : 'Access denied', { status: 403 });

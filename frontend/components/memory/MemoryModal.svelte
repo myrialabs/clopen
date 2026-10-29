@@ -27,7 +27,6 @@
 	import SearchableMultiSelect from '$frontend/components/common/form/SearchableMultiSelect.svelte';
 	import { settingsModalState } from '$frontend/stores/ui/settings-modal.svelte';
 	import { memoryGraphStore } from '$frontend/stores/features/memory-graph.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { showAlert, showConfirm } from '$frontend/stores/ui/dialog.svelte';
@@ -97,7 +96,6 @@
 	let purgeTyped = $state('');
 
 	const isMobile = $derived(windowWidth < 768);
-	const canEdit = $derived(authStore.isAdmin);
 	const view = $derived(memoryGraphStore.view);
 	const stats = $derived(memoryGraphStore.stats);
 	const selected = $derived(memoryGraphStore.selected);
@@ -639,18 +637,16 @@
 					</span>
 				{/if}
 
-				{#if canEdit}
-					<button
-						onclick={() => (composerOpen = true)}
-						class="flex items-center gap-1.5 px-2 py-1.5 text-[11px] rounded-md border
-						       border-violet-500/40 bg-violet-50 dark:bg-violet-500/10
-						       text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-500/20"
-						title="Write a memory yourself, without going through a conversation"
-					>
-						<Icon name="lucide:plus" class="w-3.5 h-3.5" />
-						<span class="hidden sm:inline">Remember</span>
-					</button>
-				{/if}
+				<button
+					onclick={() => (composerOpen = true)}
+					class="flex items-center gap-1.5 px-2 py-1.5 text-[11px] rounded-md border
+					       border-violet-500/40 bg-violet-50 dark:bg-violet-500/10
+					       text-violet-700 dark:text-violet-300 hover:bg-violet-100 dark:hover:bg-violet-500/20"
+					title="Write a memory yourself, without going through a conversation"
+				>
+					<Icon name="lucide:plus" class="w-3.5 h-3.5" />
+					<span class="hidden sm:inline">Remember</span>
+				</button>
 
 				<button
 					onclick={openMemorySettings}
@@ -799,37 +795,33 @@
 								Nothing has been forgotten. Memories archived here can be restored, or removed for good.
 							</p>
 						{:else}
-							{#if canEdit}
-								<div class="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
+							<div class="flex items-center gap-2 px-3 py-1.5 border-b border-slate-100 dark:border-slate-800">
+								<button
+									onclick={() => memoryGraphStore.selectAllForgotten(forgottenSelection.size !== forgotten.length)}
+									class="text-[10px] text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400"
+								>
+									{forgottenSelection.size === forgotten.length ? 'Clear selection' : 'Select all'}
+								</button>
+								{#if forgottenSelection.size > 0}
 									<button
-										onclick={() => memoryGraphStore.selectAllForgotten(forgottenSelection.size !== forgotten.length)}
-										class="text-[10px] text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400"
+										onclick={deleteSelected}
+										class="ml-auto text-[10px] font-medium text-red-600 dark:text-red-400 hover:underline"
 									>
-										{forgottenSelection.size === forgotten.length ? 'Clear selection' : 'Select all'}
+										Delete {forgottenSelection.size} permanently
 									</button>
-									{#if forgottenSelection.size > 0}
-										<button
-											onclick={deleteSelected}
-											class="ml-auto text-[10px] font-medium text-red-600 dark:text-red-400 hover:underline"
-										>
-											Delete {forgottenSelection.size} permanently
-										</button>
-									{/if}
-								</div>
-							{/if}
+								{/if}
+							</div>
 
 							<ul class="flex-1 overflow-y-auto py-1">
 								{#each forgotten as node (node.id)}
 									<li class="flex items-start gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/60">
-										{#if canEdit}
-											<input
-												type="checkbox"
-												checked={forgottenSelection.has(node.id)}
-												onchange={() => memoryGraphStore.toggleForgottenSelection(node.id)}
-												class="mt-0.5 accent-violet-600"
-												aria-label="Select {node.label}"
-											/>
-										{/if}
+										<input
+											type="checkbox"
+											checked={forgottenSelection.has(node.id)}
+											onchange={() => memoryGraphStore.toggleForgottenSelection(node.id)}
+											class="mt-0.5 accent-violet-600"
+											aria-label="Select {node.label}"
+										/>
 										<div class="min-w-0 flex-1">
 											<span class="block text-[11px] leading-snug break-words text-slate-600 dark:text-slate-300">
 												{node.label}
@@ -844,49 +836,45 @@
 												{node.supersededBy ? 'replaced' : 'forgotten'}
 											</span>
 										</div>
-										{#if canEdit}
-											<!--
-												Offered for REPLACED memories too, which it previously was
-												not. Supersession is a judgement a model made while reading
-												a transcript, and leaving it as the one thing the user could
-												not undo meant their only recourse against a wrong revision
-												was permanent deletion — which is how "reversible" ends up a
-												property of the schema rather than of the product.
-											-->
-											<button
-												onclick={() => void restore([node.id])}
-												class="text-[10px] text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 shrink-0"
-											>
-												Restore
-											</button>
-										{/if}
+										<!--
+											Offered for REPLACED memories too, which it previously was
+											not. Supersession is a judgement a model made while reading
+											a transcript, and leaving it as the one thing the user could
+											not undo meant their only recourse against a wrong revision
+											was permanent deletion — which is how "reversible" ends up a
+											property of the schema rather than of the product.
+										-->
+										<button
+											onclick={() => void restore([node.id])}
+											class="text-[10px] text-slate-400 hover:text-violet-600 dark:hover:text-violet-400 shrink-0"
+										>
+											Restore
+										</button>
 									</li>
 								{/each}
 							</ul>
 						{/if}
 
-						{#if canEdit}
-							<!--
-								One quiet link instead of a "Danger zone".
+						<!--
+							One quiet link instead of a "Danger zone".
 
-								Two permanently visible red links under a list the user opened in
-								order to REVIEW things read as an invitation, and the more
-								destructive of the two sat closest to the everyday controls. The
-								choice of scope now lives behind the link, in a dialog, where the
-								two options can be described rather than merely labelled.
-							-->
-							<div class="px-3 py-2 border-t border-slate-200/70 dark:border-slate-700/70">
-								<button
-									onclick={() => (deleteAllOpen = true)}
-									disabled={purging}
-									class="flex items-center gap-1.5 text-[10px] text-slate-400
-									       hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 transition-colors"
-								>
-									<Icon name="lucide:trash-2" class="w-3 h-3" />
-									Delete memories in bulk…
-								</button>
-							</div>
-						{/if}
+							Two permanently visible red links under a list the user opened in
+							order to REVIEW things read as an invitation, and the more
+							destructive of the two sat closest to the everyday controls. The
+							choice of scope now lives behind the link, in a dialog, where the
+							two options can be described rather than merely labelled.
+						-->
+						<div class="px-3 py-2 border-t border-slate-200/70 dark:border-slate-700/70">
+							<button
+								onclick={() => (deleteAllOpen = true)}
+								disabled={purging}
+								class="flex items-center gap-1.5 text-[10px] text-slate-400
+								       hover:text-red-600 dark:hover:text-red-400 disabled:opacity-40 transition-colors"
+							>
+								<Icon name="lucide:trash-2" class="w-3 h-3" />
+								Delete memories in bulk…
+							</button>
+						</div>
 					</div>
 					</MemoryPopover>
 				{/if}
@@ -909,7 +897,6 @@
 						{:else}
 							<MemoryNodeInspector
 								detail={selected}
-								{canEdit}
 								onSelect={visitAndFocus}
 								{canGoBack}
 								{canGoForward}
@@ -947,7 +934,6 @@
 						{:else if selected}
 								<MemoryNodeInspector
 								detail={selected}
-								{canEdit}
 								onSelect={visitAndFocus}
 								{canGoBack}
 								{canGoForward}

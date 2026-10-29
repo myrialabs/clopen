@@ -101,8 +101,8 @@ export const telegramPlatform: ChannelPlatform = {
 		await asTelegram(adapter).deleteWebhook();
 	},
 
-	async registerCommands(adapter, commands, conversationId) {
-		await asTelegram(adapter).setMyCommands(commands, conversationId ? { scope: { type: 'chat', chat_id: conversationId } } : {});
+	async registerCommands(adapter, commands) {
+		await asTelegram(adapter).setMyCommands(commands, {});
 	},
 
 	async clearCommands(adapter, conversationId) {

@@ -17,23 +17,17 @@ import { portMonitor } from '../../ports/monitor';
 import { sshConnectionQueries } from '../../database/queries';
 import { ws } from '../../utils/ws';
 
-/**
- * A member may only watch an SSH host they can already reach. The local
- * machine is watchable by anyone signed in — it is the machine they are
- * already using Clopen on.
- */
-function requireHostAccess(conn: Parameters<typeof ws.getUserId>[0], hostId: string): void {
+/** The local machine, or a saved SSH host that still exists. */
+function requireHost(hostId: string): void {
 	if (hostId === LOCAL_PORT_HOST) return;
-	const userId = ws.getUserId(conn);
-	const isAdmin = ws.getRole(conn) === 'admin';
-	sshConnectionQueries.ensureAccess(hostId, userId, isAdmin);
+	sshConnectionQueries.require(hostId);
 }
 
 const hostSchema = t.Object({ hostId: t.String({ minLength: 1 }) });
 
 export const portsListHandler = createRouter()
 	.http('ports:watch', { data: hostSchema, response: t.Any() }, async ({ data, conn }) => {
-		requireHostAccess(conn, data.hostId);
+		requireHost(data.hostId);
 		const userId = ws.getUserId(conn);
 
 		const result = await portMonitor.watch(data.hostId, userId);

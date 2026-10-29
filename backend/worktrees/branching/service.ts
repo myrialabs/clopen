@@ -56,8 +56,7 @@ import {
 	releaseConnectionBranch,
 	resolveEngine,
 	resolveEngineForBranch,
-	type BranchEngine,
-	type BranchPrincipal
+	type BranchEngine
 } from './engine';
 import { suggestBranchSource, type BranchSuggestion } from './suggest';
 import { debug } from '$shared/utils/logger';
@@ -67,23 +66,16 @@ function messageOf(error: unknown): string {
 }
 
 /**
- * The source, if this caller may use it.
- *
- * The authorisation for the whole feature, in one place. `listBranchSources`
- * already answers "what may they use", so asking it rather than re-deriving the
- * rule is what stops the two from drifting — and an id that is not in the list
- * is refused with the same sentence whether it is someone else's connection or
- * an account a member cannot reach.
+ * The source, if it can be branched from. `listBranchSources` already answers
+ * which sources qualify, so asking it rather than re-deriving the rule is what
+ * stops the two from drifting.
  */
-function requireSource(
-	input: { sourceKind: BranchSourceKind; sourceId: string },
-	principal: BranchPrincipal
-): BranchSourceOption {
-	const source = listBranchSources(principal).find(
+function requireSource(input: { sourceKind: BranchSourceKind; sourceId: string }): BranchSourceOption {
+	const source = listBranchSources().find(
 		(entry) => entry.kind === input.sourceKind && entry.id === input.sourceId
 	);
 	if (!source) {
-		throw new Error('That database source is not available to you, so nothing was saved.');
+		throw new Error('That database source is not available, so nothing was saved.');
 	}
 	return source;
 }
@@ -306,7 +298,7 @@ export const worktreeBranching = {
 	 * project with both has one right answer and picking the other produces a
 	 * database nothing reads.
 	 */
-	async state(projectId: string, principal: BranchPrincipal): Promise<WorktreeBranchingState> {
+	async state(projectId: string): Promise<WorktreeBranchingState> {
 		const project = projectQueries.getById(projectId);
 		const binding = worktreeBranchBindingQueries.get(projectId);
 		const resolved = resolveEngine(binding);
@@ -314,7 +306,7 @@ export const worktreeBranching = {
 
 		return {
 			providers: listBranchProviders().map((adapter) => adapter.info()),
-			sources: listBranchSources(principal),
+			sources: listBranchSources(),
 			binding:
 				binding && engine
 					? {
@@ -355,11 +347,8 @@ export const worktreeBranching = {
 	 * Two shapes behind one route: a provider's own list of projects, or the
 	 * databases on a server Clopen already has a connection to.
 	 */
-	async parents(
-		input: { sourceKind: BranchSourceKind; sourceId: string },
-		principal: BranchPrincipal
-	): Promise<BranchParent[]> {
-		requireSource(input, principal);
+	async parents(input: { sourceKind: BranchSourceKind; sourceId: string }): Promise<BranchParent[]> {
+		requireSource(input);
 		if (input.sourceKind === 'connection') {
 			const parents = await connectionParents(input.sourceId);
 			return parents.map((parent) => ({
@@ -396,10 +385,9 @@ export const worktreeBranching = {
 			parentRef: string;
 			parentName: string;
 			config: Partial<WorktreeBranchConfig>;
-		},
-		principal: BranchPrincipal
+		}
 	): WorktreeBranchBindingInfo {
-		const source = requireSource(input, principal);
+		const source = requireSource(input);
 
 		const config: WorktreeBranchConfig = {
 			...DEFAULT_WORKTREE_BRANCH_CONFIG,

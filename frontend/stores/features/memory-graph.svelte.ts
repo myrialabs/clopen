@@ -4,8 +4,8 @@
  * Backs the Memory modal: the graph view, the selected node's neighbourhood, and
  * hybrid search. It is a view over server state — the graph is
  * instance-global and every engine writes to it — so nothing is cached
- * optimistically: a mutation refetches, because another member's session may
- * have changed the same node between renders.
+ * optimistically: a mutation refetches, because another session may have
+ * changed the same node between renders.
  *
  * Community assignment and node degree arrive precomputed from the server
  * (`backend/memory/view.ts`); clustering on the client would fight the force
@@ -409,7 +409,7 @@ export const memoryGraphStore = {
 				node: GraphNode | null;
 				neighbours: { node: GraphNode; hops: number }[];
 			};
-			// A node can vanish between the click and the fetch (another member
+			// A node can vanish between the click and the fetch (another session
 			// forgot it), which is a cleared selection rather than an error.
 			selected = detail.node ? { node: detail.node, neighbours: detail.neighbours } : null;
 		} catch (error) {

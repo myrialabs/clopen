@@ -3,8 +3,8 @@
 	 * One URL, one copy button, one QR code — the shape every "hand this to
 	 * another device" surface needs.
 	 *
-	 * Five places grew their own version of this (Remote Access, Invites, the
-	 * tunnel list, tunnel Settings, file shares), and they drifted: three
+	 * Several places grew their own version of this (Remote Access, the tunnel
+	 * list, tunnel Settings, file shares), and they drifted: three
 	 * dialects of the same row, two of them without the QR caption, and — the
 	 * part that actually broke — four of them calling
 	 * `navigator.clipboard.writeText()` directly. That API only exists in a
@@ -19,8 +19,8 @@
 	 *
 	 * The QR mode is a prop rather than a fixed choice because both behaviours
 	 * are right: a link generated on demand (Remote Access, a file share) shows
-	 * its code immediately, while a list of standing links (invites, tunnel
-	 * hostnames) would be a wall of QR codes if they all did.
+	 * its code immediately, while a list of standing links (tunnel hostnames)
+	 * would be a wall of QR codes if they all did.
 	 */
 	import type { Snippet } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';

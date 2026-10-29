@@ -13,7 +13,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { connectionManager } from '../../db-client/connection-manager';
 import type { DbClientObjectDetails, DbClientQueryResult } from '$shared/types/db-client';
-import { requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
 
 type SqlDriver = 'mysql' | 'postgres' | 'sqlite';
 
@@ -154,8 +154,8 @@ export const ioHandler = createRouter()
 			content: t.String(),
 			mimeType: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		const connection = requireDbClientConnection(data.connectionId);
 		const driver = connection.driver;
 		const withData = data.schemaOnly ? false : (data.withData ?? true);
 
@@ -339,8 +339,8 @@ export const ioHandler = createRouter()
 			count: t.Number(),
 			message: t.String()
 		})
-	}, async ({ data, conn }) => {
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		const connection = requireDbClientConnection(data.connectionId);
 		const driver = connection.driver;
 		const adapter = await connectionManager.get(data.connectionId);
 

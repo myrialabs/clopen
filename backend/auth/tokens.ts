@@ -4,14 +4,12 @@
  * Token types:
  * - clp_ses_* — Session tokens (login sessions, 30 day expiry)
  * - clp_pat_* — Personal Access Tokens (cross-device login, permanent)
- * - clp_inv_* — Invite tokens (for inviting new users)
  * - clp_dev_* — Device-pairing codes (one-time, short TTL; Remote Access "Add a device")
  * - clp_fsh_* — File-share tokens (single-file download links, finite TTL)
  */
 
 const SESSION_PREFIX = 'clp_ses_';
 const PAT_PREFIX = 'clp_pat_';
-const INVITE_PREFIX = 'clp_inv_';
 const DEVICE_PREFIX = 'clp_dev_';
 const FILE_SHARE_PREFIX = 'clp_fsh_';
 
@@ -30,10 +28,6 @@ export function generateSessionToken(): string {
 
 export function generatePAT(): string {
 	return PAT_PREFIX + randomHex(TOKEN_BYTES);
-}
-
-export function generateInviteToken(): string {
-	return INVITE_PREFIX + randomHex(TOKEN_BYTES);
 }
 
 export function generateDeviceCode(): string {
@@ -58,10 +52,9 @@ export function hashToken(token: string): string {
 /**
  * Determine token type from prefix
  */
-export function getTokenType(token: string): 'session' | 'pat' | 'invite' | 'device' | 'file-share' | 'unknown' {
+export function getTokenType(token: string): 'session' | 'pat' | 'device' | 'file-share' | 'unknown' {
 	if (token.startsWith(SESSION_PREFIX)) return 'session';
 	if (token.startsWith(PAT_PREFIX)) return 'pat';
-	if (token.startsWith(INVITE_PREFIX)) return 'invite';
 	if (token.startsWith(DEVICE_PREFIX)) return 'device';
 	if (token.startsWith(FILE_SHARE_PREFIX)) return 'file-share';
 	return 'unknown';

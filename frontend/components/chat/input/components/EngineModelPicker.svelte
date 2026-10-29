@@ -6,7 +6,7 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import {
 		chatModelState,
 		initChatModel,
@@ -20,7 +20,6 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
 	import { openSettingsModal, focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
@@ -42,7 +41,7 @@
 	// ONLY from explicit user actions (selectModel, selectEngine, selectAccount,
 	// selectOCAccount, selectReasoning). Restores, init and auto-selection are
 	// local: emitting from them made every client that opened a session
-	// broadcast its own restored/defaulted state over its collaborators'.
+	// broadcast its own restored/defaulted state over every other device's.
 	// ════════════════════════════════════════════
 
 	interface SyncEnvelope {
@@ -54,7 +53,7 @@
 	/** Session + sender for an outgoing sync, or null when there is nothing to sync to. */
 	function syncTarget(): { chatSessionId: string; senderId: string } | null {
 		const chatSessionId = sessionState.currentSession?.id;
-		const senderId = userStore.currentUser?.id;
+		const senderId = authStore.currentUser?.id;
 		if (!chatSessionId || !senderId) return null;
 		return { chatSessionId, senderId };
 	}
@@ -66,7 +65,7 @@
 	 * this tab has already switched away from.
 	 */
 	function ignoreSync(data: SyncEnvelope): boolean {
-		const own = data.clientId ? data.clientId === CLIENT_ID : data.senderId === userStore.currentUser?.id;
+		const own = data.clientId ? data.clientId === CLIENT_ID : data.senderId === authStore.currentUser?.id;
 		if (own) return true;
 		return data.chatSessionId !== sessionState.currentSession?.id;
 	}
@@ -206,8 +205,7 @@
 		}
 	});
 
-	// Listen for remote account changes from collaborators (and this user's
-	// other tabs/devices)
+	// Listen for account changes made on other tabs/devices
 	$effect(() => {
 		const unsub = ws.on('chat:account-sync', (data: SyncEnvelope & { accountId: number | null; accountName: string | null }) => {
 			if (ignoreSync(data)) return;
@@ -453,7 +451,6 @@
 	// Readiness error for the active engine (e.g. not installed / not signed in),
 	// surfaced by models:list. Drives the not-installed → Open Stack notice below.
 	const engineError = $derived(modelStore.getError(chatModelState.engine));
-	const isAdmin = $derived(authStore.isAdmin);
 	const availableModels = $derived.by(() => {
 		const all = modelStore.getByEngine(chatModelState.engine);
 		// Codex auth-mode filter (plan §6 + README §6.2): hide ChatGPT-only
@@ -551,8 +548,7 @@
 		}
 	});
 
-	// Listen for remote model changes from collaborators (and this user's other
-	// tabs/devices)
+	// Listen for model changes made on other tabs/devices
 	$effect(() => {
 		const unsub = ws.on('chat:model-sync', (data: SyncEnvelope & { engine: string; provider: string; modelId: string; modelName: string; reasoningEffort?: string | null }) => {
 			if (ignoreSync(data)) return;
@@ -687,8 +683,7 @@
 		closeReasoningDropdown();
 	}
 
-	// Listen for remote reasoning-level changes from collaborators (and this
-	// user's other tabs/devices)
+	// Listen for reasoning-level changes made on other tabs/devices
 	$effect(() => {
 		const unsub = ws.on('chat:reasoning-sync', (data: SyncEnvelope & { reasoningEffort: string | null }) => {
 			if (ignoreSync(data)) return;
@@ -700,10 +695,10 @@
 	});
 
 	/**
-	 * The concrete level a fresh model pick starts on: this user's per-model
-	 * default, else the model's own default. Resolved here (not left null for
-	 * the re-seed effect) because it is broadcast with the pick — a null would
-	 * make every collaborator re-seed from THEIR per-model defaults and disagree.
+	 * The concrete level a fresh model pick starts on: the per-model default,
+	 * else the model's own default. Resolved here (not left null for the
+	 * re-seed effect) because it is broadcast with the pick — a null would make
+	 * every other device re-seed on its own and risk disagreeing.
 	 */
 	function effectiveReasoningFor(model: EngineModel): string | null {
 		const control = model.capabilities.reasoningControl;
@@ -873,7 +868,7 @@
 				<span class="font-medium max-w-24 truncate">{currentAccount?.name || 'Account'}</span>
 				<Icon name="lucide:chevron-down" class="w-3 h-3" />
 			</button>
-		{:else if isAdmin}
+		{:else}
 			<button
 				type="button"
 				class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-colors
@@ -886,13 +881,6 @@
 				<span class="font-medium">No accounts connected</span>
 				<span class="underline underline-offset-2">Connect</span>
 			</button>
-		{:else}
-			<div class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg
-				bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400
-				border border-amber-200 dark:border-amber-700/50">
-				<Icon name="lucide:triangle-alert" class="w-3.5 h-3.5 flex-shrink-0" />
-				<span class="font-medium">No accounts connected</span>
-			</div>
 		{/if}
 	{/if}
 
@@ -1167,24 +1155,22 @@
 									<Icon name="lucide:refresh-cw" class="w-3 h-3" />
 									Retry
 								</button>
-								{#if isAdmin}
-									{#if engineError.includes('Settings → Stack')}
-										<button
-											type="button"
-											class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-											onclick={openStack}
-										>
-											Open Stack
-										</button>
-									{:else}
-										<button
-											type="button"
-											class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-											onclick={() => configureEngine(chatModelState.engine)}
-										>
-											Configure {currentEngine?.name ?? 'engine'}
-										</button>
-									{/if}
+								{#if engineError.includes('Settings → Stack')}
+									<button
+										type="button"
+										class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+										onclick={openStack}
+									>
+										Open Stack
+									</button>
+								{:else}
+									<button
+										type="button"
+										class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
+										onclick={() => configureEngine(chatModelState.engine)}
+									>
+										Configure {currentEngine?.name ?? 'engine'}
+									</button>
 								{/if}
 							</div>
 						</div>

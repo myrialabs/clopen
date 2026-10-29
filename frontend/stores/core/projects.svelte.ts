@@ -21,21 +21,6 @@ import {
 	beginPanelLoad
 } from '$frontend/stores/ui/project-workspace.svelte';
 
-// Subscribe to admin-driven project assignment changes for the current user.
-// Event is broadcast globally; only react when this client is the target.
-ws.on('auth:user-projects-changed', async (payload) => {
-	const { authStore } = await import('$frontend/stores/features/auth.svelte');
-	if (payload.userId !== authStore.currentUser?.id) return;
-
-	debug.log('project', `User-projects changed: ${payload.type} ${payload.projectId}`);
-	loadProjects().catch((err) => {
-		debug.error('project', 'Failed to reload after assignment change:', err);
-	});
-
-	if (payload.type === 'unassigned' && projectState.currentProject?.id === payload.projectId) {
-		setCurrentProject(null).catch(() => {});
-	}
-});
 interface ProjectState {
 	projects: Project[];
 	currentProject: Project | null;
@@ -178,9 +163,9 @@ export async function setCurrentProject(project: Project | null) {
 		await ws.setProject(newProjectId ?? null);
 		if (!isCurrentSwitch(token)) return;
 
-		// Presence tracking is independent of the workspace swap — startTracking()
-		// already leaves the previous project — so let it run alongside instead of
-		// adding two round trips in front of the visible transition.
+		// Status tracking is independent of the workspace swap, so let it run
+		// alongside instead of adding a round trip in front of the visible
+		// transition.
 		const tracking = swapPresenceTracking(newProjectId);
 		if (currentProjectId) appState.isLoading = false;
 
@@ -258,16 +243,15 @@ export async function setCurrentProject(project: Project | null) {
 	if (isCurrentSwitch(token)) await refreshProjectRecord(project.id);
 }
 
-/** Move presence tracking to `projectId` (or drop it when null). */
+/** Move status tracking to `projectId` (or drop it when null). */
 async function swapPresenceTracking(projectId: string | undefined): Promise<void> {
 	if (typeof window === 'undefined') return;
 	try {
 		const { projectStatusService } = await import('$frontend/services/project');
 		if (projectId) {
-			// startTracking() stops the previous project itself.
-			await projectStatusService.startTracking(projectId);
+			projectStatusService.startTracking(projectId);
 		} else {
-			await projectStatusService.stopTracking();
+			projectStatusService.stopTracking();
 		}
 	} catch (error) {
 		debug.error('project', 'Error updating project tracking:', error);
@@ -506,7 +490,7 @@ export async function loadProjects(restoreProjectId?: string | null) {
 					if (typeof window !== 'undefined') {
 						try {
 							const { projectStatusService } = await import('$frontend/services/project');
-							await projectStatusService.startTracking(existingProject.id);
+							projectStatusService.startTracking(existingProject.id);
 						} catch (error) {
 							debug.error('project', 'Error starting tracking for restored project:', error);
 						}

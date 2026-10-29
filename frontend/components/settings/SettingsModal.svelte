@@ -10,8 +10,6 @@
 		settingsGroups,
 		type SettingsSection
 	} from '$frontend/stores/ui/settings-modal.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
-	import { systemSettings } from '$frontend/stores/features/settings.svelte';
 
 	// Import settings components
 	import AssistantSettings from './model/AssistantSettings.svelte';
@@ -30,12 +28,10 @@
 	import ProfilesSettings from './profiles/ProfilesSettings.svelte';
 	import GitIdentitiesSettings from './git/GitIdentitiesSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
-	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
 	import ChatAppsSettings from './chat-apps/ChatAppsSettings.svelte';
-	import TeamSettings from './admin/UserManagement.svelte';
-	import InviteManagement from './admin/InviteManagement.svelte';
-	import SecuritySettings from './security/SecuritySettings.svelte';
+	import AccessSettings from './access/AccessSettings.svelte';
+	import FilesFoldersSettings from './files/FilesFoldersSettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
 	import AboutDeviceSettings, {
 		prefetchDeviceInfo,
@@ -56,29 +52,14 @@
 
 	const isMobile = $derived(windowWidth < 768);
 	const activeSection = $derived(settingsModalState.activeSection);
-	const isAdmin = $derived(authStore.isAdmin);
-	const isNoAuth = $derived(systemSettings.authMode === 'none');
 
-	// Filter sections: hide admin-only tabs for non-admins. Team stays visible for
-	// admins in both modes; the No Login case renders an informational notice
-	// inside the section instead of hiding it.
-	const visibleSections = $derived(
-		settingsSections.filter(s => {
-			if (s.adminOnly && !isAdmin) return false;
-			return true;
-		})
-	);
-
-	// Group visible sections under their group header for the sidebar. Empty
-	// groups are dropped so a hidden admin group leaves no orphan header.
-	const visibleGroups = $derived(
-		settingsGroups
-			.map(group => ({
-				...group,
-				sections: visibleSections.filter(s => s.group === group.id)
-			}))
-			.filter(g => g.sections.length > 0)
-	);
+	// Group sections under their group header for the sidebar.
+	const visibleGroups = settingsGroups
+		.map(group => ({
+			...group,
+			sections: settingsSections.filter(s => s.group === group.id)
+		}))
+		.filter(g => g.sections.length > 0);
 
 	// Further filter groups by the sidebar search query, matching against
 	// label and description. Empty groups after filtering are dropped.
@@ -105,14 +86,6 @@
 		}
 	}
 
-	// Auto-redirect when current section becomes hidden
-	$effect(() => {
-		const isVisible = visibleSections.some(s => s.id === activeSection);
-		if (!isVisible && visibleSections.length > 0) {
-			setActiveSection(visibleSections[0].id);
-		}
-	});
-
 	// Focus the search input on open. Modal's own generic focus grabs the
 	// first focusable element (the close button) after a 50ms delay, so this
 	// runs slightly later to win the race. Skipped on mobile since the search
@@ -123,13 +96,13 @@
 		}
 	});
 
-	// Prefetch Device data the moment the modal opens (admin only) so the slow
+	// Prefetch Machine data the moment the modal opens so the slow
 	// system:device-info probes and the projects:overview snapshot already run
-	// in background while the user browses other tabs. Clicking Device then
+	// in background while the user browses other tabs. Clicking Machine then
 	// shows cached data instantly instead of a long skeleton like other tabs
 	// that render from local stores.
 	$effect(() => {
-		if (settingsModalState.isOpen && isAdmin) {
+		if (settingsModalState.isOpen) {
 			prefetchDeviceInfo();
 			prefetchProjectsOverview();
 		}
@@ -320,23 +293,19 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ChatAppsSettings />
 						</div>
-					{:else if activeSection === 'tunnel' && isAdmin}
+					{:else if activeSection === 'tunnel'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<TunnelSettings />
 						</div>
-					{:else if activeSection === 'account'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<AccountSettings />
-						</div>
-					{:else if activeSection === 'engines' && isAdmin}
+					{:else if activeSection === 'engines'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AIEnginesSettings />
 						</div>
-					{:else if activeSection === 'stack' && isAdmin}
+					{:else if activeSection === 'stack'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<StackSettings />
 						</div>
-					{:else if activeSection === 'integrations' && isAdmin}
+					{:else if activeSection === 'integrations'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ScopedSection
 								title="Integrations"
@@ -346,7 +315,7 @@
 								{#snippet project(projectId)}<ProjectMcpPanel {projectId} />{/snippet}
 							</ScopedSection>
 						</div>
-					{:else if activeSection === 'skills' && isAdmin}
+					{:else if activeSection === 'skills'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ScopedSection
 								title="Skills"
@@ -356,7 +325,7 @@
 								{#snippet project(projectId)}<ProjectItemsPanel {projectId} kind="skill" />{/snippet}
 							</ScopedSection>
 						</div>
-					{:else if activeSection === 'subagents' && isAdmin}
+					{:else if activeSection === 'subagents'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ScopedSection
 								title="Subagents"
@@ -366,7 +335,7 @@
 								{#snippet project(projectId)}<ProjectItemsPanel {projectId} kind="subagent" />{/snippet}
 							</ScopedSection>
 						</div>
-					{:else if activeSection === 'instructions' && isAdmin}
+					{:else if activeSection === 'instructions'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ScopedSection
 								title="Instructions"
@@ -376,7 +345,7 @@
 								{#snippet project(projectId)}<ProjectInstructionsPanel {projectId} />{/snippet}
 							</ScopedSection>
 						</div>
-					{:else if activeSection === 'permissions' && isAdmin}
+					{:else if activeSection === 'permissions'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ScopedSection
 								title="Permissions"
@@ -390,54 +359,31 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<FileSharesSettings />
 						</div>
-					{:else if activeSection === 'memory' && isAdmin}
+					{:else if activeSection === 'memory'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<MemoryModelSettings />
 						</div>
-					{:else if activeSection === 'memory-graph' && isAdmin}
+					{:else if activeSection === 'memory-graph'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<MemorySettings />
 						</div>
-					{:else if activeSection === 'profiles' && isAdmin}
+					{:else if activeSection === 'profiles'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ProfilesSettings />
 						</div>
-					{:else if activeSection === 'team' && isAdmin}
+					{:else if activeSection === 'access'}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							{#if isNoAuth}
-								<div class="py-1">
-									<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Team</h3>
-									<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Manage team members</p>
-									<div class="flex items-start gap-3 p-4 bg-amber-500/5 dark:bg-amber-500/10 border border-amber-500/20 rounded-xl">
-										<Icon name="lucide:info" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
-										<div class="text-sm text-slate-700 dark:text-slate-300">
-											<p class="font-semibold mb-1">Team management is only available in With Login mode</p>
-											<p class="text-slate-600 dark:text-slate-400">
-												The server is currently running in No Login mode, where a single anonymous user has full access. Switch the auth mode to With Login in
-												<button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={() => setActiveSection('security')}>
-													Settings &rarr; Security
-												</button>
-												to enable user invites, role assignment, and member removal.
-											</p>
-										</div>
-									</div>
-								</div>
-							{:else}
-								<InviteManagement />
-								<div class="mt-6">
-									<TeamSettings />
-								</div>
-							{/if}
+							<AccessSettings />
 						</div>
-					{:else if activeSection === 'security' && isAdmin}
+					{:else if activeSection === 'files'}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<SecuritySettings />
+							<FilesFoldersSettings />
 						</div>
-					{:else if activeSection === 'device' && isAdmin}
+					{:else if activeSection === 'machine'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AboutDeviceSettings />
 						</div>
-					{:else if activeSection === 'system' && isAdmin}
+					{:else if activeSection === 'system'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SystemSettings />
 						</div>

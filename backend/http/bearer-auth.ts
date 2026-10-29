@@ -13,7 +13,6 @@ import { authQueries } from '../database/queries';
 
 export interface AuthIdentity {
 	userId: string;
-	role: string;
 }
 
 /**
@@ -43,5 +42,5 @@ export function authenticateRequest(request: Request): AuthIdentity {
 		throw Object.assign(new Error('User not found'), { status: 401 });
 	}
 	authQueries.updateLastActive(session.id);
-	return { userId: user.id, role: user.role };
+	return { userId: user.id };
 }

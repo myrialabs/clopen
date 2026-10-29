@@ -6,12 +6,10 @@
 	import ws from '$frontend/utils/ws';
 	import type { ChatSession } from '$shared/types/database/schema';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import AvatarBubble from '$frontend/components/common/display/AvatarBubble.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { presenceState, isSessionWaitingInput } from '$frontend/stores/core/presence.svelte';
 	import { isSessionUnread, markAllSessionsRead } from '$frontend/stores/core/app.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { worktreeById } from '$frontend/stores/features/worktrees.svelte';
@@ -59,17 +57,6 @@
 			return session.model_name || modelStore.getById(session.model_id)?.engine.model.name || session.model_id;
 		}
 		return '';
-	}
-
-	// Get users in a specific chat session (excluding self)
-	function getSessionUsers(chatSessionId: string): { userId: string; userName: string }[] {
-		const projectId = projectState.currentProject?.id;
-		const currentUserId = userStore.currentUser?.id;
-		if (!projectId) return [];
-		const status = presenceState.statuses.get(projectId);
-		if (!status?.chatSessionUsers) return [];
-		const users = status.chatSessionUsers[chatSessionId] || [];
-		return currentUserId ? users.filter(u => u.userId !== currentUserId) : users;
 	}
 
 	// Check if a session has an active stream
@@ -519,7 +506,6 @@
 			<div class="space-y-2">
 				{#each visibleSessions as session (session.id)}
 					{@const isActive = isActiveSession(session)}
-					{@const sessionUsers = getSessionUsers(session.id)}
 					{@const streaming = isSessionStreaming(session.id)}
 					{@const modelName = getSessionModel(session)}
 					{@const title = session.title || session.head_title || 'New Conversation'}
@@ -626,18 +612,6 @@
 							{/if}
 							</div>
 						</button>
-						{#if sessionUsers.length > 0}
-							<div class="flex items-center -space-x-1 shrink-0">
-								{#each sessionUsers.slice(0, 2) as user}
-									<AvatarBubble {user} size="sm" />
-								{/each}
-								{#if sessionUsers.length > 2}
-									<span class="w-5 h-5 rounded-full bg-gradient-to-br from-slate-500 to-slate-600 text-white text-4xs font-bold flex items-center justify-center border-2 border-white dark:border-slate-900 z-10">
-										+{sessionUsers.length - 2}
-									</span>
-								{/if}
-							</div>
-						{/if}
 						<button
 							type="button"
 							class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-red-500/15 hover:text-red-500 shrink-0"

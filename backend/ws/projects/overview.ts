@@ -2,7 +2,7 @@
  * Projects Overview — per-project resource usage for every project at once.
  *
  * Settings -> Device already describes the machine; this is the same question
- * asked per project, so an admin can see where the machine's CPU, RAM and disk
+ * asked per project, so it is clear where the machine's CPU, RAM and disk
  * actually went without opening Project Info once per project.
  *
  * Separate from `system:device-info` (host hardware) and from `projects:info`
@@ -15,23 +15,18 @@
  * - idle    = `projectShellPids(projectId).length === 0` (no active PTY shell)
  * - running = at least one active shell
  *
- * Access: scoped to the caller. Admins see every project, everyone else sees
- * only the projects they are assigned to — the same rule `projects:info`
- * enforces per project through `requireProjectAccess`.
- *
  * Cost control:
  * - no port scan and no per-process list here, only the summed CPU/RAM
  * - storage is read from cache and never awaited: a cold folder reports
  *   `measuring` and fills in on a later poll, so this handler's latency is
  *   the process-table probe, not a filesystem walk
- * - one snapshot per scope is cached for `OVERVIEW_CACHE_TTL_MS` and
+ * - one snapshot is cached for `OVERVIEW_CACHE_TTL_MS` and
  *   single-flighted, and the process table underneath has its own 2s cache,
  *   so a fast poll costs at most one probe every couple of seconds
  */
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
-import { ws } from '$backend/utils/ws';
 import { projectQueries } from '../../database/queries';
 import { projectShellPids } from '../../projects/shell-ownership';
 import { getHostFacts } from '../../host/metrics';
@@ -217,34 +212,32 @@ async function buildOverview(projects: Project[]): Promise<ProjectsOverview> {
 	};
 }
 
-/** One snapshot per access scope. Kept below the frontend heartbeat so a poll
- *  is never answered with the payload it already has, while burst opens and
- *  rapid tab switches still collapse onto a single build. */
+/** One snapshot, kept below the frontend heartbeat so a poll is never
+ *  answered with the payload it already has, while burst opens and rapid tab
+ *  switches still collapse onto a single build. */
 const OVERVIEW_CACHE_TTL_MS = 1_500;
-const cachedOverviews = new Map<string, { payload: ProjectsOverview; at: number }>();
-const inFlightOverviews = new Map<string, Promise<ProjectsOverview>>();
+let cachedOverview: { payload: ProjectsOverview; at: number } | null = null;
+let inFlightOverview: Promise<ProjectsOverview> | null = null;
 
-function getOverview(scope: string, projects: Project[]): Promise<ProjectsOverview> {
-	const cached = cachedOverviews.get(scope);
-	if (cached && Date.now() - cached.at < OVERVIEW_CACHE_TTL_MS) {
-		return Promise.resolve(cached.payload);
+function getOverview(projects: Project[]): Promise<ProjectsOverview> {
+	if (cachedOverview && Date.now() - cachedOverview.at < OVERVIEW_CACHE_TTL_MS) {
+		return Promise.resolve(cachedOverview.payload);
 	}
 
-	const inFlight = inFlightOverviews.get(scope);
-	if (inFlight) return inFlight;
+	if (inFlightOverview) return inFlightOverview;
 
 	const build = buildOverview(projects).then((payload) => {
-		cachedOverviews.set(scope, { payload, at: Date.now() });
-		inFlightOverviews.delete(scope);
+		cachedOverview = { payload, at: Date.now() };
+		inFlightOverview = null;
 		return payload;
 	});
 	// A failed build must not pin the single-flight slot: storage failures are
 	// already folded into `unavailable`, so a rejection here is unexpected
 	// (e.g. the process table is unreadable) and the next poll should retry.
 	build.catch(() => {
-		inFlightOverviews.delete(scope);
+		inFlightOverview = null;
 	});
-	inFlightOverviews.set(scope, build);
+	inFlightOverview = build;
 	return build;
 }
 
@@ -288,17 +281,9 @@ export const overviewHandler = createRouter().http(
 			generatedAt: t.String()
 		})
 	},
-	async ({ conn }) => {
-		// A project's name and absolute path are not public: every other
-		// project-scoped handler goes through `requireProjectAccess`, and a
-		// list endpoint has to apply the same rule to the whole list.
-		const userId = ws.getUserId(conn);
-		const isAdmin = ws.getRole(conn) === 'admin';
-		// A Home is its owner's alone — an admin sees every project, but not
-		// everyone else's Home (they would all read "Home").
-		const projects = isAdmin
-			? projectQueries.getAll().filter((project) => project.kind !== 'home' || project.owner_user_id === userId)
-			: projectQueries.getAllForUser(userId);
-		return getOverview(isAdmin ? 'admin' : `user:${userId}`, projects);
+	async () => {
+		// Every project on disk, including one removed from the list: it still
+		// takes up storage and can still run processes.
+		return getOverview(projectQueries.getAll());
 	}
 );

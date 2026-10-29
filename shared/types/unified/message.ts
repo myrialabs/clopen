@@ -12,12 +12,6 @@ import type { ToolUseBlock, ToolResult } from './tool';
 // Message Base
 // ============================================================
 
-/** Sender identity attached to every message */
-export interface MessageSender {
-	id: string;
-	name: string;
-}
-
 /** Engine account identity attached to every message */
 export interface MessageAccount {
 	id: number;
@@ -106,7 +100,6 @@ export type AssistantContentBlock =
  */
 export interface UserMessage extends MessageBase {
 	type: 'user';
-	sender: MessageSender;
 	content: UserContentBlock[];
 	synthetic: boolean;
 }

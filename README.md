@@ -26,7 +26,7 @@
   <img src="https://clopen.myrialabs.dev/images/workspace.webp" alt="Clopen workspace overview" />
 </p>
 
-All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor. Chat, terminal, git, browser preview, database client, and real-time collaboration — plus Skills, Subagents, Commands, and MCP connectors to extend every engine.
+All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor. Chat, terminal, git, browser preview, database client, and remote access from any device — plus Skills, Subagents, Commands, and MCP connectors to extend every engine.
 
 ---
 
@@ -58,19 +58,19 @@ A complete development environment designed around AI-assisted workflows, built 
 
 - **Multi-Engine Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, Qwen Code, Pi, Cline, and Cursor as your AI engine, per session
 - **Multi-Account Per Engine** — Manage multiple accounts per engine (personal, work, or team) and switch between them instantly per chat session
-- **Reasoning Effort Control** — Dial a model's thinking level right from the chat input, using that engine's own levels. Set a default per model in Settings, and the choice is remembered and synced with everyone in the session
+- **Reasoning Effort Control** — Dial a model's thinking level right from the chat input, using that engine's own levels. Set a default per model in Settings, and the choice is remembered and synced across your devices
 - **Integrated Terminal** — Multi-tab xterm.js terminal with full keyboard control and complete ANSI/VT support, right inside your workspace
 - **Full Git Management** — Stage, commit, branch, push, pull, stash, log, and resolve conflicts, all from a clean UI
 - **Real Browser Preview** — A live browser preview streams directly into your workspace. Interact with your app manually, or let the AI drive: clicking, typing, and scrolling for autonomous visual testing
 - **Database Client** — Connect to PostgreSQL, MySQL, SQLite, MongoDB, and Redis. Browse schemas, run queries, and inspect data, with optional SSH tunneling for databases behind a bastion
 - **Git-Like Checkpoints** — Multi-branch undo/redo with full file snapshots. Roll back to any point in your AI conversation without touching your actual git history
-- **Real-Time Collaboration** — See who's working on which project, and collaborate live in the same codebase
+- **Remote Access** — Add your phone, tablet, or another computer with a one-time link or QR code. Every device stays in sync live: chats, terminals, and the browser preview
 - **Monaco File Editor** — VS Code's editor right in the browser. Full syntax highlighting, autocomplete, and live file watching, beside your AI chat
 - **Cloudflare Tunnel** — One-click public HTTPS URL for your local dev server. Built-in QR code for instant mobile access. Share your work without deploying
 - **Integrations** — Connect a third-party account once and every engine and project can use it. Credentials are sealed at rest with AES-256-GCM. Includes the full MCP surface: browse the official Model Context Protocol registry, connect with OAuth or custom env/headers, control tool exposure per engine, and sync every connector across all your AI engines
 - **Skills, Commands & Subagents** — Build reusable Skills, slash Commands, delegated Subagents, shared Instructions, and tool Permissions or Profiles once, synced automatically across every engine
-- **Flexible Authentication** — No Login or With Login mode with admin/member roles, invite links, rate-limited login, and CLI token recovery
-- **Stack** — Install AI engines, Git, Chrome, and Cloudflared (for Public Tunnel) from a one-click admin panel. Engines install on demand into a clopen-managed directory (`~/.clopen/stack/engines`) — isolated from your global setup, no PATH pollution
+- **Flexible Authentication** — No Login or With Login mode, one-time device pairing links, rate-limited login, and CLI token recovery
+- **Stack** — Install AI engines, Git, Chrome, and Cloudflared (for Public Tunnel) from a one-click panel. Engines install on demand into a clopen-managed directory (`~/.clopen/stack/engines`) — isolated from your global setup, no PATH pollution
 - **Background Processing** — Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
 - **Works on Any Device** — Fully responsive across desktop, laptop, tablet, and mobile. Open your workspace from any device and continue exactly where you left off
 
@@ -115,23 +115,23 @@ Starts the server on `http://localhost:9141`.
 
 On first launch, a setup wizard guides you through:
 
-1. **Authentication mode** — Choose between **No Login** (no authentication required, ideal for personal/local use) or **With Login** (login with Personal Access Token, supports team collaboration)
-2. **Admin account** — If With Login mode is selected, create your admin account and save the generated PAT
+1. **Authentication mode** — Choose between **No Login** (no authentication required, ideal for personal/local use) or **With Login** (login with a Personal Access Token, recommended when Clopen is reachable from other devices or the internet)
+2. **Account** — If With Login mode is selected, create your account and save the generated PAT
 3. **Stack** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
 4. **AI Engines** — Check installation status for every engine and sign in to the ones you'll use. An engine that isn't installed yet links straight back to the Stack step
 5. **Preferences** — Set dark mode, font size, sound notifications, and message layout (Classic cards or Compact lines)
 
-You can change the authentication mode anytime in **Settings → Security → Authentication**.
+You can change the authentication mode anytime in **Settings → Sign-in & Devices**.
 
-To invite team members (With Login mode), go to **Settings → Team → Invite** and generate an invite link (valid for 15 minutes).
+To sign in another of your devices, open **Remote Access → Add a device** and scan the one-time link (valid for 5 minutes).
 
-If you lose your admin token:
+If you lose your token:
 
 ```bash
 clopen reset-pat
 ```
 
-This regenerates and displays a new admin PAT.
+This regenerates and displays a new PAT.
 
 ---
 

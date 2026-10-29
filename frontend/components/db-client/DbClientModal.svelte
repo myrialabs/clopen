@@ -199,7 +199,7 @@
 	});
 
 	// A projected connection appears and disappears for reasons this client did
-	// not cause — another admin linking a database, or an account being
+	// not cause — a database linked from another device, or an account being
 	// disconnected in Settings. Without this the list is only correct until
 	// someone else changes it.
 	$effect(() => {

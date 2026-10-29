@@ -167,7 +167,7 @@ export interface ContainerScanResult {
 	error: string | null;
 }
 
-/** What a row offers to do. All of these are admin-only on the server. */
+/** What a row offers to do. */
 export type ContainerAction =
 	| 'start'
 	| 'stop'

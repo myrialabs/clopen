@@ -7,7 +7,7 @@
  *
  *   - TRUST. The file lives in the repo, so anyone who can push to it could make
  *     the server run a command. A server is emitted — and the bridge will only
- *     connect it — while the file's current sha256 matches the hash an admin
+ *     connect it — while the file's current sha256 matches the hash the owner
  *     approved (`project_mcp_trust`). Any edit makes it inert until re-approved.
  *     The check runs at config-build time AND again when the bridge connects, so
  *     a file swapped between the two is still refused.

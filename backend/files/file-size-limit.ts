@@ -3,20 +3,20 @@
  *
  * Enforces a configurable maximum file size on write, upload, zip, and
  * extract operations to prevent disk exhaustion attacks (DoS). The limit
- * is sourced from the `system:settings.maxFileSizeMB` admin setting and
+ * is sourced from the `system:settings.maxFileSizeMB` system setting and
  * defaults to 500MB when the setting is missing or invalid.
  */
 
 import { readSystemSetting } from '../settings/system-settings';
 
-/** Default maximum file size in megabytes when no admin setting is present. */
+/** Default maximum file size in megabytes when no setting is present. */
 export const DEFAULT_MAX_FILE_SIZE_MB = 500;
 
 /**
  * Read the current maximum file size (bytes) from system settings.
  * Falls back to the default if the row is missing, malformed, or holds a
  * non-positive value — keeps callers resilient even if the DB is empty
- * (e.g. on first boot before the admin writes any system setting).
+ * (e.g. on first boot before any system setting is written).
  */
 export function getMaxFileSize(): number {
 	const limitMB = readSystemSetting((settings) => {

@@ -545,8 +545,8 @@ export const terminalStore = {
 	},
 
 	/**
-	 * Remove a session from store without killing PTY (used for collaborative sync).
-	 * When another user closes a tab, we only need to remove it from our UI.
+	 * Remove a session from store without killing PTY (used for cross-device sync).
+	 * When another device closes a tab, we only need to remove it from our UI.
 	 */
 	removeSessionFromStore(sessionId: string): void {
 		terminalState.lineBuffers.delete(sessionId);

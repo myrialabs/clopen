@@ -20,7 +20,7 @@ import { link, mkdir, stat, unlink } from 'node:fs/promises';
 
 import { debug } from '$shared/utils/logger';
 import { fileAuditLogQueries } from '../database/queries';
-import { findContainingProjectId, requireFilePathAccessFor } from '../ws/files/path-access';
+import { findContainingProjectId, resolveFilePath } from '../ws/files/path-access';
 import { clientIpFromRequest } from '../utils/client-ip';
 import { validateFileSize } from '../files/file-size-limit';
 import { uploadTempCleanup } from './upload-temp-cleanup';
@@ -71,9 +71,9 @@ export const filesUploadRoute = new Elysia().post('/api/files/upload', async ({ 
 	let resolvedTarget: string;
 	let resolvedFinal: string;
 	try {
-		resolvedTarget = await requireFilePathAccessFor(targetPathParam, identity.role, identity.userId);
+		resolvedTarget = await resolveFilePath(targetPathParam);
 		const tentativeFinal = join(resolvedTarget, fileNameParam);
-		resolvedFinal = await requireFilePathAccessFor(tentativeFinal, identity.role, identity.userId);
+		resolvedFinal = await resolveFilePath(tentativeFinal);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : 'Access denied';
 		fileAuditLogQueries.logOperation({

@@ -24,13 +24,12 @@ export const listProjects = defineAction({
 	group: 'projects',
 	title: 'Projects',
 	description: 'Switch project',
-	access: 'member',
 	args: t.Object({ page: t.Optional(t.Number({ minimum: 0 })) }),
 	command: { name: 'projects' },
 	async run(ctx, args) {
-		ensureHomeProject(ctx.user.id);
+		ensureHomeProject();
 		const projects = homeFirst(
-			projectQueries.getAllForUser(ctx.user.id).sort((a, b) => (b.last_opened_at ?? '').localeCompare(a.last_opened_at ?? ''))
+			projectQueries.getListed().sort((a, b) => (b.last_opened_at ?? '').localeCompare(a.last_opened_at ?? ''))
 		);
 		const { choices, range } = paged(
 			projects,
@@ -53,11 +52,10 @@ export const openProject = defineAction({
 	group: 'projects',
 	title: 'Open project',
 	description: 'Switch to a project; the next message continues its latest session.',
-	access: 'member',
 	args: t.Object({ projectId: t.String({ minLength: 1 }) }),
-	async run(ctx, args) {
+	async run(_ctx, args) {
 		const project = projectQueries.getById(args.projectId);
-		if (!project || !projectQueries.userHasProject(ctx.user.id, project.id)) throw new Error('You do not have access to that project.');
+		if (!project || !projectQueries.isListed(project.id)) throw new Error('That project is not in Clopen any more.');
 		projectQueries.updateLastOpened(project.id);
 		return {
 			text: `📁 Now in **${escapeMd(projectLabel(project))}**. Your next message continues its latest session, or /new starts a fresh one.`,
@@ -71,11 +69,10 @@ export const goHome = defineAction({
 	group: 'projects',
 	title: 'Home',
 	description: 'Chat without a project',
-	access: 'member',
 	args: t.Object({}),
 	command: { name: 'home' },
-	async run(ctx) {
-		const home = ensureHomeProject(ctx.user.id);
+	async run() {
+		const home = ensureHomeProject();
 		return {
 			text: `🏠 Now in **${HOME_PROJECT_NAME}**, with no project.`,
 			target: { projectId: home.id, sessionId: latestSession(home.id)?.id ?? null }
@@ -181,7 +178,6 @@ export const browseFolders = defineAction({
 	group: 'projects',
 	title: 'Add project',
 	description: 'Add a folder as a project',
-	access: 'admin',
 	args: t.Object({ path: t.Optional(t.String()), page: t.Optional(t.Number({ minimum: 0 })) }),
 	command: { name: 'newproject', argument: { keys: ['path'], hint: '[start folder]' } },
 	async run(_ctx, args) {
@@ -194,7 +190,6 @@ export const makeFolder = defineAction({
 	group: 'projects',
 	title: 'New folder',
 	description: 'Create a folder inside another.',
-	access: 'admin',
 	args: t.Object({ path: t.String({ minLength: 1 }), name: t.Optional(t.String()) }),
 	async run(_ctx, args) {
 		const parent = existingFolder(args.path);
@@ -213,7 +208,6 @@ export const renameFolder = defineAction({
 	group: 'projects',
 	title: 'Rename folder',
 	description: 'Rename a folder that is not a project.',
-	access: 'admin',
 	args: t.Object({ path: t.String({ minLength: 1 }), name: t.Optional(t.String()) }),
 	async run(_ctx, args) {
 		const folder = existingFolder(args.path);
@@ -235,7 +229,6 @@ export const deleteFolder = defineAction({
 	group: 'projects',
 	title: 'Delete folder',
 	description: 'Delete a folder that is not a project, with everything in it.',
-	access: 'admin',
 	args: t.Object({ path: t.String({ minLength: 1 }) }),
 	confirm(args) {
 		const folder = normalisePath(args.path);
@@ -261,7 +254,6 @@ export const createProject = defineAction({
 	group: 'projects',
 	title: 'Add project',
 	description: 'Add a folder on this machine as a project, and switch to it.',
-	access: 'admin',
 	args: t.Object({ path: t.String({ minLength: 1 }), name: t.Optional(t.String()) }),
 	async run(ctx, args) {
 		const path = normalisePath(args.path);

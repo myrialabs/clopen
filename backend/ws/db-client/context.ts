@@ -32,6 +32,6 @@ export function resolveDbClientProject(
 	const target = (projectId ?? '').trim() || ws.getProjectId(conn);
 	if (!target) return null;
 
-	const project = requireProjectAccess(conn, target);
+	const project = requireProjectAccess(target);
 	return { projectId: target, project, root: project.path };
 }

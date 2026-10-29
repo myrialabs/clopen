@@ -75,11 +75,10 @@ export interface ChannelPlatform {
 	/** Undo `registerWebhook`. Best effort: called on disconnect, and failure is not fatal. */
 	unregisterWebhook(adapter: Adapter): Promise<void>;
 	/**
-	 * Publish the command menu — the bot's default one, or one chat's own when
-	 * `conversationId` is given (an admin's chat lists more than a member's).
-	 * Best effort: a platform without a menu ignores it.
+	 * Publish the bot's command menu. Best effort: a platform without a menu
+	 * ignores it.
 	 */
-	registerCommands(adapter: Adapter, commands: ChannelCommand[], conversationId?: string): Promise<void>;
+	registerCommands(adapter: Adapter, commands: ChannelCommand[]): Promise<void>;
 	/** Drop a chat's own menu, so it falls back to the default. */
 	clearCommands(adapter: Adapter, conversationId: string): Promise<void>;
 

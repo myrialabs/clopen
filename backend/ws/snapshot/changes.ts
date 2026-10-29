@@ -139,8 +139,8 @@ export const changesHandler = createRouter()
 			/** Net over the whole active path — what the chat changed, not the sum of its turns. */
 			net: NET_SCHEMA
 		})
-	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.sessionId);
+	}, async ({ data }) => {
+		requireSessionAccess(data.sessionId);
 
 		const activePath = activeCheckpoints(data.sessionId);
 		const readBlob = (hash: string) => blobStore.readBlob(hash);
@@ -206,14 +206,14 @@ export const changesHandler = createRouter()
 			]),
 			isBinary: t.Boolean()
 		})
-	}, async ({ data, conn }) => {
+	}, async ({ data }) => {
 		const unchanged = { before: null, after: null, status: 'unchanged' as const, isBinary: false };
 
 		const sessionId = data.messageId
-			? requireMessageAccess(conn, data.messageId).session_id
+			? requireMessageAccess(data.messageId).session_id
 			: data.sessionId;
 		if (!sessionId) return unchanged;
-		if (!data.messageId) requireSessionAccess(conn, sessionId);
+		if (!data.messageId) requireSessionAccess(sessionId);
 
 		const session = sessionQueries.getById(sessionId);
 		const root = resolveSessionRoot(sessionId)?.path
@@ -282,8 +282,8 @@ export const changesHandler = createRouter()
 			/** Net over the active path including the running turn; null when it adds nothing. */
 			net: t.Union([NET_SCHEMA, t.Null()])
 		})
-	}, async ({ data, conn }) => {
-		requireSessionAccess(conn, data.sessionId);
+	}, async ({ data }) => {
+		requireSessionAccess(data.sessionId);
 
 		const session = sessionQueries.getById(data.sessionId);
 		if (!session) return { files: [], net: null };

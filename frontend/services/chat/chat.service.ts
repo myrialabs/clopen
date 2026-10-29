@@ -18,7 +18,6 @@ import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState, setCurrentSession, createSession, updateSession } from '$frontend/stores/core/sessions.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { setRateLimit } from '$frontend/stores/ui/rate-limit.svelte';
-import { userStore } from '$frontend/stores/features/user.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
@@ -349,13 +348,13 @@ class ChatService {
       // Notifications handled by GlobalStreamMonitor via chat:stream-finished
     });
 
-    // Cancelled event - broadcast to ALL collaborators when any user cancels
+    // Cancelled event - broadcast to every device when any of them cancels
     ws.on('chat:cancelled', async (data) => {
       const ctx = this.ownerOf(data);
       if (!ctx) return;
       this.clearStartPending(ctx.sessionId);
       // Track the cancelled processId so late-arriving events are blocked.
-      // This handles the case where a collaborator initiated the cancel
+      // This handles the case where another device initiated the cancel
       // (so our local cancelRequest was not called).
       if (data.processId) {
         ctx.state.cancelledProcessIds.add(data.processId);
@@ -521,11 +520,6 @@ class ChatService {
       model: { id: chatModelState.modelId, name: chatModelState.modelName },
       account: { id: chatModelState.accountId ?? 0, name: chatModelState.accountName ?? '' },
     };
-    const sender = {
-      id: userStore.currentUser?.id || '',
-      name: userStore.currentUser?.name || '',
-    };
-
     const prompt = {
       type: 'user' as const,
       createdAt: new Date().toISOString(),
@@ -533,7 +527,6 @@ class ChatService {
       sessionId: chatSessionId,
       parent: { messageId: null, sessionId: parentSessionId, toolUseId: null },
       engine,
-      sender,
       content: messageContent,
       synthetic: false,
     };
@@ -543,7 +536,6 @@ class ChatService {
       projectPath: projectState.currentProject?.path || '',
       prompt,
       engine,
-      sender,
       // Active Profile for this session (null = use project default). Persisted
       // to chat_sessions.profile_id server-side like engine/model.
       profileId: chatModelState.profileId,
@@ -718,8 +710,8 @@ class ChatService {
   }
 
   /**
-   * Cancel the stream of the session on screen — works for ANY collaborator,
-   * not just the sender, and after a browser refresh.
+   * Cancel the stream of the session on screen — works from ANY device, not
+   * just the one that sent, and after a browser refresh.
    *
    * The session being VIEWED is the only valid target: Stop is rendered inside
    * that session's chat. Resolving it from remembered sender state instead
@@ -815,9 +807,6 @@ class ChatService {
     const enriched = { ...message };
     if (data.message_id) enriched.messageId = data.message_id;
     if (data.parent_message_id !== undefined) enriched.parent = { ...enriched.parent, messageId: data.parent_message_id ?? null };
-    if (enriched.type === 'user' && (data.sender_id || data.sender_name)) {
-      enriched.sender = { id: data.sender_id ?? '', name: data.sender_name ?? '' };
-    }
     if (data.timestamp) enriched.createdAt = data.timestamp;
     return enriched;
   }
@@ -834,7 +823,7 @@ class ChatService {
     // Ignore messages from a completed/cancelled stream
     if (ctx.state.streamCompleted) return;
 
-    // Enrich with transport metadata (DB id, parent, sender)
+    // Enrich with transport metadata (DB id, parent)
     const message = this.enrichMessage(rawMessage, data);
 
     // If this is a user message from server, replace the optimistic message.

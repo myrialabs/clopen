@@ -484,7 +484,6 @@ export function convertUserMessage(
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: null },
 		engine: { type: 'opencode' as const, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
-		sender: { id: '', name: '' },
 		content,
 		synthetic: false,
 	};
@@ -649,7 +648,6 @@ export function convertAssistantMessages(
 				sessionId,
 				parent: { messageId: null, sessionId: null, toolUseId: null },
 				engine: { type: 'opencode' as const, provider: providerID, model: { id: modelID, name: '' }, account: { id: 0, name: '' } },
-				sender: { id: '', name: '' },
 				content: [result],
 				synthetic: true,
 			};
@@ -948,7 +946,6 @@ export function convertToolResultOnly(
 		sessionId,
 		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
 		engine: { type: 'opencode' as const, provider: '', model: { id: '', name: '' }, account: { id: 0, name: '' } },
-		sender: { id: '', name: '' },
 		content: [{
 			type: 'tool_result',
 			toolUseId,

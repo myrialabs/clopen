@@ -72,15 +72,10 @@ beforeAll(async () => {
 	// Seed an identity in the isolated data directory, through the real query
 	// layer so the token is sealed exactly as it is in production.
 	const seed = `
-		import { initializeDatabase, getDatabase } from '$backend/database';
+		import { initializeDatabase } from '$backend/database';
 		import { gitIdentityQueries } from '$backend/database/queries';
 		await initializeDatabase();
-		const now = new Date().toISOString();
-		getDatabase().prepare(
-			\`INSERT INTO users (id, name, color, avatar, role, created_at, updated_at)
-			 VALUES ('u-test', 'Ada', '#fff', 'a', 'admin', ?, ?)\`
-		).run(now, now);
-		gitIdentityQueries.create('id-test', 'u-test', {
+		gitIdentityQueries.create('id-test', {
 			label: 'Work',
 			name: 'Ada Lovelace',
 			email: 'ada@example.com',

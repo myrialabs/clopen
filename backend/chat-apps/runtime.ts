@@ -64,17 +64,11 @@ export interface ChannelStatus {
 
 export type InboundHandler = (message: UniversalMessage, channel: ActiveChannel) => Promise<void>;
 
-export type MenuRole = 'admin' | 'member';
-
-/**
- * What a bot's `/` menu holds. Every chat gets the member menu by default; a
- * chat paired by an admin gets its own, longer one — the same list `/help`
- * shows that person.
- */
+/** What a bot's `/` menu holds — the same list `/help` shows. */
 export interface CommandMenu {
-	forRole(role: MenuRole): ChannelCommand[];
-	/** The paired chats of a bot and their owner's role, to publish their own menus. */
-	chatsOf(accountId: string): Array<{ conversationId: string; role: MenuRole }>;
+	commands(): ChannelCommand[];
+	/** The paired chats of a bot, whose own menus (from older versions) are cleared. */
+	chatsOf(accountId: string): string[];
 }
 
 /** A file a chat sent, read out of ChatKit's media store. */
@@ -137,8 +131,6 @@ class ChannelRuntime {
 	private menu: CommandMenu | null = null;
 	private statusListener: (() => void) | null = null;
 	private statusTimer: ReturnType<typeof setTimeout> | null = null;
-	/** `${accountId}\u0000${conversationId}` → the role whose menu that chat has. */
-	private readonly chatMenus = new Map<string, MenuRole>();
 	private browserOrigin: string | null = null;
 	private tunnelTimer: ReturnType<typeof setTimeout> | null = null;
 	private readonly onTunnelChange = (): void => {
@@ -182,44 +174,19 @@ class ChannelRuntime {
 	}
 
 	/**
-	 * Publish a bot's menus: the member one as the default, then each admin's
-	 * chat its own. Best effort: a bot whose menu could not be published still
-	 * works by typing.
+	 * Publish a bot's menu as its default, and drop any chat-specific menu a
+	 * paired chat still carries so it shows the same one. Best effort: a bot
+	 * whose menu could not be published still works by typing.
 	 */
 	private publishCommands(platform: ChannelPlatform, accountId: string): void {
 		const adapter = this.chat?.adapterFor(platform.chatkit, accountId);
 		const menu = this.menu;
 		if (!adapter || !menu) return;
-		void platform.registerCommands(adapter, menu.forRole('member')).catch((error) => {
+		void platform.registerCommands(adapter, menu.commands()).catch((error) => {
 			debug.warn('chat-apps', 'Publishing the bot command menu failed:', describe(error));
 		});
-		for (const chat of menu.chatsOf(accountId)) void this.syncChatMenu(accountId, chat.conversationId, chat.role, { force: true });
-	}
-
-	/**
-	 * Make one chat's menu match its owner's role. Cheap to call on every
-	 * message: it only talks to the platform when the role changed (an admin
-	 * demoted, a member promoted) or `force` is set.
-	 */
-	async syncChatMenu(accountId: string, conversationId: string, role: MenuRole | null, options: { force?: boolean } = {}): Promise<void> {
-		const channel = this.active.get(accountId);
-		const adapter = channel ? this.chat?.adapterFor(channel.platform.chatkit, accountId) : null;
-		if (!channel || !adapter || !this.menu) return;
-		const key = `${accountId}\u0000${conversationId}`;
-		const published = this.chatMenus.get(key) ?? null;
-		if (!options.force && published === role) return;
-		try {
-			if (role === 'admin') {
-				await channel.platform.registerCommands(adapter, this.menu.forRole('admin'), conversationId);
-				this.chatMenus.set(key, 'admin');
-			} else {
-				// A member's chat uses the default menu; drop any admin one it had.
-				if (published === 'admin' || options.force) await channel.platform.clearCommands(adapter, conversationId).catch(() => {});
-				if (role) this.chatMenus.set(key, role);
-				else this.chatMenus.delete(key);
-			}
-		} catch (error) {
-			debug.warn('chat-apps', 'Publishing a chat command menu failed:', describe(error));
+		for (const conversationId of menu.chatsOf(accountId)) {
+			void platform.clearCommands(adapter, conversationId).catch(() => {});
 		}
 	}
 
@@ -261,7 +228,6 @@ class ChannelRuntime {
 		const chat = this.chat;
 		this.chat = null;
 		this.active.clear();
-		this.chatMenus.clear();
 		// Webhooks stay registered on purpose: the platform queues what arrives
 		// while Clopen is down and redelivers once it is reachable again.
 		await chat?.stop().catch((error) => debug.warn('chat-apps', 'ChatKit stop failed:', error));

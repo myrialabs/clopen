@@ -48,7 +48,7 @@ export function requireBrowserPreviewAccessFor(
 	// The caller passes a workspace scope key; membership is always decided on
 	// the project it belongs to.
 	const projectId = scopeProjectId(scopeKey);
-	requireProjectAccess(conn, projectId); // throws if the caller isn't a member
+	requireProjectAccess(projectId); // throws if the caller isn't a member
 	const userId = ws.getUserId(conn);
 	const previewService = browserPreviewServiceManager.getService(scopeKey);
 	return { userId, projectId, previewService };

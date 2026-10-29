@@ -354,8 +354,8 @@
 		'max-width:400px;width:auto;height:auto;max-height:380px;object-fit:contain;display:block;border-radius:6px;margin:8px 0;cursor:pointer;';
 
 	function insertImageAtCursor(previewUrl: string, pendingId: string, fileName: string): void {
-		// A file name is user data and reaches other project members through the
-		// saved note, so it is escaped before it becomes an attribute value.
+		// A file name is user data and reaches every device through the saved
+		// note, so it is escaped before it becomes an attribute value.
 		const imgHtml = `<img src="${previewUrl}" data-pending-id="${pendingId}" alt="${escapeAttr(fileName)}" style="${IMAGE_STYLE}" title="Right-click for size options, click to select" />`;
 		if (!editorEl) {
 			content = content + `<p>${imgHtml}</p>`;

@@ -14,11 +14,10 @@
 	import type { ContainerEntry } from '$shared/types/containers';
 
 	interface Props {
-		canManage: boolean;
 		onToggle: (entry: ContainerEntry) => void;
 	}
 
-	const { canManage, onToggle }: Props = $props();
+	const { onToggle }: Props = $props();
 
 	const groups = $derived(containersStore.groups);
 	const result = $derived(containersStore.result);
@@ -82,7 +81,6 @@
 							{#each group.entries as entry (entry.key)}
 								<ContainerRow
 									{entry}
-									{canManage}
 									selected={containersStore.selectedId === entry.id}
 									busy={containersStore.actingId === entry.id}
 									onSelect={() => containersStore.select(entry.id)}

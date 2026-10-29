@@ -12,16 +12,12 @@
  *   - memory:status / memory:retry-failed
  *   - memory:config / memory:save-config
  *
- * Reads are open to any authenticated user, because the graph is what explains
- * the project to whoever is working on it. Mutations are admin-gated in
- * `backend/auth/permissions.ts`, matching skills / mcp_servers / subagents:
- * memory is instance-global, so one member editing it changes what every agent
- * is told on every future turn.
+ * Memory is instance-global, so an edit changes what every agent is told on
+ * every future turn.
  */
 
 import { t } from 'elysia';
-import { createRouter, type WSConnection } from '$shared/utils/ws-server';
-import { ws } from '$backend/utils/ws';
+import { createRouter } from '$shared/utils/ws-server';
 import { projectContextService } from '$backend/mcp/internal/project-context';
 import { debug } from '$shared/utils/logger';
 import { graphQueries, graphLayoutQueries } from '$backend/database/queries/graph-queries';
@@ -133,39 +129,12 @@ const READINESS = t.Object({
 	})
 });
 
-/**
- * How the modal's project multi-select reaches a query.
- *
- * `projectIds` is tri-state on the wire and each state means something
- * different: ABSENT is "every project" (the cross-project view), an EMPTY array
- * is "global only" — nothing selected is a narrowing, not the absence of one —
- * and a non-empty array is those projects plus the globals that apply inside
- * every one of them.
- *
- * Cross-project is admin-only. Reads are otherwise open, because the graph is
- * what explains a project to whoever is working on it and withholding that would
- * defeat the feature. But "every project at once" is a different request: memory
- * is instance-global, so it would show a member everything every other team has
- * ever worked on, including repositories they have no access to. Narrowing to
- * the caller's current project is the honest degradation — they still see
- * everything that applies where they are, plus the globals.
- *
- * Mutations are gated separately, in `backend/auth/permissions.ts`.
- */
-function scopeForRole(conn: WSConnection, requested: string[] | undefined): string[] | undefined {
-	if (requested !== undefined) return requested;
-	if (ws.getRole(conn) === 'admin') return undefined;
-
-	const current = projectContextService.getCurrentProjectId();
-	debug.log('path', 'memory: cross-project read narrowed to current project (not admin)');
-	// No project selected and not an admin: global-scope memories only, which an
-	// empty selection already means.
-	return current ? [current] : [];
-}
-
 export const memoryCrudHandler = createRouter()
 	.http('memory:graph', {
 		data: t.Object({
+			// Tri-state, and each state means something different: ABSENT is every
+			// project, an EMPTY array is global only, and a non-empty array is those
+			// projects plus the globals that apply inside every one of them.
 			projectIds: t.Optional(t.Array(t.String())),
 			subkinds: t.Optional(t.Array(t.String())),
 			scopes: t.Optional(t.Array(SCOPE)),
@@ -238,10 +207,10 @@ export const memoryCrudHandler = createRouter()
 			totalNodes: t.Number(),
 			truncated: t.Boolean()
 		})
-	}, async ({ conn, data }) => {
+	}, async ({ data }) => {
 		debug.log('path', 'memory:graph');
 		return buildGraphView({
-			projectIds: scopeForRole(conn, data.projectIds),
+			projectIds: data.projectIds,
 			subkinds: data.subkinds,
 			scopes: data.scopes as GraphScope[] | undefined,
 			sources: data.sources as GraphSource[] | undefined,
@@ -290,11 +259,11 @@ export const memoryCrudHandler = createRouter()
 				vectorWeight: t.Number()
 			})
 		})
-	}, async ({ conn, data }) => {
+	}, async ({ data }) => {
 		debug.log('path', 'memory:search');
 		const result = retrieve({
 			query: data.query,
-			projectIds: scopeForRole(conn, data.projectIds),
+			projectIds: data.projectIds,
 			subkinds: data.subkinds,
 			sources: data.sources as GraphSource[] | undefined,
 			limit: data.limit ?? 20,
@@ -493,9 +462,8 @@ export const memoryCrudHandler = createRouter()
 	/**
 	 * What the extraction queue is doing.
 	 *
-	 * Open to any member, because it answers "is memory working right now", and a
-	 * user watching the graph fail to grow deserves an answer whether or not they
-	 * can change the setting that fixes it.
+	 * It answers "is memory working right now" for someone watching the graph
+	 * fail to grow.
 	 */
 	.http('memory:status', {
 		data: t.Object({}),
@@ -576,9 +544,9 @@ export const memoryCrudHandler = createRouter()
 			nodes: t.Array(NODE),
 			total: t.Number()
 		})
-	}, async ({ conn, data }) => {
+	}, async ({ data }) => {
 		debug.log('path', 'memory:forgotten');
-		const projectIds = scopeForRole(conn, data.projectIds);
+		const projectIds = data.projectIds;
 		return {
 			nodes: graphQueries.listArchived({
 				projectIds,

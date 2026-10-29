@@ -18,7 +18,7 @@ import { authQueries } from '../database/queries';
 import { hashToken } from '../auth/tokens';
 import { projectQueries } from '../database/queries/project-queries';
 import { noteQueries, noteCollectionQueries, noteImageQueries } from '../database/queries/note-queries';
-import { initializeDatabase, closeDatabase } from '../database';
+import { initializeDatabase, closeDatabase, getDatabase } from '../database';
 import { getCollectionNotesDir, resolveNoteImagePath } from '../notes/storage';
 
 // Smallest valid GIF89a — `file-type` recognises it from the header alone.
@@ -55,7 +55,6 @@ beforeAll(async () => {
 		name: 'Notes Test User',
 		color: '#000000',
 		avatar: 'test',
-		role: 'admin',
 		personal_access_token_hash: null,
 		created_at: new Date().toISOString()
 	});
@@ -80,7 +79,7 @@ beforeAll(async () => {
 		last_opened_at: new Date().toISOString()
 	});
 	projectId = project.id;
-	projectQueries.addUserProject(userId, projectId);
+	projectQueries.list(projectId);
 
 	collectionId = noteCollectionQueries.create({
 		name: 'General',
@@ -93,8 +92,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
 	await rm(getCollectionNotesDir(collectionId), { recursive: true, force: true });
-	authQueries.deleteSessionsByUserId(userId);
-	authQueries.deleteUser(userId);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(userId);
 	projectQueries.deleteProject(projectId);
 	closeDatabase();
 });
@@ -188,41 +186,20 @@ describe('GET /api/notes/images/:id', () => {
 		expect(res.status).toBe(401);
 	});
 
-	it('denies a user who is not a member of the project the collection belongs to', async () => {
-		const outsiderId = randomUUID();
-		authQueries.createUser({
-			id: outsiderId,
-			name: 'Outsider',
-			color: '#000000',
-			avatar: 'test',
-			role: 'member',
-			personal_access_token_hash: null,
-			created_at: new Date().toISOString()
-		});
-		const outsiderToken = randomUUID();
-		authQueries.createSession({
-			id: randomUUID(),
-			user_id: outsiderId,
-			token_hash: hashToken(outsiderToken),
-			expires_at: new Date(Date.now() + 86_400_000).toISOString(),
-			created_at: new Date().toISOString(),
-			last_active_at: new Date().toISOString(),
-			user_agent: null,
-			ip_address: null,
-			source: null
-		});
-
+	it('denies an image whose project was removed from the list', async () => {
 		const upload = await notesImagesRoute.handle(uploadRequest(GIF_BYTES, 'private.gif', GIF_BYTES.length));
 		const { image } = (await upload.json()) as { image: { id: string } };
 
-		const res = await notesImagesRoute.handle(
-			new Request(`http://localhost/api/notes/images/${image.id}`, {
-				headers: { authorization: `Bearer ${outsiderToken}` }
-			})
-		);
-		expect(res.status).toBe(403);
-
-		authQueries.deleteSessionsByUserId(outsiderId);
-		authQueries.deleteUser(outsiderId);
+		projectQueries.unlist(projectId);
+		try {
+			const res = await notesImagesRoute.handle(
+				new Request(`http://localhost/api/notes/images/${image.id}`, {
+					headers: { authorization: `Bearer ${token}` }
+				})
+			);
+			expect(res.status).toBe(403);
+		} finally {
+			projectQueries.list(projectId);
+		}
 	});
 });

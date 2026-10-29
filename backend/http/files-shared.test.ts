@@ -3,8 +3,7 @@
  *
  * `GET /api/files/shared?share=<token>` serves exactly the file its token was
  * minted for — no session, no path parameter — so the token binding (not just
- * the status code) is asserted here. Creation-time access control is exercised
- * too: a path outside the caller's projects must not be shareable.
+ * the status code) is asserted here.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
@@ -26,14 +25,13 @@ import {
 import { authQueries, fileShareQueries } from '../database/queries';
 import { hashToken } from '../auth/tokens';
 import { projectQueries } from '../database/queries/project-queries';
-import { initializeDatabase, closeDatabase } from '../database';
+import { initializeDatabase, closeDatabase, getDatabase } from '../database';
 
 const TEST_DIR = join(import.meta.dir, '.test-shared-integration');
 const TEST_WORKSPACE = join(TEST_DIR, 'workspace');
 const OUTSIDE_DIR = join(TEST_DIR, 'outside');
 
 let testUserId: string;
-let otherUserId: string;
 let testProjectId: string;
 
 function createMockSharedRequest(share: string | null, headers?: Record<string, string>): Request {
@@ -63,18 +61,6 @@ beforeAll(async () => {
 		name: 'Share Test User',
 		color: '#000000',
 		avatar: 'test',
-		role: 'member',
-		personal_access_token_hash: null,
-		created_at: new Date().toISOString()
-	});
-
-	otherUserId = randomUUID();
-	authQueries.createUser({
-		id: otherUserId,
-		name: 'Other Test User',
-		color: '#111111',
-		avatar: 'test',
-		role: 'member',
 		personal_access_token_hash: null,
 		created_at: new Date().toISOString()
 	});
@@ -86,14 +72,10 @@ beforeAll(async () => {
 		last_opened_at: new Date().toISOString()
 	});
 	testProjectId = project.id;
-	projectQueries.addUserProject(testUserId, testProjectId);
 });
 
 afterAll(async () => {
-	authQueries.deleteSessionsByUserId(testUserId);
-	authQueries.deleteUser(testUserId);
-	authQueries.deleteSessionsByUserId(otherUserId);
-	authQueries.deleteUser(otherUserId);
+	getDatabase().prepare('DELETE FROM users WHERE id = ?').run(testUserId);
 	projectQueries.deleteProject(testProjectId);
 	closeDatabase();
 	await rm(TEST_DIR, { recursive: true, force: true });
@@ -105,7 +87,7 @@ describe('File share links', () => {
 		const filePath = join(TEST_WORKSPACE, 'shared notes.txt');
 		await writeFile(filePath, content);
 
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 		const response = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
 
 		expect(response.status).toBe(200);
@@ -119,7 +101,7 @@ describe('File share links', () => {
 	it('expires after the first successful open', async () => {
 		const filePath = join(TEST_WORKSPACE, 'one-time.txt');
 		await writeFile(filePath, 'open me once');
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		const first = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
 		expect(first.status).toBe(200);
@@ -138,7 +120,7 @@ describe('File share links', () => {
 		const content = '0123456789abcdef';
 		const filePath = join(TEST_WORKSPACE, 'clip.mp4');
 		await writeFile(filePath, content);
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		const part = await filesSharedRoute.handle(
 			createMockSharedRequest(shareToken, { range: 'bytes=0-4' })
@@ -160,7 +142,7 @@ describe('File share links', () => {
 		const content = '0123456789abcdef';
 		const filePath = join(TEST_WORKSPACE, 'movie.mp4');
 		await writeFile(filePath, content);
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		// The one open: full body, token burned.
 		const first = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
@@ -184,7 +166,7 @@ describe('File share links', () => {
 		const content = '0123456789';
 		const filePath = join(TEST_WORKSPACE, 'short.mp4');
 		await writeFile(filePath, content);
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		const over = await filesSharedRoute.handle(
 			createMockSharedRequest(shareToken, { range: `bytes=${content.length}-` })
@@ -202,8 +184,8 @@ describe('File share links', () => {
 		const fileB = join(TEST_WORKSPACE, 'file-b.txt');
 		await writeFile(fileA, 'content-a');
 		await writeFile(fileB, 'content-b');
-		const { shareToken: tokenA } = await createFileShareLink(fileA, 'member', testUserId);
-		const { shareToken: tokenB } = await createFileShareLink(fileB, 'member', testUserId);
+		const { shareToken: tokenA } = await createFileShareLink(fileA, testUserId);
+		const { shareToken: tokenB } = await createFileShareLink(fileB, testUserId);
 
 		expect((await filesSharedRoute.handle(createMockSharedRequest(tokenA))).status).toBe(200);
 		expect((await filesSharedRoute.handle(createMockSharedRequest(tokenA))).status).toBe(410);
@@ -216,7 +198,7 @@ describe('File share links', () => {
 	it('resolves to the minted file even when the bytes change on disk', async () => {
 		const filePath = join(TEST_WORKSPACE, 'moving.txt');
 		await writeFile(filePath, 'v1');
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 		await writeFile(filePath, 'v2-longer');
 
 		const response = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
@@ -238,67 +220,53 @@ describe('File share links', () => {
 		// The raw token is deliberately NOT passed to revoke: it only ever exists
 		// in the browser that minted it, so a revoke keyed on it would be
 		// unreachable the moment that view closes.
-		const { shareId, shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareId, shareToken } = await createFileShareLink(filePath, testUserId);
 
-		expect(revokeFileShareLink(shareId, 'member', testUserId)).toBe(true);
+		expect(revokeFileShareLink(shareId)).toBe(true);
 		await expect(peekFileShare(shareToken, consumerFingerprint())).rejects.toThrow();
 
 		const response = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
 		expect(response.status).toBe(410);
 
 		// Revoking the same id twice is a no-op, not an error.
-		expect(revokeFileShareLink(shareId, 'member', testUserId)).toBe(false);
+		expect(revokeFileShareLink(shareId)).toBe(false);
 	});
 
-	it("refuses to revoke another member's link but lets an admin", async () => {
-		const filePath = join(TEST_WORKSPACE, 'not-yours.txt');
-		await writeFile(filePath, 'mine');
-		const { shareId } = await createFileShareLink(filePath, 'member', testUserId);
-
-		expect(() => revokeFileShareLink(shareId, 'member', otherUserId)).toThrow();
-		expect(revokeFileShareLink(shareId, 'admin', otherUserId)).toBe(true);
-	});
-
-	it('lists live links with no token material, scoped by role', async () => {
+	it('lists live links with no token material', async () => {
 		const filePath = join(TEST_WORKSPACE, 'listed.txt');
 		await writeFile(filePath, 'listed');
-		const { shareId } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareId } = await createFileShareLink(filePath, testUserId);
 
-		const mine = listFileShares('member', testUserId);
+		const mine = listFileShares();
 		const entry = mine.find((s) => s.id === shareId);
 		expect(entry).toBeDefined();
 		expect(entry?.fileName).toBe('listed.txt');
-		expect(entry?.createdByName).toBe('Share Test User');
 		expect(entry?.consumedAt).toBeNull();
 		// Nothing in the summary can rebuild the URL.
 		expect(JSON.stringify(entry)).not.toContain('clp_fsh_');
 
-		// Another member sees none of it; an admin sees it.
-		expect(listFileShares('member', otherUserId).some((s) => s.id === shareId)).toBe(false);
-		expect(listFileShares('admin', otherUserId).some((s) => s.id === shareId)).toBe(true);
-
-		revokeFileShareLink(shareId, 'member', testUserId);
-		expect(listFileShares('member', testUserId).some((s) => s.id === shareId)).toBe(false);
+		revokeFileShareLink(shareId);
+		expect(listFileShares().some((s) => s.id === shareId)).toBe(false);
 	});
 
 	it('marks a link as opened in the list instead of hiding it', async () => {
 		const filePath = join(TEST_WORKSPACE, 'opened.txt');
 		await writeFile(filePath, 'read me');
-		const { shareId, shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareId, shareToken } = await createFileShareLink(filePath, testUserId);
 
 		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(200);
 
 		// Still listed, still revocable — the continuation window is live until
 		// it is cut, and cutting it is the point of showing the row.
-		const entry = listFileShares('member', testUserId).find((s) => s.id === shareId);
+		const entry = listFileShares().find((s) => s.id === shareId);
 		expect(entry?.consumedAt).not.toBeNull();
-		expect(revokeFileShareLink(shareId, 'member', testUserId)).toBe(true);
+		expect(revokeFileShareLink(shareId)).toBe(true);
 	});
 
 	it('defaults to one-time and a five-minute deadline', async () => {
 		const filePath = join(TEST_WORKSPACE, 'ttl.txt');
 		await writeFile(filePath, 'tick');
-		const { oneTime, expiresAt } = await createFileShareLink(filePath, 'member', testUserId);
+		const { oneTime, expiresAt } = await createFileShareLink(filePath, testUserId);
 
 		expect(DEFAULT_FILE_SHARE_TTL_MINUTES).toBe(5);
 		expect(oneTime).toBe(true);
@@ -311,7 +279,7 @@ describe('File share links', () => {
 		const content = 'read me twice';
 		const filePath = join(TEST_WORKSPACE, 'reusable.txt');
 		await writeFile(filePath, content);
-		const { shareId, shareToken } = await createFileShareLink(filePath, 'member', testUserId, {
+		const { shareId, shareToken } = await createFileShareLink(filePath, testUserId, {
 			oneTime: false,
 			expiresInMinutes: 15
 		});
@@ -325,7 +293,7 @@ describe('File share links', () => {
 		// Even a stranger — a reusable link is exactly that, on purpose.
 		expect((await filesSharedRoute.handle(createStrangerRequest(shareToken))).status).toBe(200);
 
-		const entry = listFileShares('member', testUserId).find((s) => s.id === shareId);
+		const entry = listFileShares().find((s) => s.id === shareId);
 		expect(entry?.oneTime).toBe(false);
 		expect(entry?.openCount).toBe(4);
 		expect(entry?.lastOpenedAt).not.toBeNull();
@@ -336,7 +304,7 @@ describe('File share links', () => {
 	it('does not inflate the open count with range requests', async () => {
 		const filePath = join(TEST_WORKSPACE, 'reusable-clip.mp4');
 		await writeFile(filePath, '0123456789abcdef');
-		const { shareId, shareToken } = await createFileShareLink(filePath, 'member', testUserId, {
+		const { shareId, shareToken } = await createFileShareLink(filePath, testUserId, {
 			oneTime: false,
 			expiresInMinutes: 15
 		});
@@ -347,18 +315,18 @@ describe('File share links', () => {
 		}
 
 		// One viewing is one open, not four.
-		expect(listFileShares('member', testUserId).find((s) => s.id === shareId)?.openCount).toBe(1);
+		expect(listFileShares().find((s) => s.id === shareId)?.openCount).toBe(1);
 	});
 
 	it('keeps a link without a deadline alive, and revoke is the only end', async () => {
 		const filePath = join(TEST_WORKSPACE, 'no-deadline.txt');
 		await writeFile(filePath, 'forever');
-		const { shareId, shareToken } = await createFileShareLink(filePath, 'member', testUserId, {
+		const { shareId, shareToken } = await createFileShareLink(filePath, testUserId, {
 			oneTime: false,
 			expiresInMinutes: null
 		});
 
-		const entry = listFileShares('member', testUserId).find((s) => s.id === shareId);
+		const entry = listFileShares().find((s) => s.id === shareId);
 		expect(entry?.expiresAt).toBeNull();
 		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(200);
 
@@ -366,7 +334,7 @@ describe('File share links', () => {
 		sweepStaleFileShares();
 		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(200);
 
-		expect(revokeFileShareLink(shareId, 'member', testUserId)).toBe(true);
+		expect(revokeFileShareLink(shareId)).toBe(true);
 		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(410);
 	});
 
@@ -374,10 +342,10 @@ describe('File share links', () => {
 		const filePath = join(TEST_WORKSPACE, 'bad-ttl.txt');
 		await writeFile(filePath, 'nope');
 		await expect(
-			createFileShareLink(filePath, 'member', testUserId, { expiresInMinutes: 0 })
+			createFileShareLink(filePath, testUserId, { expiresInMinutes: 0 })
 		).rejects.toThrow();
 		await expect(
-			createFileShareLink(filePath, 'member', testUserId, { expiresInMinutes: 60 * 24 * 365 })
+			createFileShareLink(filePath, testUserId, { expiresInMinutes: 60 * 24 * 365 })
 		).rejects.toThrow();
 	});
 
@@ -386,9 +354,9 @@ describe('File share links', () => {
 		await mkdir(nested, { recursive: true });
 		const filePath = join(nested, 'index.ts');
 		await writeFile(filePath, 'export {};');
-		const { shareId } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareId } = await createFileShareLink(filePath, testUserId);
 
-		const entry = listFileShares('member', testUserId).find((s) => s.id === shareId);
+		const entry = listFileShares().find((s) => s.id === shareId);
 		expect(entry?.projectName).toBe('Share Test Project');
 		expect(entry?.relativePath).toBe('src/deep/index.ts');
 		expect(entry?.fileName).toBe('index.ts');
@@ -399,18 +367,21 @@ describe('File share links', () => {
 		expect(orphan.relativePath).toContain('loose.txt');
 	});
 
-	it('refuses to share a directory or a path outside the caller projects', async () => {
-		await expect(createFileShareLink(TEST_WORKSPACE, 'member', testUserId)).rejects.toThrow();
+	it('refuses to share a directory', async () => {
+		await expect(createFileShareLink(TEST_WORKSPACE, testUserId)).rejects.toThrow();
+	});
 
-		const outside = join(OUTSIDE_DIR, 'secret.txt');
-		await writeFile(outside, 'secret');
-		await expect(createFileShareLink(outside, 'member', testUserId)).rejects.toThrow();
+	it('shares a file outside every project', async () => {
+		const outside = join(OUTSIDE_DIR, 'loose-share.txt');
+		await writeFile(outside, 'anywhere on the machine');
+		const { shareToken } = await createFileShareLink(outside, testUserId);
+		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(200);
 	});
 
 	it('reports a deleted file as not found without burning the single use', async () => {
 		const filePath = join(TEST_WORKSPACE, 'deleted.txt');
 		await writeFile(filePath, 'gone soon');
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 		await rm(filePath);
 
 		// A failed open never counts as the one use: still 404, never 410.
@@ -421,7 +392,7 @@ describe('File share links', () => {
 	it('persists the link outside process memory so a restart does not kill it', async () => {
 		const filePath = join(TEST_WORKSPACE, 'durable.txt');
 		await writeFile(filePath, 'still here');
-		const { shareToken, expiresAt } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken, expiresAt } = await createFileShareLink(filePath, testUserId);
 
 		// The row — not a Map entry — is what a restarted server reads back.
 		const row = fileShareQueries.getByHash(hashToken(shareToken));
@@ -436,7 +407,7 @@ describe('File share links', () => {
 		const content = '0123456789abcdef';
 		const filePath = join(TEST_WORKSPACE, 'bound.mp4');
 		await writeFile(filePath, content);
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		// The recipient opens it: token burned, their player may keep seeking.
 		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(200);
@@ -453,28 +424,30 @@ describe('File share links', () => {
 		expect(await leaked.text()).toContain(FILE_SHARE_GONE_MESSAGE);
 	});
 
-	it('stops serving once the creator loses access to the path', async () => {
-		const filePath = join(TEST_WORKSPACE, 'offboarded.txt');
+	it('stops serving once the account that minted it is gone', async () => {
+		const filePath = join(TEST_WORKSPACE, 'reset.txt');
 		await writeFile(filePath, 'internal');
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const creatorId = randomUUID();
+		authQueries.createUser({
+			id: creatorId,
+			name: 'Gone Soon',
+			color: '#111111',
+			avatar: 'test',
+			personal_access_token_hash: null,
+			created_at: new Date().toISOString()
+		});
+		const { shareToken } = await createFileShareLink(filePath, creatorId);
 
-		projectQueries.removeUserProject(testUserId, testProjectId);
-		try {
-			const response = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
-			expect(response.status).toBe(410);
-		} finally {
-			projectQueries.addUserProject(testUserId, testProjectId);
-		}
-
-		// Access restored — the untouched single use is still there.
-		expect((await filesSharedRoute.handle(createMockSharedRequest(shareToken))).status).toBe(200);
+		getDatabase().prepare('DELETE FROM users WHERE id = ?').run(creatorId);
+		const response = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
+		expect(response.status).toBe(410);
 	});
 
 	it('answers HEAD with metadata only, without spending the single use', async () => {
 		const content = 'probe me';
 		const filePath = join(TEST_WORKSPACE, 'probed.txt');
 		await writeFile(filePath, content);
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		const url = new URL('http://localhost/api/files/shared');
 		url.searchParams.set('share', shareToken);
@@ -496,7 +469,7 @@ describe('File share links', () => {
 		await mkdir(dottedDir, { recursive: true });
 		const filePath = join(dottedDir, 'NOTES');
 		await writeFile(filePath, 'no extension here');
-		const { shareToken } = await createFileShareLink(filePath, 'member', testUserId);
+		const { shareToken } = await createFileShareLink(filePath, testUserId);
 
 		const response = await filesSharedRoute.handle(createMockSharedRequest(shareToken));
 		expect(response.status).toBe(200);

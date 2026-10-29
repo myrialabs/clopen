@@ -23,7 +23,7 @@
 ### 3. Native WebSocket over SSE
 
 **Decision:** Native WebSocket instead of Server-Sent Events
-**Rationale:** Bidirectional communication required for chat, terminal input, file operations, and browser preview interaction. Room-based architecture enables project isolation and collaboration.
+**Rationale:** Bidirectional communication required for chat, terminal input, file operations, and browser preview interaction. Room-based architecture enables project isolation and keeps every device in sync.
 **Trade-offs:** More complex state management, reconnection logic required.
 
 ---
@@ -31,7 +31,7 @@
 ### 4. SQLite for Local Storage
 
 **Decision:** SQLite instead of PostgreSQL or other databases
-**Rationale:** No separate server needed, file-based storage ideal for local app, easy backup and portability, good performance for single-user and small team use.
+**Rationale:** No separate server needed, file-based storage ideal for local app, easy backup and portability, good performance for a single owner's workload.
 **Trade-offs:** Limited concurrent writes, no built-in replication.
 
 ---
@@ -157,21 +157,21 @@
 
 ---
 
-## Authentication & Collaboration
+## Authentication & Devices
 
-### 19. Flexible Authentication (No-Auth + Multi-User)
+### 19. Single Owner, Many Devices (No-Auth or With Login)
 
-**Decision:** Dual authentication mode — No Login or With Login (token-based) — configurable during setup wizard and togglable in Settings → Security
-**Rationale:** Not all deployments need authentication. Personal/local use should be frictionless (No Login), while team/production deployments need access control (With Login). The system stores `authMode` in `system:settings` (`'none'` or `'required'`). In No Login mode, a default admin user is auto-created and all WS routes bypass authentication checks. Existing users and sessions are preserved when switching modes (bypassed, not deleted). Switching from No Login to With Login generates a PAT for the existing admin. Three token types remain for With Login: session (`clp_ses_*`, 30-day, auto-reconnect), PAT (`clp_pat_*`, permanent, cross-device login), invite (`clp_inv_*`, single-use). Rate limiting, admin-only routes, and CLI `clopen reset-pat` recovery all apply in With Login mode.
-**Trade-offs:** No Login mode has no access control, admin must be aware when exposing via tunnel. UI sections (user management, invites, PAT settings) are hidden in No Login mode to avoid confusion.
+**Decision:** Clopen has exactly one account — the owner — signed in on any number of devices. Authentication is either No Login or With Login (token-based), configurable during the setup wizard and togglable in Settings → Sign-in & Devices. Multi-user collaboration (admin/member roles, invites, per-project membership, per-user scoping of connections, git identities and Home) was removed in migration `086_single_owner`.
+**Rationale:** Clopen is full control of one machine, so splitting it between people made every feature carry a second access model: each change had to answer "who may see or do this", that logic was spread across nearly every surface, it was the source of many bugs, and the feature was rarely used. Remote Access covers the real need — reaching your own Clopen from a phone or another computer — without any of it. The system stores `authMode` in `system:settings` (`'none'` or `'required'`). In No Login mode the owner is auto-created and all WS routes bypass authentication; in With Login every route except sign-in needs an authenticated connection. Token types: session (`clp_ses_*`, 30-day, auto-reconnect), PAT (`clp_pat_*`, permanent), device code (`clp_dev_*`, single-use, 5-minute pairing link), file share (`clp_fsh_*`). Rate limiting and CLI `clopen reset-pat` recovery apply in With Login mode. Migration 086 keeps the oldest admin as the owner and deletes every other account together with its sessions, device codes, paired chats, Home, saved connections and git identities, so no credential of a former member can sign in with full control.
+**Trade-offs:** No Login mode has no access control, so the owner must be aware when exposing it via a tunnel. Data that belonged only to removed accounts is gone after upgrading; shared project history is kept.
 
 ---
 
-### 20. Real-Time Presence Tracking
+### 20. Live Status Across Devices
 
-**Decision:** WebSocket-based presence tracking per project
-**Rationale:** Show active collaborators, enable awareness in shared sessions, foundation for future cursor sharing.
-**Trade-offs:** Presence state lost on disconnect.
+**Decision:** WebSocket-based stream status per project (`projects:presence-updated`), broadcast to every device
+**Rationale:** Every device shows the same busy / waiting-for-input indicators, even for projects it is not currently viewing.
+**Trade-offs:** Status is in memory and rebuilt from running streams after a restart.
 
 ---
 
@@ -180,8 +180,8 @@
 ### 21. Cloudflare Tunnel Built-In
 
 **Decision:** Built-in Cloudflare Tunnel support; the `cloudflared` binary is installed on demand from **Settings → Stack** (not auto-downloaded on first tunnel use).
-**Rationale:** One-click public URL with HTTPS, no port forwarding needed, works across networks and firewalls, QR code for mobile access. Routing the binary install through Stack gives admins explicit, audit-able control and mirrors how Git/Claude Code/OpenCode/Chrome are managed.
-**Trade-offs:** Requires internet access, dependent on Cloudflare availability. Public Tunnel now fails with a "install cloudflared" prompt until an admin installs it once.
+**Rationale:** One-click public URL with HTTPS, no port forwarding needed, works across networks and firewalls, QR code for mobile access. Routing the binary install through Stack gives explicit, audit-able control and mirrors how Git/Claude Code/OpenCode/Chrome are managed.
+**Trade-offs:** Requires internet access, dependent on Cloudflare availability. Public Tunnel now fails with a "install cloudflared" prompt until cloudflared is installed once.
 
 ---
 
@@ -245,7 +245,7 @@
 
 ### 29. Multi-Step Setup Wizard
 
-**Decision:** Replace single-page admin setup with a multi-step wizard (auth mode → admin account → AI engines → preferences)
+**Decision:** Replace single-page setup with a multi-step wizard (auth mode → account → AI engines → preferences)
 **Rationale:** First-time setup involves multiple concerns — authentication strategy, account creation, engine availability, and appearance preferences. A step-by-step wizard reduces cognitive load and lets users skip optional steps (engines, preferences) while ensuring critical decisions (auth mode) are made upfront. The stepper UI shows progress and allows navigation back to completed steps.
 **Trade-offs:** More complex setup component, but each step is self-contained and reuses existing components/logic.
 
@@ -269,8 +269,8 @@
 
 ### 32. Stack Installer (Server-side)
 
-**Decision:** Admin-only **Settings → Stack** section installs Git, Claude Code, OpenCode, Codex, Copilot, Qwen Code, Chrome, and Cloudflared via a server-side recipe registry (`backend/engine/install-recipes.ts`, `ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome' | 'cloudflared'`). Chrome uses `@puppeteer/browsers install chrome@stable` on macOS/Windows for a self-contained Chrome for Testing binary. On Linux x86_64 it installs Google Chrome directly from Google's own channels (`.deb` from `dl.google.com` via `apt-get install` on apt, and the `.rpm` URL via `dnf install` / `zypper install` on dnf/zypper) so system library dependencies (libatk, libnss3, …) auto-resolve via the distro package manager and Google's postinst registers an apt repo for future updates. Platforms without an official Google Chrome package (pacman, apk, Linux arm64) are marked non-auto-installable and surface manual instructions — clopen does not fall back to chromium so the runtime stays a single known build. Each install runs through `backend/engine/install-runner.ts`, which spawns the recipe via `Bun.spawn`, streams stdout/stderr line-by-line over WebSocket (`stack:install-stream`), buffers output in a bounded ring buffer (so late subscribers can catch up), and supports cancellation. Output renders client-side in xterm.js so ANSI escapes and `\r`-based progress bars display correctly. After a successful install, the runner re-enriches PATH so downstream code paths (e.g. `models:list` → `Bun.which('opencode')`) immediately see the new binary without a process restart.
-**Rationale:** Asking admins to drop into a terminal to install dependencies is friction, especially for non-developer admins running clopen as a managed workspace. Recipes are server-only (clients can only pick a tool id) so the client cannot supply arbitrary commands. Privilege detection (`backend/utils/privilege.ts`) determines whether sudo/admin is available and selects the right recipe variant per platform; tools that require interactive elevation (e.g. apt-get with sudo on a non-elevated server) are marked non-auto-installable and surface manual instructions instead.
+**Decision:** **Settings → Stack** section installs Git, Claude Code, OpenCode, Codex, Copilot, Qwen Code, Chrome, and Cloudflared via a server-side recipe registry (`backend/engine/install-recipes.ts`, `ToolId = 'git' | 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'chrome' | 'cloudflared'`). Chrome uses `@puppeteer/browsers install chrome@stable` on macOS/Windows for a self-contained Chrome for Testing binary. On Linux x86_64 it installs Google Chrome directly from Google's own channels (`.deb` from `dl.google.com` via `apt-get install` on apt, and the `.rpm` URL via `dnf install` / `zypper install` on dnf/zypper) so system library dependencies (libatk, libnss3, …) auto-resolve via the distro package manager and Google's postinst registers an apt repo for future updates. Platforms without an official Google Chrome package (pacman, apk, Linux arm64) are marked non-auto-installable and surface manual instructions — clopen does not fall back to chromium so the runtime stays a single known build. Each install runs through `backend/engine/install-runner.ts`, which spawns the recipe via `Bun.spawn`, streams stdout/stderr line-by-line over WebSocket (`stack:install-stream`), buffers output in a bounded ring buffer (so late subscribers can catch up), and supports cancellation. Output renders client-side in xterm.js so ANSI escapes and `\r`-based progress bars display correctly. After a successful install, the runner re-enriches PATH so downstream code paths (e.g. `models:list` → `Bun.which('opencode')`) immediately see the new binary without a process restart.
+**Rationale:** Dropping into a terminal to install dependencies is friction, especially for someone running clopen as a managed workspace. Recipes are server-only (clients can only pick a tool id) so the client cannot supply arbitrary commands. Privilege detection (`backend/utils/privilege.ts`) determines whether sudo/admin is available and selects the right recipe variant per platform; tools that require interactive elevation (e.g. apt-get with sudo on a non-elevated server) are marked non-auto-installable and surface manual instructions instead.
 **Trade-offs:** Recipe coverage must be maintained per platform/package-manager; non-admin platforms surface manual instructions only. The post-install PATH enrichment assumes the installer wrote into either a known install directory or a directory already present in the enriched PATH; otherwise the user must add the binary to PATH manually.
 
 > **Superseded in part by Decision #39.** Engine tools (`claude`, `opencode`, `copilot`, `codex`, `qwen`, `pi`, `cline`, `cursor`) are no longer PATH binaries installed via per-platform recipes — they are npm SDKs installed on demand into `~/.clopen/stack/engines`, and the "System Tools" panel was renamed to "Stack" (WS namespace `stack:*`). This decision still describes the **host tools** (`git`, `chrome`, `cloudflared`) accurately.
@@ -303,7 +303,7 @@
 
 ### 36. DB Client Architecture (per-driver adapters + ssh2 tunnel + idle-evicting connection manager)
 
-**Decision:** Built-in database client lives in `backend/db-client/`. A single `ConnectionManager` (singleton) owns a `Map<connectionId, ConnectionEntry>`; each entry holds a `DbClientDriverAdapter`, an optional `SshTunnel`, and a `lastUsedAt` timestamp. Five drivers ship as separate adapters implementing a common `DbClientDriverAdapter` contract: `MysqlAdapter`, `PostgresAdapter`, `SqliteAdapter`, `MongoDbAdapter`, `RedisAdapter`. Each driver uses the ecosystem's native client (`mysql2`, `pg`, `bun:sqlite`, `mongodb`, `ioredis`) — no ORM. SSH tunneling uses `ssh2.Client` — `openSshTunnel()` opens a local TCP listener on an ephemeral port, forwards each accepted socket via `client.forwardOut`, and the adapter connects to `127.0.0.1:<localPort>` instead of the remote host:port. Connections idle longer than 10 minutes are swept by a 1-minute interval and disposed (timer is `unref()`-ed so it never blocks shutdown). All client-facing surface is WebSocket (`backend/ws/db-client/`): `connections` (CRUD), `schema`, `structure`, `query`, `io` (import/export), `access` (per-connection scoped guard). Scoped access guards (introduced in commit `7c60bc6`) gate every mutation behind owner/admin checks via migration `035_add_owner_to_db_client_connections.ts`. Shared types under `shared/types/db-client/`. Frontend stores in `frontend/stores/features/db-client.svelte.ts`.
+**Decision:** Built-in database client lives in `backend/db-client/`. A single `ConnectionManager` (singleton) owns a `Map<connectionId, ConnectionEntry>`; each entry holds a `DbClientDriverAdapter`, an optional `SshTunnel`, and a `lastUsedAt` timestamp. Five drivers ship as separate adapters implementing a common `DbClientDriverAdapter` contract: `MysqlAdapter`, `PostgresAdapter`, `SqliteAdapter`, `MongoDbAdapter`, `RedisAdapter`. Each driver uses the ecosystem's native client (`mysql2`, `pg`, `bun:sqlite`, `mongodb`, `ioredis`) — no ORM. SSH tunneling uses `ssh2.Client` — `openSshTunnel()` opens a local TCP listener on an ephemeral port, forwards each accepted socket via `client.forwardOut`, and the adapter connects to `127.0.0.1:<localPort>` instead of the remote host:port. Connections idle longer than 10 minutes are swept by a 1-minute interval and disposed (timer is `unref()`-ed so it never blocks shutdown). All client-facing surface is WebSocket (`backend/ws/db-client/`): `connections` (CRUD), `schema`, `structure`, `query`, `io` (import/export), `access` (connection lookup guard). Shared types under `shared/types/db-client/`. Frontend stores in `frontend/stores/features/db-client.svelte.ts`.
 **Rationale:** A driver-per-engine pattern mirrors the AI engine adapter pattern already in the codebase — adding a new database engine is a self-contained change behind a stable contract. Native drivers are non-negotiable: an ORM would either require a schema definition (impossible since users connect to arbitrary databases) or produce generic SQL that loses driver-specific features (Postgres `EXPLAIN ANALYZE`, MySQL `SHOW CREATE TABLE`, MongoDB aggregation, Redis cluster commands). The connection manager is in-process and singleton because every WS message for a connection must reuse the same live socket — a fresh connect-per-query would burn TLS handshakes and drown low-quota cloud DBs. Idle eviction with `unref()` keeps long-running clopen instances tidy without preventing shutdown. SSH tunneling via `ssh2` was prototype-verified end-to-end in PHASE 0 (`test-ssh-mysql.ts`) before integrating.
 **Trade-offs:** Five driver dependencies in the bundle (Postgres + MySQL + Mongo + Redis + ssh2) — only loaded lazily when a connection of that driver actually opens, so the cold-start cost is bounded. Native drivers means each engine's quirks (Postgres binary protocol, MySQL packet sizes, MongoDB BSON, Redis pipelining) must be handled per-adapter. SSH tunnel uses password / private-key auth only (no agent forwarding yet). Plaintext credentials are stored in SQLite alongside the rest of the workspace data — same threat model as engine OAuth tokens.
 

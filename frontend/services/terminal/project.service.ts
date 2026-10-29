@@ -841,20 +841,20 @@ class TerminalProjectManager {
 	}
 
 	/**
-	 * Initialize the manager and setup collaborative WebSocket listeners
+	 * Initialize the manager and setup cross-device WebSocket listeners
 	 * Project contexts are created on demand via switchToProject()
 	 */
 	initialize(): void {
 		if (typeof window === 'undefined') return;
-		this.setupCollaborativeListeners();
+		this.setupSyncListeners();
 	}
 
 	/**
-	 * Setup WebSocket listeners for collaborative terminal tab management.
-	 * When another user creates/closes a terminal tab, all users in the project
-	 * see the tab list update automatically.
+	 * Setup WebSocket listeners that keep terminal tabs in sync across devices.
+	 * When another device creates/closes a terminal tab, every device on the
+	 * project sees the tab list update automatically.
 	 */
-	private setupCollaborativeListeners(): void {
+	private setupSyncListeners(): void {
 		{
 			// PtyKit broadcasts session lifecycle to the room (= projectId); the shared
 			// client surfaces it via onSessionCreated / onSessionClosed. These fire for
@@ -882,7 +882,7 @@ class TerminalProjectManager {
 					return;
 				}
 
-				// Add the new tab from another user
+				// Add the new tab from another device
 				debug.log('terminal', `➕ Adding remote terminal tab: ${data.sessionId}`);
 
 				// Extract terminal number from sessionId
@@ -927,7 +927,7 @@ class TerminalProjectManager {
 				markTerminalDirty();
 			});
 
-			// Listen for terminal tab closed by another user
+			// Listen for terminal tab closed on another device
 			ptyClient.onSessionClosed((data) => {
 				debug.log('terminal', `📥 PtyKit session closed: ${data.sessionId}`);
 
@@ -950,7 +950,7 @@ class TerminalProjectManager {
 					return;
 				}
 
-				// Remove the tab from another user
+				// Remove the tab closed on another device
 				debug.log('terminal', `➖ Removing remote terminal tab: ${data.sessionId}`);
 
 				// Remove from context (without calling closeSession to avoid double-kill)
@@ -960,7 +960,7 @@ class TerminalProjectManager {
 				terminalStore.removeSessionFromStore(data.sessionId);
 			});
 
-			debug.log('terminal', '✅ Terminal collaborative listeners registered');
+			debug.log('terminal', '✅ Terminal sync listeners registered');
 		}
 
 		// Validate terminal sessions after WebSocket reconnect.

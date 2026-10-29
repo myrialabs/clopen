@@ -100,7 +100,7 @@ export function artifactFilter(profileId: number | null | undefined, type: Profi
 }
 
 export const profileService = {
-	/** All profiles (metadata + grouped items) for the admin listing. */
+	/** All profiles (metadata + grouped items) for the Settings listing. */
 	list(): ProfileDTO[] {
 		return profileQueries.getAll().map(r => toDTO(r.id)!).filter(Boolean);
 	},
@@ -146,7 +146,7 @@ export const profileService = {
 		return inv;
 	},
 
-	/** Lightweight list for the non-admin per-session picker (id + name only). */
+	/** Lightweight list for the per-session picker (id + name only). */
 	available(): { id: number; slug: string; name: string; description: string }[] {
 		return profileQueries.getAll().map(r => ({ id: r.id, slug: r.slug, name: r.name, description: r.description }));
 	}

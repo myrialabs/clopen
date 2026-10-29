@@ -229,11 +229,11 @@
 						<Button variant="outline" size="sm" class="shrink-0" onclick={openRaw}>Edit file</Button>
 					</div>
 				{:else if !approved && agentsMcp.servers.length > 0}
-					<!-- These run commands on this machine: nothing starts until an admin says so. -->
+					<!-- These run commands on this machine: nothing starts until they are approved. -->
 					<div class="flex items-center justify-between gap-3 p-3 rounded-xl bg-amber-500/5 border border-amber-500/20">
 						<p class="inline-flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
 							<Icon name="lucide:shield-alert" class="w-4 h-4 shrink-0" />
-							{changedSinceApproval ? 'Changed since it was approved.' : 'Not approved yet.'} These servers won't run until an admin approves them.
+							{changedSinceApproval ? 'Changed since it was approved.' : 'Not approved yet.'} These servers won't run until you approve them.
 						</p>
 						<Button variant="primary" size="sm" class="shrink-0" loading={approving} onclick={approve}>Approve</Button>
 					</div>

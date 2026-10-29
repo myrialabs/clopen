@@ -114,7 +114,7 @@ USAGE:
 
 COMMANDS:
   update                  Update clopen to the latest version
-  reset-pat               Regenerate admin Personal Access Token
+  reset-pat               Regenerate the owner's Personal Access Token
   clear-data              Delete all projects, sessions, and settings
 
 OPTIONS:
@@ -286,26 +286,25 @@ async function runUpdate() {
 	console.log(`\n  Update installed. Restart Clopen however you normally run it to apply v${latestVersion}.`);
 }
 
-async function recoverAdminToken() {
+async function recoverOwnerToken() {
 	const version = getVersion();
-	console.log(`\x1b[36mClopen\x1b[0m v${version} — Admin Token Recovery\n`);
+	console.log(`\x1b[36mClopen\x1b[0m v${version} — Token Recovery\n`);
 
 	const { initializeDatabase } = await import('../backend/database/index');
-	const { listUsers, regeneratePAT } = await import('../backend/auth/auth-service');
+	const { getOwner, regeneratePAT } = await import('../backend/auth/auth-service');
 
 	await initializeDatabase();
 
-	const users = listUsers();
-	const admin = users.find(u => u.role === 'admin');
+	const owner = getOwner();
 
-	if (!admin) {
-		console.error('❌ No admin user found. Start clopen first to complete setup.');
+	if (!owner) {
+		console.error('❌ No account found. Start clopen first to complete setup.');
 		process.exit(1);
 	}
 
-	const newPAT = regeneratePAT(admin.id);
+	const newPAT = regeneratePAT(owner.id);
 
-	console.log(`  Admin  : ${admin.name}`);
+	console.log(`  Owner  : ${owner.name}`);
 	console.log(`  New PAT: \x1b[32m${newPAT}\x1b[0m`);
 	console.log(`\n  Use this token to log in. Keep it safe — it won't be shown again.`);
 }
@@ -473,7 +472,7 @@ async function main() {
 
 		if (options.resetPat) {
 			await setupEnvironment();
-			await recoverAdminToken();
+			await recoverOwnerToken();
 			process.exit(0);
 		}
 

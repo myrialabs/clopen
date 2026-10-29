@@ -15,11 +15,6 @@
  *   work:set-binding      point a project at a different repository
  *   work:set-config       per-binding behaviour (transitions, branch template)
  *
- * NOT admin-gated, unlike `integrations:*`. The distinction is what the route
- * can reach: an integrations route changes a credential every project and every
- * engine depends on, while these routes act inside one project the caller was
- * already granted access to — the same reasoning that leaves `git:push` open.
- *
  * Every route takes an optional `projectId`, because this surface is global.
  */
 

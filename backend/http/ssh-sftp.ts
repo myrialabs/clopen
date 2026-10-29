@@ -6,8 +6,8 @@
  * it. Download is here too, so the browser can save a remote file straight to
  * disk without buffering it in JavaScript first.
  *
- * Auth: `Authorization: Bearer <session-token>`, then the same ownership check
- * the WS handlers use — a token is not enough, the caller must own the host.
+ * Auth: `Authorization: Bearer <session-token>`, then the named SSH connection
+ * must exist.
  */
 
 import { Elysia } from 'elysia';
@@ -18,15 +18,10 @@ import { sshConnectionQueries } from '../database/queries';
 import { joinRemote, sftpService } from '../ssh/sftp';
 import { authenticateRequest } from './bearer-auth';
 
-/** Resolve the caller and confirm they own the SSH connection they named. */
+/** Resolve the caller and confirm the SSH connection they named exists. */
 function authorizeConnection(request: Request, connectionId: string): void {
-	const identity = authenticateRequest(request);
-	const connection = sshConnectionQueries.getForUser(
-		connectionId,
-		identity.userId,
-		identity.role === 'admin'
-	);
-	if (!connection) {
+	authenticateRequest(request);
+	if (!sshConnectionQueries.get(connectionId)) {
 		throw Object.assign(new Error('ssh connection not found'), { status: 404 });
 	}
 }

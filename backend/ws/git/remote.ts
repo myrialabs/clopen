@@ -58,7 +58,7 @@ export const remoteHandler = createRouter()
 		const message = await gitService.fetch(
 			cwd,
 			data.remote,
-			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+			await identityEnvForRemote(data.projectId, cwd, data.remote)
 		);
 		return { message };
 	})
@@ -83,7 +83,7 @@ export const remoteHandler = createRouter()
 			data.remote,
 			data.branch,
 			data.rebase,
-			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+			await identityEnvForRemote(data.projectId, cwd, data.remote)
 		);
 	})
 
@@ -112,7 +112,7 @@ export const remoteHandler = createRouter()
 			data.mode,
 			data.remote,
 			data.branch,
-			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+			await identityEnvForRemote(data.projectId, cwd, data.remote)
 		);
 	})
 
@@ -129,7 +129,7 @@ export const remoteHandler = createRouter()
 		const cwd = resolveRepoCwd(root, data.repoPath);
 		const message = await gitService.fetchAll(
 			cwd,
-			await identityEnvForRemote(conn, data.projectId, cwd)
+			await identityEnvForRemote(data.projectId, cwd)
 		);
 		return { message };
 	})
@@ -160,7 +160,7 @@ export const remoteHandler = createRouter()
 			data.branch,
 			data.force,
 			{ useUpstream: data.useUpstream ?? true },
-			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+			await identityEnvForRemote(data.projectId, cwd, data.remote)
 		);
 	})
 
@@ -307,7 +307,7 @@ export const remoteHandler = createRouter()
 			cwd,
 			data.remote,
 			data.branch,
-			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+			await identityEnvForRemote(data.projectId, cwd, data.remote)
 		);
 		return { ok: true };
 	})
@@ -343,7 +343,7 @@ export const remoteHandler = createRouter()
 			cwd,
 			data.message,
 			data.staged,
-			identityEnvFor(conn, data.projectId)
+			identityEnvFor(data.projectId)
 		);
 		return { ok: true };
 	})
@@ -462,7 +462,7 @@ export const remoteHandler = createRouter()
 			data.name,
 			data.message,
 			data.commitHash,
-			identityEnvFor(conn, data.projectId)
+			identityEnvFor(data.projectId)
 		);
 		return { ok: true };
 	})
@@ -499,6 +499,6 @@ export const remoteHandler = createRouter()
 			cwd,
 			data.name,
 			data.remote,
-			await identityEnvForRemote(conn, data.projectId, cwd, data.remote)
+			await identityEnvForRemote(data.projectId, cwd, data.remote)
 		);
 	});

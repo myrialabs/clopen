@@ -9,7 +9,8 @@ import { connectionManager } from '../../db-client/connection-manager';
 import { executeBatch, runSafely } from '../../db-client/query-executor';
 import { splitSqlStatements } from '$shared/utils/db-client/split-sql';
 import { dbClientQueryHistoryQueries } from '../../database/queries';
-import { getDbClientPrincipal, requireDbClientConnectionAccess } from './access';
+import { requireDbClientConnection } from './access';
+import { ws } from '$backend/utils/ws';
 import { debug } from '$shared/utils/logger';
 
 const HISTORY_KEEP_PER_CONNECTION = 200;
@@ -63,8 +64,8 @@ export const queryHandler = createRouter()
 		}),
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const { userId } = getDbClientPrincipal(conn);
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const userId = ws.getUserId(conn);
+		const connection = requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		try {
 			const result = await runSafely({
@@ -126,8 +127,8 @@ export const queryHandler = createRouter()
 		}),
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const { userId } = getDbClientPrincipal(conn);
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const userId = ws.getUserId(conn);
+		const connection = requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		try {
 			const result = await runSafely({
@@ -189,8 +190,8 @@ export const queryHandler = createRouter()
 		}),
 		response: t.Any()
 	}, async ({ data, conn }) => {
-		const { userId } = getDbClientPrincipal(conn);
-		const connection = requireDbClientConnectionAccess(conn, data.connectionId);
+		const userId = ws.getUserId(conn);
+		const connection = requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		// Statement splitting is a SQL concern; Mongo/Redis payloads run whole.
 		const isSql = connection.driver === 'mysql' || connection.driver === 'postgres' || connection.driver === 'sqlite' || connection.driver === 'mssql';
@@ -252,8 +253,8 @@ export const queryHandler = createRouter()
 			database: t.Optional(t.String())
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.explain) throw new Error('Driver does not support EXPLAIN');
 		return adapter.explain(data.query, { database: data.database });
@@ -262,8 +263,8 @@ export const queryHandler = createRouter()
 	.http('db-client:cancel', {
 		data: t.Object({ connectionId: t.String({ minLength: 1 }) }),
 		response: t.Object({ ok: t.Boolean() })
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (adapter.cancel) await adapter.cancel();
 		return { ok: true };
@@ -278,8 +279,8 @@ export const queryHandler = createRouter()
 			row: t.Record(t.String(), t.Any())
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.insertRow) throw new Error('Driver does not support insertRow');
 		return adapter.insertRow(data.table, data.row, {
@@ -298,8 +299,8 @@ export const queryHandler = createRouter()
 			changes: t.Record(t.String(), t.Any())
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.updateRow) throw new Error('Driver does not support updateRow');
 		return adapter.updateRow(data.table, data.pk, data.changes, {
@@ -317,8 +318,8 @@ export const queryHandler = createRouter()
 			pks: t.Array(t.Record(t.String(), t.Any()))
 		}),
 		response: t.Any()
-	}, async ({ data, conn }) => {
-		requireDbClientConnectionAccess(conn, data.connectionId);
+	}, async ({ data }) => {
+		requireDbClientConnection(data.connectionId);
 		const adapter = await connectionManager.get(data.connectionId);
 		if (!adapter.deleteRows) throw new Error('Driver does not support deleteRows');
 		return adapter.deleteRows(data.table, data.pks, {

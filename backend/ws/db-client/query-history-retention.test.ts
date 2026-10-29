@@ -25,7 +25,7 @@ describe('Query History Retention', () => {
 
 	test('prunes history after PRUNE_EVERY_N_QUERIES inserts', () => {
 		// Create a test connection
-		const connection = dbClientConnectionQueries.createForUser({
+		const connection = dbClientConnectionQueries.createRedacted({
 			name: 'test-connection',
 			driver: 'postgres',
 			host: 'localhost',
@@ -45,7 +45,7 @@ describe('Query History Retention', () => {
 				passphrase: ''
 			},
 			options: {}
-		}, 'test-user-id');
+		});
 
 		// Insert HISTORY_KEEP_PER_CONNECTION + 50 queries (250 total)
 		const totalQueries = HISTORY_KEEP_PER_CONNECTION + 50;
@@ -76,7 +76,7 @@ describe('Query History Retention', () => {
 	});
 
 	test('keeps most recent queries after pruning', () => {
-		const connection = dbClientConnectionQueries.createForUser({
+		const connection = dbClientConnectionQueries.createRedacted({
 			name: 'test-connection-2',
 			driver: 'postgres',
 			host: 'localhost',
@@ -96,7 +96,7 @@ describe('Query History Retention', () => {
 				passphrase: ''
 			},
 			options: {}
-		}, 'test-user-id');
+		});
 
 		// Insert 250 queries — more than HISTORY_KEEP_PER_CONNECTION
 		for (let i = 0; i < 250; i++) {
@@ -126,7 +126,7 @@ describe('Query History Retention', () => {
 
 	test('prune does not affect other connections', () => {
 		// Create two connections
-		const conn1 = dbClientConnectionQueries.createForUser({
+		const conn1 = dbClientConnectionQueries.createRedacted({
 			name: 'connection-1',
 			driver: 'postgres',
 			host: 'localhost',
@@ -146,9 +146,9 @@ describe('Query History Retention', () => {
 				passphrase: ''
 			},
 			options: {}
-		}, 'user-1');
+		});
 
-		const conn2 = dbClientConnectionQueries.createForUser({
+		const conn2 = dbClientConnectionQueries.createRedacted({
 			name: 'connection-2',
 			driver: 'mysql',
 			host: 'localhost',
@@ -168,7 +168,7 @@ describe('Query History Retention', () => {
 				passphrase: ''
 			},
 			options: {}
-		}, 'user-2');
+		});
 
 		// Insert 250 queries for conn1
 		for (let i = 0; i < 250; i++) {

@@ -30,7 +30,6 @@
 	import ResourceRemoveDialog, { type PendingRemoval } from './ResourceRemoveDialog.svelte';
 	import CleanupDialog from './CleanupDialog.svelte';
 	import { containersStore, type ContainerTab } from '$frontend/stores/features/containers.svelte';
-	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import type { ContainerAction, ContainerEntry } from '$shared/types/containers';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -48,8 +47,6 @@
 	const selected = $derived(containersStore.selected);
 	const view = $derived(containersStore.view);
 	const shellContainer = $derived(containersStore.shellContainer);
-	/** Reading is open to every member; starting, stopping and shells are not. */
-	const canManage = $derived(authStore.isAdmin);
 
 	const TABS: Array<{ id: ContainerTab; label: string; icon: IconName }> = [
 		{ id: 'containers', label: 'Containers', icon: 'lucide:container' },
@@ -139,19 +136,17 @@
 				/>
 			</div>
 
-			{#if canManage}
-				<!-- Sits beside the search rather than in a row's menu: cleaning up is
-				     a question about the host, not about any one thing on it. -->
-				<button
-					type="button"
-					class="flex items-center gap-1.5 shrink-0 px-2 h-8 rounded-lg bg-transparent border-none text-slate-500 dark:text-slate-400 text-xs cursor-pointer hover:bg-violet-500/10 hover:text-violet-700 dark:hover:text-violet-300"
-					onclick={() => (cleanupOpen = true)}
-					title="Reclaim disk from what nothing is using"
-				>
-					<Icon name="lucide:brush-cleaning" class="w-3.5 h-3.5" />
-					<span class="hidden lg:inline">Clean up</span>
-				</button>
-			{/if}
+			<!-- Sits beside the search rather than in a row's menu: cleaning up is
+			     a question about the host, not about any one thing on it. -->
+			<button
+				type="button"
+				class="flex items-center gap-1.5 shrink-0 px-2 h-8 rounded-lg bg-transparent border-none text-slate-500 dark:text-slate-400 text-xs cursor-pointer hover:bg-violet-500/10 hover:text-violet-700 dark:hover:text-violet-300"
+				onclick={() => (cleanupOpen = true)}
+				title="Reclaim disk from what nothing is using"
+			>
+				<Icon name="lucide:brush-cleaning" class="w-3.5 h-3.5" />
+				<span class="hidden lg:inline">Clean up</span>
+			</button>
 
 			{#if containersStore.shellId && view === 'list'}
 				<!-- A shell left running is easy to forget about; this is the way back
@@ -174,11 +169,10 @@
 		{:else}
 			<div class="flex flex-1 min-h-0 relative">
 				{#if containersStore.tab === 'containers'}
-					<ContainerTable {canManage} onToggle={(entry) =>
+					<ContainerTable onToggle={(entry) =>
 						requestAction(entry, entry.state === 'running' || entry.state === 'paused' ? 'stop' : 'start')} />
 				{:else if containersStore.tab === 'images'}
 					<ImageList
-						{canManage}
 						onRemove={(image) =>
 							(pendingRemoval = {
 								kind: 'image',
@@ -189,7 +183,6 @@
 					/>
 				{:else if containersStore.tab === 'volumes'}
 					<VolumeList
-						{canManage}
 						onRemove={(volume) =>
 							(pendingRemoval = {
 								kind: 'volume',
@@ -200,7 +193,6 @@
 					/>
 				{:else}
 					<NetworkList
-						{canManage}
 						onRemove={(network) =>
 							(pendingRemoval = {
 								kind: 'network',
@@ -214,7 +206,6 @@
 				{#if selected && containersStore.tab === 'containers'}
 					<ContainerDetailLayer
 						entry={selected}
-						{canManage}
 						onClose={() => containersStore.select(null)}
 						onAction={requestAction}
 					/>

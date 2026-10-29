@@ -7,7 +7,7 @@
  * - read.ts: HTTP endpoints for reading (list-tree, browse, read-file, read-content)
  * - write.ts: HTTP endpoints for writing (write, create, rename, duplicate, upload, delete)
  * - reveal.ts: HTTP endpoint for revealing files in the OS file manager
- * - clipboard.ts: HTTP endpoints for the native OS clipboard bridge (admin-only)
+ * - clipboard.ts: HTTP endpoints for the native OS clipboard bridge
  * - search.ts: HTTP endpoints for searching (search-files, search-code)
  * - watch.ts: Event handlers for real-time file watching
  */

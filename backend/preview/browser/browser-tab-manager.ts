@@ -1630,7 +1630,7 @@ export class BrowserTabManager extends EventEmitter {
 		debug.log('preview', `🧹 Cleaning up ${this.tabs.size} tabs...`);
 
 		// Every page below is about to be closed on purpose; none of them is a
-		// crash to rebuild from. Restored at the end: an admin "clean up all"
+		// crash to rebuild from. Restored at the end: a "clean up all"
 		// leaves the manager in service, and the tabs opened after it must be
 		// able to recover like any other.
 		const wasShuttingDown = this.shuttingDown;
@@ -1678,7 +1678,7 @@ export class BrowserTabManager extends EventEmitter {
 
 		// Deliberately NOT browserPool.cleanup(): that reaches every workspace's
 		// Chrome, and calling it from one workspace's teardown — deleting a
-		// worktree, an admin "clean up all" — took every other project's
+		// worktree, a "clean up all" — took every other project's
 		// preview tabs down with it. Our own sessions are already gone with the
 		// tabs above; the pool closes this workspace's Chrome once its last
 		// session goes, and every Chrome on process shutdown.

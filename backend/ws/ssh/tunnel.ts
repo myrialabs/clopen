@@ -35,9 +35,8 @@ function getSshPtyConnection(conn: WSConnection): PtyKitConnection {
 	if (existing) return existing;
 
 	const userId = ws.getUserId(conn);
-	const isAdmin = ws.getRole(conn) === 'admin';
 	const ptyConn = sshPtyKitServer.createConnection({
-		data: { userId, isAdmin, connId },
+		data: { userId, connId },
 		send: (frame) => {
 			ws.sendToConnectionId(connId, JSON.stringify({ action: 'ssh:pty-out', payload: frame }));
 		}

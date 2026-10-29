@@ -1,14 +1,13 @@
 /**
  * Presence Store
- * Shared reactive state for project presence (active users)
- * Subscribes once to projectStatusService, shared across all components
+ * Shared reactive state for project status (the chat streams running in each
+ * project). Subscribes once to projectStatusService, shared across all components
  *
  * Also provides unified helpers for status indicators so all components
  * read from one place (merges backend presence + frontend app state).
  */
 
 import { projectStatusService, type ProjectStatus } from '$frontend/services/project/status.service';
-import { userStore } from '$frontend/stores/features/user.svelte';
 import { appState, markSessionUnread, hasUnreadSessionsForProject } from '$frontend/stores/core/app.svelte';
 import { sessionState } from '$frontend/stores/core/sessions.svelte';
 
@@ -23,23 +22,16 @@ let subscribed = false;
 
 /**
  * Initialize presence subscription (call once at app level)
- * Automatically excludes the current user from activeUsers
  */
 export function initPresence() {
 	if (subscribed) return;
 	subscribed = true;
 
 	projectStatusService.onStatusUpdate((statuses) => {
-		const currentUserId = userStore.currentUser?.id;
 		const currentSessionId = sessionState.currentSession?.id;
 		const statusMap = new Map<string, ProjectStatus>();
 		statuses.forEach((status) => {
-			statusMap.set(status.projectId, {
-				...status,
-				activeUsers: currentUserId
-					? status.activeUsers.filter((u) => u.userId !== currentUserId)
-					: status.activeUsers
-			});
+			statusMap.set(status.projectId, status);
 
 			// Mark non-current sessions with active streams as unread
 			if (status.streams) {

@@ -20,23 +20,17 @@ import { stopLogStreamsForUser } from '../../containers/logs';
 import { sshConnectionQueries } from '../../database/queries';
 import { ws } from '../../utils/ws';
 
-/**
- * A member may only watch an SSH host they can already reach. The local machine
- * is watchable by anyone signed in — it is the machine they are already using
- * Clopen on.
- */
-export function requireHostAccess(conn: Parameters<typeof ws.getUserId>[0], hostId: string): void {
+/** The local machine, or a saved SSH host that still exists. */
+export function requireHost(hostId: string): void {
 	if (hostId === LOCAL_HOST_ID) return;
-	const userId = ws.getUserId(conn);
-	const isAdmin = ws.getRole(conn) === 'admin';
-	sshConnectionQueries.ensureAccess(hostId, userId, isAdmin);
+	sshConnectionQueries.require(hostId);
 }
 
 const hostSchema = t.Object({ hostId: t.String({ minLength: 1 }) });
 
 export const containersListHandler = createRouter()
 	.http('containers:watch', { data: hostSchema, response: t.Any() }, async ({ data, conn }) => {
-		requireHostAccess(conn, data.hostId);
+		requireHost(data.hostId);
 		const userId = ws.getUserId(conn);
 
 		const result = await containerMonitor.watch(data.hostId, userId);
@@ -68,11 +62,6 @@ export const containersListHandler = createRouter()
 
 	/**
 	 * Everything `inspect` knows, read only when a detail pane opens.
-	 *
-	 * Environment values are stripped for anyone but an admin. A container's env
-	 * is where its database password lives, and this panel is reachable by every
-	 * member and through a shared Remote Access link — so the keys are shown,
-	 * which is what makes the pane useful, and the values are not.
 	 */
 	.http(
 		'containers:inspect',
@@ -83,29 +72,14 @@ export const containersListHandler = createRouter()
 			}),
 			response: t.Any()
 		},
-		async ({ data, conn }) => {
-			requireHostAccess(conn, data.hostId);
-			const detail = await inspectContainer(data.hostId, data.containerId);
-			if (!detail || ws.getRole(conn) === 'admin') return { detail, envRedacted: false };
-
-			return {
-				detail: {
-					...detail,
-					env: detail.env.map((line) => {
-						const split = line.indexOf('=');
-						return split <= 0 ? line : `${line.slice(0, split)}=`;
-					})
-				},
-				envRedacted: true
-			};
+		async ({ data }) => {
+			requireHost(data.hostId);
+			return { detail: await inspectContainer(data.hostId, data.containerId) };
 		}
 	)
 
 	/**
 	 * What the host is holding and how much of it is reclaimable.
-	 *
-	 * Read-only, so any member may ask — it is the same `system df` they would
-	 * run in a terminal, and knowing the disk is full is not a privilege.
 	 *
 	 * Returns whatever was last measured, immediately, and reports whether a
 	 * fresh reading is on its way; that one arrives as
@@ -124,7 +98,7 @@ export const containersListHandler = createRouter()
 			response: t.Any()
 		},
 		async ({ data, conn }) => {
-			requireHostAccess(conn, data.hostId);
+			requireHost(data.hostId);
 			return requestDiskUsage(data.hostId, ws.getUserId(conn), data.force ?? false);
 		}
 	)
@@ -139,8 +113,8 @@ export const containersListHandler = createRouter()
 			}),
 			response: t.Any()
 		},
-		async ({ data, conn }) => {
-			requireHostAccess(conn, data.hostId);
+		async ({ data }) => {
+			requireHost(data.hostId);
 			return { stats: await readStats(data.hostId, data.containerId) };
 		}
 	);

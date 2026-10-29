@@ -180,7 +180,7 @@ export const branchHandler = createRouter()
 				squash: data.squash ?? false,
 				ffOnly: data.ffOnly ?? false
 			},
-			identityEnvFor(conn, data.projectId)
+			identityEnvFor(data.projectId)
 		);
 	})
 
@@ -204,7 +204,7 @@ export const branchHandler = createRouter()
 			cwd,
 			data.upstream,
 			data.autostash ?? true,
-			identityEnvFor(conn, data.projectId)
+			identityEnvFor(data.projectId)
 		);
 	})
 

@@ -10,7 +10,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { startLogStream, stopLogStream } from '../../containers/logs';
-import { requireHostAccess } from './list';
+import { requireHost } from './list';
 import { ws } from '../../utils/ws';
 
 export const containersLogsHandler = createRouter()
@@ -24,7 +24,7 @@ export const containersLogsHandler = createRouter()
 			response: t.Any()
 		},
 		async ({ data, conn }) => {
-			requireHostAccess(conn, data.hostId);
+			requireHost(data.hostId);
 			const userId = ws.getUserId(conn);
 
 			const started = await startLogStream(data.hostId, data.containerId, userId);
