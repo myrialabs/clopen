@@ -79,6 +79,20 @@ function isSessionBusy(chatSessionId: string, projectId: string): boolean {
 	return streamManager.getSessionStream(chatSessionId, projectId)?.status === 'active';
 }
 
+function isSessionStreaming(chatSessionId: string): boolean {
+	return streamManager.getActiveStreams().some((stream) => stream.chatSessionId === chatSessionId);
+}
+
+/**
+ * Whether a message can be edited right now: it is on the branch the session
+ * is showing, and no turn is running (an edit rewinds the branch, which a
+ * running turn is still writing to).
+ */
+function isEditable(chatSessionId: string, messageId: string): boolean {
+	if (isSessionStreaming(chatSessionId)) return false;
+	return messageQueries.isOnActivePath(chatSessionId, messageId);
+}
+
 function promptText(prompt: any): string {
 	const content = Array.isArray(prompt?.content) ? prompt.content : [];
 	return content
@@ -219,6 +233,14 @@ streamManager.on('stream:lifecycle', (event: { status: string; streamId: string;
 	})();
 });
 
+// A new turn ends any edit in its session. The client that sent it leaves edit
+// mode itself, but that notice travels fire-and-forget and is lost with a
+// socket that dies under it; an edit left here would be restored on the next
+// load as if it were still going — over a turn the user already sent.
+streamManager.on('session:turn-started', (chatSessionId: string) => {
+	edits.delete(chatSessionId);
+});
+
 // Deleting a session drops everything its composer was holding.
 streamManager.on('session:cleanup', (chatSessionId: string) => {
 	drafts.delete(chatSessionId);
@@ -278,7 +300,15 @@ export const composerHandler = createRouter()
 	}, ({ data }) => {
 		requireSessionAccess(data.chatSessionId);
 		const draft = drafts.get(data.chatSessionId);
-		const edit = edits.get(data.chatSessionId);
+		let edit = edits.get(data.chatSessionId);
+		// An edit is only handed back while it can still be submitted: the branch
+		// may have moved past the message (undo, another device's edit) or a turn
+		// may be running, and restoring it then would show "Editing" over a
+		// conversation it no longer applies to.
+		if (edit && !isEditable(data.chatSessionId, edit.messageId)) {
+			edits.delete(data.chatSessionId);
+			edit = undefined;
+		}
 		return {
 			draft: draft ?? { text: '', attachments: [], textRevision: 0, attachmentsRevision: 0 },
 			edit: edit ? { messageId: edit.messageId, messageTimestamp: edit.messageTimestamp } : null,
@@ -321,9 +351,8 @@ export const composerHandler = createRouter()
 		requireSessionAccess(data.chatSessionId);
 
 		if (data.messageId) {
-			const message = messageQueries.getById(data.messageId);
-			if (!message || message.session_id !== data.chatSessionId) {
-				throw new Error('Message not found in this chat session');
+			if (!isEditable(data.chatSessionId, data.messageId)) {
+				throw new Error('This message cannot be edited right now');
 			}
 			edits.set(data.chatSessionId, {
 				messageId: data.messageId,
@@ -338,19 +367,22 @@ export const composerHandler = createRouter()
 	// here from the database, never carried by the client — a client that lost
 	// it (refresh, another device) used to fall back to the very beginning of
 	// the session and revert every change the chat had made.
+	// Null when the message is gone (another device rewound past it): the edit
+	// has nothing left to replace, which the client resolves by ending it.
 	.http('chat:edit-target', {
 		data: t.Object({
 			chatSessionId: t.String(),
 			messageId: t.String()
 		}),
 		response: t.Object({
-			targetId: t.String()
+			targetId: t.Union([t.String(), t.Null()])
 		})
 	}, ({ data }) => {
 		requireSessionAccess(data.chatSessionId);
 		const message = messageQueries.getById(data.messageId);
 		if (!message || message.session_id !== data.chatSessionId) {
-			throw new Error('The message being edited no longer exists in this chat session');
+			edits.delete(data.chatSessionId);
+			return { targetId: null };
 		}
 		return { targetId: message.parent_message_id || INITIAL_NODE_ID };
 	})

@@ -11,6 +11,7 @@
 
 import ws from '$frontend/utils/ws';
 import { sessionState } from '$frontend/stores/core/sessions.svelte';
+import { appState } from '$frontend/stores/core/app.svelte';
 
 export interface EditAttachment {
 	type: string;
@@ -21,6 +22,8 @@ export interface EditAttachment {
 
 interface EditModeState {
 	isEditing: boolean;
+	/** The session the edit belongs to — not necessarily the one on screen. */
+	chatSessionId: string | null;
 	messageId: string | null;
 	messageText: string;
 	messageTimestamp: string | null;
@@ -30,16 +33,20 @@ interface EditModeState {
 // Create reactive state
 const state = $state<EditModeState>({
 	isEditing: false,
+	chatSessionId: null,
 	messageId: null,
 	messageText: '',
 	messageTimestamp: null,
 	attachments: []
 });
 
-function announce(messageId: string | null, messageTimestamp: string | null) {
-	const chatSessionId = sessionState.currentSession?.id;
-	if (!chatSessionId) return;
+/**
+ * Bumped by every change made here, so an answer from the server that was
+ * asked for before the change can tell it is out of date.
+ */
+let revision = 0;
 
+function announce(chatSessionId: string, messageId: string | null, messageTimestamp: string | null) {
 	ws.emit('chat:edit-mode', {
 		chatSessionId,
 		messageId,
@@ -49,6 +56,7 @@ function announce(messageId: string | null, messageTimestamp: string | null) {
 
 function clearEdit() {
 	state.isEditing = false;
+	state.chatSessionId = null;
 	state.messageId = null;
 	state.messageText = '';
 	state.messageTimestamp = null;
@@ -60,40 +68,64 @@ function clearEdit() {
 // ============================================================================
 
 /**
- * Enter edit mode for a message
+ * Enter edit mode for a message of the session on screen. Refused while a turn
+ * runs: the edit would rewind a branch that turn is still writing to.
  */
 export function startEdit(
 	messageId: string,
 	messageText: string,
 	messageTimestamp: string,
 	attachments: EditAttachment[] = []
-) {
+): boolean {
+	const chatSessionId = sessionState.currentSession?.id;
+	if (!chatSessionId || appState.isLoading) return false;
+
+	revision++;
 	state.isEditing = true;
+	state.chatSessionId = chatSessionId;
 	state.messageId = messageId;
 	state.messageText = messageText;
 	state.messageTimestamp = messageTimestamp;
 	state.attachments = attachments;
 
-	announce(messageId, messageTimestamp);
+	announce(chatSessionId, messageId, messageTimestamp);
+	return true;
 }
 
 /**
  * Cancel edit mode
  */
 export function cancelEdit() {
-	const wasEditing = state.isEditing;
+	const chatSessionId = state.isEditing ? state.chatSessionId : null;
+	revision++;
 	clearEdit();
-	if (wasEditing) announce(null, null);
+	if (chatSessionId) announce(chatSessionId, null, null);
+}
+
+/**
+ * The edit of a session was submitted. Its session is told even when the user
+ * has switched away meanwhile — the switch only cleared what is on screen,
+ * and a session never told would bring the finished edit back on its next
+ * load.
+ */
+export function finishEdit(chatSessionId: string) {
+	revision++;
+	if (state.chatSessionId === chatSessionId) clearEdit();
+	announce(chatSessionId, null, null);
 }
 
 /**
  * Apply what the server restored for the session now on screen. The text and
  * attachments come back through the draft, so only the edit point is set here.
  */
-export function applyRestoredEditMode(edit: { messageId: string; messageTimestamp: string | null } | null) {
+export function applyRestoredEditMode(
+	chatSessionId: string,
+	edit: { messageId: string; messageTimestamp: string | null } | null
+) {
 	clearEdit();
 	if (edit) {
 		state.isEditing = true;
+		state.chatSessionId = chatSessionId;
 		state.messageId = edit.messageId;
 		state.messageTimestamp = edit.messageTimestamp;
 	}
@@ -105,7 +137,13 @@ export function applyRestoredEditMode(edit: { messageId: string; messageTimestam
  * switch.
  */
 export function resetEditModeQuietly() {
+	revision++;
 	clearEdit();
+}
+
+/** Current change counter; see `revision`. */
+export function getEditRevision(): number {
+	return revision;
 }
 
 /**

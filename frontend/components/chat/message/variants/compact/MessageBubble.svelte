@@ -8,6 +8,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+	import { isUnconfirmedMessage } from '$frontend/utils/unconfirmed-messages';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MessageFormatter from '../../../formatters/MessageFormatter.svelte';
@@ -40,6 +41,11 @@
 	} = $props();
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
+
+	// Undo and edit act on the saved message; there is none while a turn runs
+	// or before the server confirmed this one.
+	const unconfirmed = $derived(isUnconfirmedMessage(message));
+	const historyActionsDisabled = $derived(appState.isLoading || unconfirmed);
 	let isCopied = $state(false);
 	let stickToBottom = $state(true);
 	let isCollapsed = $state(false);
@@ -165,9 +171,9 @@
 					<button
 						type="button"
 						onclick={(e) => { e.stopPropagation(); onRestore(); }}
-						disabled={appState.isLoading}
-						class="flex p-0.5 rounded transition-colors {appState.isLoading ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-200 dark:hover:bg-slate-700'}"
-						title="Undo to checkpoint"
+						disabled={historyActionsDisabled}
+						class="flex p-0.5 rounded transition-colors {historyActionsDisabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-200 dark:hover:bg-slate-700'}"
+						title={unconfirmed ? 'Sending…' : 'Undo to checkpoint'}
 					>
 						<Icon name="lucide:undo-2" class="w-3.5 h-3.5" />
 					</button>
@@ -175,9 +181,9 @@
 				<button
 					type="button"
 					onclick={(e) => { e.stopPropagation(); onEdit(); }}
-					disabled={appState.isLoading}
-					class="flex p-0.5 rounded transition-colors {appState.isLoading ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-200 dark:hover:bg-slate-700'}"
-					title="Edit"
+					disabled={historyActionsDisabled}
+					class="flex p-0.5 rounded transition-colors {historyActionsDisabled ? 'opacity-40 cursor-not-allowed' : 'hover:bg-slate-200 dark:hover:bg-slate-700'}"
+					title={unconfirmed ? 'Sending…' : 'Edit'}
 				>
 					<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 				</button>

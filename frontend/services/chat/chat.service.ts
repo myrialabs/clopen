@@ -16,6 +16,8 @@ import type { SessionProcessState } from '$frontend/stores/core/app.svelte';
 import { chatModelState } from '$frontend/stores/ui/chat-model.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState, setCurrentSession, createSession, updateSession } from '$frontend/stores/core/sessions.svelte';
+import { isUnconfirmedMessage, settleUnconfirmedBubbles, bubbleToComposer } from '$frontend/utils/unconfirmed-messages';
+import { returnToComposer } from '$frontend/stores/ui/chat-input.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { setRateLimit } from '$frontend/stores/ui/rate-limit.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
@@ -343,7 +345,9 @@ class ChatService {
       ctx.state.cancelledProcessIds.clear();
 
       // Don't reload messages - they're already added via chat:message events
-      // Reloading would cause duplicates
+      // Reloading would cause duplicates. Only a user message whose echo went
+      // missing is settled against the server.
+      if (ctx.ownsTranscript) void this.reconcileUnconfirmed(ctx.sessionId, { settled: true });
 
       // Notifications handled by GlobalStreamMonitor via chat:stream-finished
     });
@@ -372,6 +376,11 @@ class ChatService {
       // Mark any tool_use blocks that never got a tool_result
       if (ctx.ownsTranscript) this.markInterruptedTools();
 
+      // A Stop that beat the user message's echo drops the echo (the stream is
+      // marked completed). The stream may still be saving it, so a bubble is
+      // only confirmed here — presence settles the rest once it is gone.
+      if (ctx.ownsTranscript) void this.reconcileUnconfirmed(ctx.sessionId, { settled: false });
+
       // Notifications handled by GlobalStreamMonitor via chat:stream-finished
     });
 
@@ -394,6 +403,13 @@ class ChatService {
 
       // Mark any tool_use blocks that never got a tool_result
       if (ctx.ownsTranscript) this.markInterruptedTools();
+
+      // A turn can fail before it saved the user message (e.g. its attachments
+      // could not be prepared); its bubble must not stay behind as if sent. A
+      // cancel's error is not the end: the stream may still be saving it.
+      if (ctx.ownsTranscript) {
+        void this.reconcileUnconfirmed(ctx.sessionId, { settled: data.error !== 'Stream cancelled' });
+      }
 
       // Don't show notification for cancel-triggered errors
       if (data.error === 'Stream cancelled') return;
@@ -433,6 +449,79 @@ class ChatService {
    */
   syncLoadingFromPresence(sessionId: string, isLoading: boolean): void {
     this.setProcessState({ isLoading }, sessionId);
+    if (!isLoading) void this.reconcileUnconfirmed(sessionId, { settled: true });
+  }
+
+  /** Per session: the reconcile running now, so the next one waits behind it. */
+  private reconciling = new Map<string, Promise<void>>();
+
+  /**
+   * Settle the bubbles this client still shows optimistically for a session
+   * against what the server saved. A bubble becomes real when its echo
+   * arrives, and an echo can go missing — the socket dropped mid-turn, Stop
+   * was pressed before it came, the turn failed before saving it. Left alone,
+   * such a bubble looked like any other message while naming nothing the
+   * server knows.
+   *
+   * The server saves a message under the bubble's own id, so asking for those
+   * ids is the whole check: what was saved replaces its bubble in place. What
+   * was not is only given up on once the send is `settled` — nothing of it can
+   * still be on its way — and then its content goes back into the message box
+   * instead of vanishing.
+   */
+  reconcileUnconfirmed(sessionId: string, options: { settled: boolean }): Promise<void> {
+    const previous = this.reconciling.get(sessionId) ?? Promise.resolve();
+    const next = previous
+      .then(() => this.settleUnconfirmed(sessionId, options.settled))
+      .catch((error) => debug.warn('chat', 'Could not settle unconfirmed messages:', error))
+      .finally(() => {
+        if (this.reconciling.get(sessionId) === next) this.reconciling.delete(sessionId);
+      });
+    this.reconciling.set(sessionId, next);
+    return next;
+  }
+
+  private async settleUnconfirmed(sessionId: string, settled: boolean): Promise<void> {
+    if (sessionState.messagesSessionId !== sessionId) return;
+    // Capped at the endpoint's 100 ids, keeping the newest — far more than one
+    // client ever has in flight.
+    const asked = new Set(
+      (sessionState.messages as FrontendMessage[])
+        .filter(isUnconfirmedMessage)
+        .map((m) => m.optimisticId)
+        .slice(-100)
+    );
+    if (asked.size === 0) return;
+
+    const found = await ws.http('messages:resolve', {
+      session_id: sessionId,
+      ids: [...asked]
+    }) as UnifiedMessage[];
+    // The transcript may have been replaced while asking (switch, reload).
+    if (sessionState.messagesSessionId !== sessionId) return;
+
+    // Re-read after the await: the echo may have arrived, or a send started.
+    const stillSettled = settled
+      && !getSessionProcessState(sessionId).isLoading
+      && !this.isStartPending(sessionId);
+    const lost = settleUnconfirmedBubbles(
+      sessionState.messages as FrontendMessage[],
+      asked,
+      new Map(found.map((m) => [m.messageId, m])),
+      stillSettled
+    );
+
+    if (lost.length === 0) return;
+    for (const bubble of lost) {
+      returnToComposer({ chatSessionId: sessionId, ...bubbleToComposer(bubble) });
+    }
+    debug.warn('chat', `${lost.length} message(s) never reached the server; returned to the composer`);
+    addNotification({
+      type: 'warning',
+      title: 'Message Not Sent',
+      message: 'It never reached the server. Its text is back in the message box.',
+      duration: 6000
+    });
   }
 
   private markStartPending(sessionId: string): void {
@@ -445,6 +534,10 @@ class ChatService {
       if (getSessionProcessState(sessionId).isLoading && !state.processId) {
         debug.warn('chat', 'Send was never confirmed by the server; clearing loading state');
         this.setProcessState({ isLoading: false }, sessionId);
+        // While the socket is down the send is still queued to go out on
+        // reconnect — it is not lost, so its bubble stays until presence
+        // settles it.
+        if (ws.connected()) void this.reconcileUnconfirmed(sessionId, { settled: true });
       }
     }, START_CONFIRM_TIMEOUT_MS);
   }

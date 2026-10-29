@@ -1,5 +1,5 @@
 import { onDestroy, untrack } from 'svelte';
-import { editModeState, applyRestoredEditMode } from '$frontend/stores/ui/edit-mode.svelte';
+import { editModeState, applyRestoredEditMode, getEditRevision } from '$frontend/stores/ui/edit-mode.svelte';
 import { chatInputState, resetFocus } from '$frontend/stores/ui/chat-input.svelte';
 import { setQueue } from '$frontend/stores/ui/message-queue.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
@@ -140,13 +140,16 @@ export function useInputState(params: InputStateParams) {
 
 	async function restore(chatSessionId: string) {
 		const generation = ++restoreGeneration;
+		// Edit mode entered, left or submitted while this was in flight is newer
+		// than what the server answers with — the answer must not undo it.
+		const editRevision = getEditRevision();
 		try {
 			// Ensure WS context (projectId) is synced before fetching
 			await ws.waitForContextSync();
 			const state = await ws.http('chat:composer-state', { chatSessionId });
 			if (generation !== restoreGeneration) return;
 
-			applyRestoredEditMode(state.edit);
+			if (getEditRevision() === editRevision) applyRestoredEditMode(chatSessionId, state.edit);
 			setQueue(chatSessionId, state.queue);
 
 			const { draft } = state;
