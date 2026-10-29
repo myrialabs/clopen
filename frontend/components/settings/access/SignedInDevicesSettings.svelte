@@ -15,7 +15,7 @@
 		<div>
 			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Signed-in Devices</h3>
 			<p class="text-sm text-slate-600 dark:text-slate-500">
-				Every browser signed in to this Clopen. Sign one out and it loses access immediately.
+				Browsers signed in to Clopen.
 			</p>
 		</div>
 		<button

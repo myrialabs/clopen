@@ -125,7 +125,7 @@
 				No token on this device? Use Remote Access → Add a device on one that is signed in.
 			</p>
 			<p class="text-xs text-slate-400 dark:text-slate-500">
-				Lost your token? Run <code class="font-mono bg-slate-100 dark:bg-slate-800 px-1 py-0.5 rounded">clopen reset-pat</code> in your terminal to generate a new one.
+				Lost your token? Run <code class="font-mono font-semibold text-slate-800 dark:text-slate-100 bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-1.5 py-0.5 rounded">clopen reset-pat</code> in your terminal to generate a new one.
 			</p>
 		</div>
 	</div>

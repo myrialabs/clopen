@@ -220,7 +220,7 @@
 						<span>Copy this token now. It won't be shown again.</span>
 					</div>
 					<div class="mt-2 text-xs text-amber-600 dark:text-amber-400">
-						Lost it later? Run <code class="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded">clopen reset-pat</code> in your terminal to generate a new one.
+						Lost it later? Run <code class="font-mono font-semibold text-amber-900 dark:text-amber-100 bg-amber-200/70 dark:bg-amber-800/60 border border-amber-400/50 dark:border-amber-600/50 px-1.5 py-0.5 rounded">clopen reset-pat</code> in your terminal to generate a new one.
 					</div>
 				</div>
 			</div>

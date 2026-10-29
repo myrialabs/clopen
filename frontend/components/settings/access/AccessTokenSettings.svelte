@@ -38,7 +38,7 @@
 <div class="py-1">
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Access Token</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">
-		The token you type on the sign-in screen. Adding a device from Remote Access is easier — it never needs the token.
+		The token you use to sign in.
 	</p>
 
 	<div class="flex flex-col gap-4">
@@ -65,9 +65,9 @@
 				</div>
 			{:else}
 				<p class="text-xs text-slate-600 dark:text-slate-500 mb-3">
-					The current token is never shown again. Create a new one if you lost it — or run
-					<code class="font-mono bg-slate-200/70 dark:bg-slate-900/80 px-1 py-0.5 rounded">clopen reset-pat</code>
-					on the machine running Clopen.
+					Lost it? Create a new one, or run
+					<code class="font-mono font-semibold text-slate-800 dark:text-slate-100 bg-slate-200 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 px-1.5 py-0.5 rounded">clopen reset-pat</code>
+					on the host.
 				</p>
 			{/if}
 
