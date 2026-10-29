@@ -199,8 +199,8 @@ export const authStore = {
 	/**
 	 * Setup — create the owner account (with-auth mode).
 	 */
-	async setup(name: string) {
-		const result = await ws.http('auth:setup', { name, userAgent: navigator.userAgent });
+	async setup() {
+		const result = await ws.http('auth:setup', { userAgent: navigator.userAgent });
 		currentUser = result.user;
 		sessionToken = result.sessionToken;
 		personalAccessToken = result.personalAccessToken;
@@ -209,7 +209,7 @@ export const authStore = {
 		authMode = 'required';
 		await hydrateSession();
 		// Don't set authState to 'ready' yet — setup page shows PAT first
-		debug.log('auth', `Owner setup complete: ${result.user.name}`);
+		debug.log('auth', 'Owner setup complete');
 	},
 
 	/**
@@ -351,15 +351,6 @@ export const authStore = {
 		clearSessionState();
 		authState = 'login';
 		debug.log('auth', 'All sessions logged out');
-	},
-
-	/**
-	 * Update display name.
-	 */
-	async updateName(newName: string) {
-		const updated = await ws.http('auth:update-name', { newName });
-		currentUser = updated;
-		debug.log('auth', `Name updated: ${updated.name}`);
 	},
 
 	/**

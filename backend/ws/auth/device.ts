@@ -92,7 +92,7 @@ export const deviceHandler = createRouter()
 				userId: result.user.id,
 				actorUserId: result.user.id,
 				eventType: 'auth:claim-device-code',
-				eventDetails: `User ${result.user.name} signed in a new device`,
+				eventDetails: 'A new device signed in',
 				ipAddress: clientIpFromConnection(conn)
 			});
 

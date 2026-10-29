@@ -75,7 +75,7 @@
 </script>
 
 <div class="py-1">
-<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Authentication</h3>
+<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Sign-in</h3>
 <p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Choose how your devices sign in to Clopen</p>
 
 <div class="flex flex-col gap-3.5">

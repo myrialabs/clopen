@@ -325,8 +325,8 @@ export const CHAT_COMMANDS: { command: string; description: string; hint?: strin
 // ── Conversation replies ────────────────────────────────────────────────────
 
 export const REPLIES = {
-	paired: (name: string) =>
-		`Linked to ${name}'s Clopen. Just type to chat, or send photos and files. You start in Home, with no project selected: /projects switches project, /model picks a model, /help lists everything.\n\nSend /unlink to unlink this chat.`,
+	paired:
+		`Linked to your Clopen. Just type to chat, or send photos and files. You start in Home, with no project selected: /projects switches project, /model picks a model, /help lists everything.\n\nSend /unlink to unlink this chat.`,
 	chatOff: 'This chat is switched off in Clopen → Settings → Chat Apps, so it cannot do anything right now.',
 	chatOn: '✅ This chat is switched back on.',
 	pairingExpired: 'That link has expired or was already used. Open Clopen → Settings → Chat Apps and link Telegram again.',

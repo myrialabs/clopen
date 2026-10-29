@@ -6,7 +6,7 @@
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import { chatModelState, patchCurrentSessionSelection } from '$frontend/stores/ui/chat-model.svelte';
 	import { profilesStore } from '$frontend/stores/features/profiles.svelte';
 	import ws from '$frontend/utils/ws';
@@ -72,7 +72,7 @@
 	// Listen for profile changes made on other tabs/devices in this session.
 	$effect(() => {
 		const unsub = ws.on('chat:profile-sync', (data: { senderId: string; clientId?: string; chatSessionId: string; profileId: number | null }) => {
-			if (data.clientId ? data.clientId === CLIENT_ID : data.senderId === userStore.currentUser?.id) return;
+			if (data.clientId ? data.clientId === CLIENT_ID : data.senderId === authStore.currentUser?.id) return;
 			// Drop events for a session this tab has already switched away from.
 			if (data.chatSessionId !== sessionState.currentSession?.id) return;
 			chatModelState.profileId = data.profileId;
@@ -117,7 +117,7 @@
 		const chatSessionId = sessionState.currentSession?.id;
 		if (chatSessionId) {
 			ws.emit('chat:profile-sync', {
-				senderId: userStore.currentUser?.id || '',
+				senderId: authStore.currentUser?.id || '',
 				clientId: CLIENT_ID,
 				chatSessionId,
 				profileId

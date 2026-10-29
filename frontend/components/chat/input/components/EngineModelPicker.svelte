@@ -6,7 +6,7 @@
 	import { modelStore } from '$frontend/stores/features/models.svelte';
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
-	import { userStore } from '$frontend/stores/features/user.svelte';
+	import { authStore } from '$frontend/stores/features/auth.svelte';
 	import {
 		chatModelState,
 		initChatModel,
@@ -53,7 +53,7 @@
 	/** Session + sender for an outgoing sync, or null when there is nothing to sync to. */
 	function syncTarget(): { chatSessionId: string; senderId: string } | null {
 		const chatSessionId = sessionState.currentSession?.id;
-		const senderId = userStore.currentUser?.id;
+		const senderId = authStore.currentUser?.id;
 		if (!chatSessionId || !senderId) return null;
 		return { chatSessionId, senderId };
 	}
@@ -65,7 +65,7 @@
 	 * this tab has already switched away from.
 	 */
 	function ignoreSync(data: SyncEnvelope): boolean {
-		const own = data.clientId ? data.clientId === CLIENT_ID : data.senderId === userStore.currentUser?.id;
+		const own = data.clientId ? data.clientId === CLIENT_ID : data.senderId === authStore.currentUser?.id;
 		if (own) return true;
 		return data.chatSessionId !== sessionState.currentSession?.id;
 	}

@@ -6,7 +6,6 @@ import {
 	logout,
 	logoutAllSessions,
 	regeneratePAT,
-	updateUserName,
 	createOrGetNoAuthOwner,
 	needsSetup,
 	markOnboardingPending
@@ -30,7 +29,6 @@ export const loginHandler = createRouter()
 	// Setup — create the owner (only works before setup)
 	.http('auth:setup', {
 		data: t.Object({
-			name: t.String({ minLength: 1 }),
 			userAgent: t.Optional(t.String())
 		}),
 		response: t.Object({
@@ -52,7 +50,7 @@ export const loginHandler = createRouter()
 		// completed install (which is how onboarding state is inferred).
 		markOnboardingPending();
 
-		const result = createOwner(data.name, { userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
+		const result = createOwner({ userAgent: data.userAgent, ipAddress: clientIpFromConnection(conn) });
 
 		// Save authMode to system settings
 		writeSystemSettings({ authMode: 'required' });
@@ -61,7 +59,7 @@ export const loginHandler = createRouter()
 			userId: result.user.id,
 			actorUserId: result.user.id,
 			eventType: 'auth:setup',
-			eventDetails: `Owner account created: ${result.user.name}`,
+			eventDetails: 'Owner account created',
 			ipAddress: clientIpFromConnection(conn)
 		});
 
@@ -98,7 +96,7 @@ export const loginHandler = createRouter()
 			userId: result.user.id,
 			actorUserId: result.user.id,
 			eventType: 'auth:setup-no-auth',
-			eventDetails: `No-auth mode enabled, owner: ${result.user.name}`,
+			eventDetails: 'No-auth mode enabled',
 			ipAddress: clientIpFromConnection(conn)
 		});
 
@@ -128,7 +126,7 @@ export const loginHandler = createRouter()
 			userId: result.user.id,
 			actorUserId: result.user.id,
 			eventType: 'auth:auto-login-no-auth',
-			eventDetails: `Auto-login in no-auth mode: ${result.user.name}`,
+			eventDetails: 'Auto-login in no-auth mode',
 			ipAddress: clientIpFromConnection(conn)
 		});
 
@@ -177,7 +175,7 @@ export const loginHandler = createRouter()
 				userId: result.user.id,
 				actorUserId: result.user.id,
 				eventType: 'auth:login',
-				eventDetails: `User ${result.user.name} logged in via ${tokenType} token`,
+				eventDetails: `Signed in via ${tokenType} token`,
 				ipAddress: clientIpFromConnection(conn)
 			});
 
@@ -247,15 +245,4 @@ export const loginHandler = createRouter()
 			ipAddress: clientIpFromConnection(conn)
 		});
 		return { count };
-	})
-
-	// Update display name
-	.http('auth:update-name', {
-		data: t.Object({
-			newName: t.String({ minLength: 1 })
-		}),
-		response: authUserSchema
-	}, async ({ data, conn }) => {
-		const userId = ws.getUserId(conn);
-		return updateUserName(userId, data.newName);
 	});

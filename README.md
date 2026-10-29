@@ -121,7 +121,7 @@ On first launch, a setup wizard guides you through:
 4. **AI Engines** — Check installation status for every engine and sign in to the ones you'll use. An engine that isn't installed yet links straight back to the Stack step
 5. **Preferences** — Set dark mode, font size, sound notifications, and message layout (Classic cards or Compact lines)
 
-You can change the authentication mode anytime in **Settings → Security → Authentication**.
+You can change the authentication mode anytime in **Settings → Sign-in & Devices**.
 
 To sign in another of your devices, open **Remote Access → Add a device** and scan the one-time link (valid for 5 minutes).
 

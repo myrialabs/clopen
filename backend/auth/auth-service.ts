@@ -14,6 +14,12 @@ import { debug } from '$shared/utils/logger';
 /** Default session lifetime in days */
 const DEFAULT_SESSION_DAYS = 30;
 
+/**
+ * The owner's account name. Clopen has one account, so nobody is ever asked
+ * for a name — the row still needs one.
+ */
+const OWNER_NAME = 'Owner';
+
 /** How long a device-pairing code stays claimable before it expires (minutes). */
 const DEVICE_CODE_TTL_MINUTES = 5;
 
@@ -155,20 +161,19 @@ export function createOrGetNoAuthOwner(): AuthResult {
 
 	const userId = `user-${crypto.randomUUID()}`;
 	const now = new Date().toISOString();
-	const defaultName = 'Owner';
 
 	const dbUser = authQueries.createUser({
 		id: userId,
-		name: defaultName,
-		color: generateColorFromString(defaultName),
-		avatar: getInitials(defaultName),
+		name: OWNER_NAME,
+		color: generateColorFromString(OWNER_NAME),
+		avatar: getInitials(OWNER_NAME),
 		personal_access_token_hash: '', // No PAT for no-auth mode
 		created_at: now
 	});
 
 	const { sessionToken, expiresAt } = createSessionForUser(userId, 'no-auth');
 
-	debug.log('auth', `No-auth mode: created default owner: ${defaultName} (${userId})`);
+	debug.log('auth', `No-auth mode: created the owner (${userId})`);
 
 	return {
 		user: toAuthUser(dbUser),
@@ -180,14 +185,9 @@ export function createOrGetNoAuthOwner(): AuthResult {
 /**
  * Create the owner account (setup flow). Only works before setup.
  */
-export function createOwner(name: string, meta?: SessionMeta): SetupResult {
+export function createOwner(meta?: SessionMeta): SetupResult {
 	if (!needsSetup()) {
 		throw new Error('Setup already completed. The owner account exists.');
-	}
-
-	const trimmedName = name.trim();
-	if (trimmedName.length === 0) {
-		throw new Error('Name cannot be empty');
 	}
 
 	const userId = `user-${crypto.randomUUID()}`;
@@ -197,16 +197,16 @@ export function createOwner(name: string, meta?: SessionMeta): SetupResult {
 
 	const dbUser = authQueries.createUser({
 		id: userId,
-		name: trimmedName,
-		color: generateColorFromString(trimmedName),
-		avatar: getInitials(trimmedName),
+		name: OWNER_NAME,
+		color: generateColorFromString(OWNER_NAME),
+		avatar: getInitials(OWNER_NAME),
 		personal_access_token_hash: patHash,
 		created_at: now
 	});
 
 	const { sessionToken, expiresAt } = createSessionForUser(userId, 'setup', meta);
 
-	debug.log('auth', `Owner account created: ${trimmedName} (${userId})`);
+	debug.log('auth', `Owner account created (${userId})`);
 
 	return {
 		user: toAuthUser(dbUser),
@@ -412,29 +412,6 @@ export function revokeDeviceCode(userId: string, rawCode: string): boolean {
 	authQueries.deleteDeviceCode(record.id);
 	debug.log('auth', `Device code revoked (user ${userId})`);
 	return true;
-}
-
-/**
- * Update user display name
- */
-export function updateUserName(userId: string, newName: string): AuthUser {
-	const trimmedName = newName.trim();
-	if (trimmedName.length === 0) {
-		throw new Error('Name cannot be empty');
-	}
-
-	authQueries.updateUser(userId, {
-		name: trimmedName,
-		color: generateColorFromString(trimmedName),
-		avatar: getInitials(trimmedName)
-	});
-
-	const updated = authQueries.getUserById(userId);
-	if (!updated) {
-		throw new Error('User not found after update');
-	}
-
-	return toAuthUser(updated);
 }
 
 /**

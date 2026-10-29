@@ -1,7 +1,7 @@
 /**
  * Host metrics — hardware identity and the live process table.
  *
- * One module because Settings → Device and Project Info both ask, and their
+ * One module because Settings → Machine and Project Info both ask, and their
  * numbers only compare if measured the same way. `si.processes()` reports CPU
  * against a different basis per platform (total capacity on Linux, one core on
  * macOS/BSD, consumed CPU on Windows), so everything is normalised here to

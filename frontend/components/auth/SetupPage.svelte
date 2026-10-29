@@ -15,25 +15,19 @@
 	});
 
 	// ─── Wizard state ───
-	type WizardStep = 'auth-mode' | 'account' | 'stack' | 'engines' | 'preferences';
-	const ALL_STEPS: WizardStep[] = ['auth-mode', 'account', 'stack', 'engines', 'preferences'];
+	type WizardStep = 'auth-mode' | 'token' | 'stack' | 'engines' | 'preferences';
+	const ALL_STEPS: WizardStep[] = ['auth-mode', 'token', 'stack', 'engines', 'preferences'];
 
 	let currentStep = $state<WizardStep>('auth-mode');
 	let completedSteps = $state<Set<WizardStep>>(new Set());
 	let selectedAuthMode = $state<AuthMode>('none');
 
-	// Whether this is a returning existing user (data exists, just re-onboarding)
+	// Whether the owner already exists (data exists, just re-onboarding)
 	let isExistingUser = $state(false);
-	let existingUserName = $state('');
-	let initializedFromUser = $state(false);
 
-	// Restore existing data once on load (not reactively on every ownerName change)
 	$effect(() => {
-		if (authStore.currentUser && !initializedFromUser) {
-			initializedFromUser = true;
+		if (authStore.currentUser && !isExistingUser) {
 			isExistingUser = true;
-			existingUserName = authStore.currentUser.name;
-			ownerName = authStore.currentUser.name;
 		}
 	});
 
@@ -45,11 +39,12 @@
 		}
 	});
 
+	// The token step only exists to show a freshly created token once.
+	let showTokenStep = $state(false);
+
 	function getVisibleSteps(): WizardStep[] {
-		if (selectedAuthMode === 'none') {
-			return ALL_STEPS.filter(s => s !== 'account');
-		}
-		return [...ALL_STEPS];
+		if (selectedAuthMode === 'required' && showTokenStep) return [...ALL_STEPS];
+		return ALL_STEPS.filter(s => s !== 'token');
 	}
 
 	const visibleSteps = $derived(getVisibleSteps());
@@ -101,7 +96,7 @@
 	// ─── Step Labels ───
 	const stepLabels: Record<WizardStep, { label: string; icon: IconName }> = {
 		'auth-mode': { label: 'Login', icon: 'lucide:shield' },
-		'account': { label: 'Account', icon: 'lucide:user-plus' },
+		'token': { label: 'Token', icon: 'lucide:key-round' },
 		'stack': { label: 'Stack', icon: 'lucide:hammer' },
 		'engines': { label: 'Engines', icon: 'lucide:plug' },
 		'preferences': { label: 'Preferences', icon: 'lucide:palette' }
@@ -111,45 +106,41 @@
 	let authModeLoading = $state(false);
 	let authModeError = $state('');
 
+	/** Leave the auth step: to the token when one was just created, else to Stack. */
+	function leaveAuthStep(tokenCreated: boolean) {
+		showTokenStep = tokenCreated;
+		completedSteps.add('auth-mode');
+		completedSteps = new Set(completedSteps);
+		currentStep = tokenCreated ? 'token' : 'stack';
+	}
+
 	async function confirmAuthMode() {
 		authModeError = '';
 		authModeLoading = true;
 
 		try {
 			if (!isExistingUser) {
-				// Fresh setup — existing behavior
+				// Fresh setup — create the owner in the chosen mode
 				if (selectedAuthMode === 'none') {
 					await authStore.setupNoAuth();
-					completedSteps.add('auth-mode');
-					completedSteps.add('account');
-					completedSteps = new Set(completedSteps);
-					currentStep = 'stack';
+					leaveAuthStep(false);
 				} else {
-					goToNextStep();
+					await authStore.setup();
+					leaveAuthStep(true);
 				}
 			} else {
-				// Returning user (wizard shown again after refresh) — apply selected mode
+				// Returning (wizard shown again after refresh) — apply the selected mode
 				const previousMode = authStore.authMode;
 				if (selectedAuthMode === 'none' && previousMode !== 'none') {
-					// with-auth → no-auth: update mode, skip the account step
 					await authStore.switchToNoAuth();
-					completedSteps.add('auth-mode');
-					completedSteps.add('account');
-					completedSteps = new Set(completedSteps);
-					currentStep = 'stack';
+					leaveAuthStep(false);
 				} else if (selectedAuthMode === 'required' && previousMode !== 'required') {
-					// no-auth → with-auth: update mode, regenerate PAT, go to the account step
+					// no-auth → with-auth creates a token, which must be shown once
 					await authStore.switchToWithAuth();
-					goToNextStep();
-				} else if (selectedAuthMode === 'none') {
-					// Same mode (none) — skip the account step, go to stack
-					completedSteps.add('auth-mode');
-					completedSteps.add('account');
-					completedSteps = new Set(completedSteps);
-					currentStep = 'stack';
+					leaveAuthStep(true);
 				} else {
-					// Same mode (required) — advance to the account step
-					goToNextStep();
+					// Same mode — nothing new to show
+					leaveAuthStep(Boolean(authStore.personalAccessToken));
 				}
 			}
 		} catch (err) {
@@ -159,55 +150,14 @@
 		}
 	}
 
-	// ─── Step 2: Account ───
-	let ownerName = $state('');
-	let accountError = $state('');
-	let accountLoading = $state(false);
-	let showPAT = $state(false);
+	// ─── Step 2: Token ───
 	let patCopied = $state(false);
-
-	async function handleCreateAccount() {
-		// If name is empty, skip this step (can be configured later in Settings)
-		if (!ownerName.trim()) {
-			goToNextStep();
-			return;
-		}
-		accountError = '';
-		accountLoading = true;
-		try {
-			if (isExistingUser) {
-				// Existing user — update name if changed
-				if (ownerName.trim() !== existingUserName) {
-					await authStore.updateName(ownerName.trim());
-				}
-				// If a PAT was just generated (e.g. switched from no-auth to with-auth), show it
-				if (authStore.personalAccessToken) {
-					showPAT = true;
-				} else {
-					goToNextStep();
-				}
-			} else {
-				await authStore.setup(ownerName.trim());
-				showPAT = true;
-			}
-		} catch (err) {
-			accountError = err instanceof Error ? err.message : 'Setup failed';
-		} finally {
-			accountLoading = false;
-		}
-	}
 
 	async function copyPAT() {
 		if (authStore.personalAccessToken) {
 			await navigator.clipboard.writeText(authStore.personalAccessToken);
 			patCopied = true;
 			setTimeout(() => { patCopied = false; }, 2000);
-		}
-	}
-
-	function handleAccountKeydown(e: KeyboardEvent) {
-		if (e.key === 'Enter' && !showPAT) {
-			handleCreateAccount();
 		}
 	}
 
@@ -279,7 +229,7 @@
 			{#if currentStep === 'auth-mode'}
 				<div class="space-y-4">
 					<div class="text-center">
-						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Authentication Mode</h2>
+						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Sign-in</h2>
 						<p class="text-sm text-slate-500 dark:text-slate-400">
 							Choose how your devices sign in to Clopen.
 						</p>
@@ -363,95 +313,43 @@
 					</button>
 				</div>
 
-			<!-- ════════ Step 2: Account ════════ -->
-			{:else if currentStep === 'account'}
+			<!-- ════════ Step 2: Token ════════ -->
+			{:else if currentStep === 'token'}
 				<div class="space-y-4">
-					{#if !showPAT}
-						<div class="text-center">
-							<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">
-								{isExistingUser ? 'Your Account' : 'Create Your Account'}
-							</h2>
-							<p class="text-sm text-slate-500 dark:text-slate-400">
-								{isExistingUser
-									? 'Review or update your display name.'
-									: 'Set a display name for your account.'}
-							</p>
-						</div>
+					<!-- PAT Display -->
+					<div class="text-left">
+						<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Save Your Token</h2>
+					</div>
 
-						<div class="text-left">
-							<label for="owner-name" class="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
-								Display Name
-							</label>
-							<input
-								id="owner-name"
-								type="text"
-								bind:value={ownerName}
-								onkeydown={handleAccountKeydown}
-								placeholder="Enter your name"
-								disabled={accountLoading}
-								class="w-full px-3 py-2 rounded-lg border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 text-sm focus:outline-none focus:ring-2 focus:ring-violet-500 disabled:opacity-50"
-							/>
-						</div>
-
-						{#if accountError}
-							<p class="text-sm text-red-500">{accountError}</p>
-						{/if}
-
-						<div class="flex gap-2 sticky bottom-0 z-10 pt-3 pb-3 bg-white dark:bg-slate-950 border-t border-slate-200/70 dark:border-slate-800/70">
+					<div class="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-left">
+						<p class="text-sm font-medium text-amber-800 dark:text-amber-200 mb-2">
+							Your Personal Access Token
+						</p>
+						<p class="text-xs text-amber-700 dark:text-amber-300 mb-3">
+							This is the token for the sign-in screen. It won't be shown again — to add your phone or another computer later, Remote Access gives you a one-time link instead.
+						</p>
+						<div class="flex items-center gap-2">
+							<code class="flex-1 px-3 py-2 rounded bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-xs font-mono text-slate-900 dark:text-slate-100 select-all break-all">
+								{authStore.personalAccessToken}
+							</code>
 							<button
-								onclick={goToPrevStep}
-								class="px-4 py-2 rounded-lg border border-slate-300 dark:border-slate-700 text-slate-600 dark:text-slate-400 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors"
+								onclick={copyPAT}
+								class="shrink-0 px-3 py-2 rounded bg-amber-100 dark:bg-amber-900 hover:bg-amber-200 dark:hover:bg-amber-800 text-amber-800 dark:text-amber-200 text-xs font-medium transition-colors"
 							>
-								Back
-							</button>
-							<button
-								onclick={handleCreateAccount}
-								disabled={accountLoading}
-								class="flex-1 py-2 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-							>
-								{#if accountLoading}
-									Saving...
-								{:else}
-									Continue
-								{/if}
+								{patCopied ? 'Copied!' : 'Copy'}
 							</button>
 						</div>
-					{:else}
-						<!-- PAT Display -->
-						<div class="text-left">
-							<h2 class="text-base font-semibold text-slate-900 dark:text-slate-100 mb-1">Save Your Token</h2>
-						</div>
+						<p class="text-xs text-amber-600 dark:text-amber-400 mt-3">
+							Lost your token? You can reset it anytime by running <code class="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded">clopen reset-pat</code> in your terminal.
+						</p>
+					</div>
 
-						<div class="p-4 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-left">
-							<p class="text-sm font-medium text-amber-800 dark:text-amber-200 mb-2">
-								Your Personal Access Token
-							</p>
-							<p class="text-xs text-amber-700 dark:text-amber-300 mb-3">
-								Save this token — you'll need it to log in on other devices. It won't be shown again.
-							</p>
-							<div class="flex items-center gap-2">
-								<code class="flex-1 px-3 py-2 rounded bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-xs font-mono text-slate-900 dark:text-slate-100 select-all break-all">
-									{authStore.personalAccessToken}
-								</code>
-								<button
-									onclick={copyPAT}
-									class="shrink-0 px-3 py-2 rounded bg-amber-100 dark:bg-amber-900 hover:bg-amber-200 dark:hover:bg-amber-800 text-amber-800 dark:text-amber-200 text-xs font-medium transition-colors"
-								>
-									{patCopied ? 'Copied!' : 'Copy'}
-								</button>
-							</div>
-							<p class="text-xs text-amber-600 dark:text-amber-400 mt-3">
-								Lost your token? You can reset it anytime by running <code class="font-mono bg-amber-100 dark:bg-amber-900/50 px-1 py-0.5 rounded">clopen reset-pat</code> in your terminal.
-							</p>
-						</div>
-
-						<button
-							onclick={goToNextStep}
-							class="w-full py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors"
-						>
-							Continue
-						</button>
-					{/if}
+					<button
+						onclick={goToNextStep}
+						class="w-full py-2.5 px-4 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-sm font-medium transition-colors"
+					>
+						Continue
+					</button>
 				</div>
 
 			<!-- ════════ Step 3: Stack ════════ -->

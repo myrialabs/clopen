@@ -219,7 +219,7 @@ async function pair(channel: ActiveChannel, message: UniversalMessage, link: Cha
 	});
 	debug.log('chat-apps', `Paired a ${channel.platform.provider} chat (${paired.id})`);
 	notifyLinksChanged();
-	await replyText(channel, message, REPLIES.paired(user.name));
+	await replyText(channel, message, REPLIES.paired);
 }
 
 async function handleCommand(conversation: Conversation, command: string, argument: string, rawText: string): Promise<void> {

@@ -26,9 +26,9 @@ export type SettingsSection =
 	| 'notifications'
 	| 'chat-apps'
 	| 'tunnel'
-	| 'account'
-	| 'security'
-	| 'device'
+	| 'access'
+	| 'files'
+	| 'machine'
 	| 'system';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
@@ -37,7 +37,7 @@ export type SettingsGroup =
 	| 'infrastructure'
 	| 'artifacts-access'
 	| 'preferences'
-	| 'administration';
+	| 'system';
 
 /** Ordered group definitions for the settings sidebar. */
 export const settingsGroups: { id: SettingsGroup; label: string }[] = [
@@ -45,7 +45,7 @@ export const settingsGroups: { id: SettingsGroup; label: string }[] = [
 	{ id: 'infrastructure', label: 'Infrastructure' },
 	{ id: 'artifacts-access', label: 'Artifacts & Access' },
 	{ id: 'preferences', label: 'Preferences' },
-	{ id: 'administration', label: 'Administration' }
+	{ id: 'system', label: 'System' }
 ];
 
 interface SettingsModalState {
@@ -221,32 +221,32 @@ export const settingsSections: SettingsSectionMeta[] = [
 		group: 'preferences'
 	},
 	{
-		id: 'account',
-		label: 'User Profile',
-		icon: 'lucide:user',
-		description: 'Your profile and access',
-		group: 'preferences'
-	},
-	{
-		id: 'security',
-		label: 'Security',
+		id: 'access',
+		label: 'Sign-in & Devices',
 		icon: 'lucide:shield',
-		description: 'Login and access control',
-		group: 'administration'
+		description: 'Login, access token, and signed-in devices',
+		group: 'system'
 	},
 	{
-		id: 'device',
-		label: 'Device',
+		id: 'files',
+		label: 'Files & Folders',
+		icon: 'lucide:folder-cog',
+		description: 'Project locations and file size limit',
+		group: 'system'
+	},
+	{
+		id: 'machine',
+		label: 'Machine',
 		icon: 'lucide:server',
-		description: 'Server hardware and status',
-		group: 'administration'
+		description: 'Hardware and status of the machine running Clopen',
+		group: 'system'
 	},
 	{
 		id: 'system',
 		label: 'Maintenance',
 		icon: 'lucide:settings-2',
 		description: 'Updates and data',
-		group: 'administration'
+		group: 'system'
 	}
 ];
 

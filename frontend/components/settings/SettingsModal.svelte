@@ -28,10 +28,10 @@
 	import ProfilesSettings from './profiles/ProfilesSettings.svelte';
 	import GitIdentitiesSettings from './git/GitIdentitiesSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
-	import AccountSettings from './account/AccountSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
 	import ChatAppsSettings from './chat-apps/ChatAppsSettings.svelte';
-	import SecuritySettings from './security/SecuritySettings.svelte';
+	import AccessSettings from './access/AccessSettings.svelte';
+	import FilesFoldersSettings from './files/FilesFoldersSettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
 	import AboutDeviceSettings, {
 		prefetchDeviceInfo,
@@ -96,9 +96,9 @@
 		}
 	});
 
-	// Prefetch Device data the moment the modal opens so the slow
+	// Prefetch Machine data the moment the modal opens so the slow
 	// system:device-info probes and the projects:overview snapshot already run
-	// in background while the user browses other tabs. Clicking Device then
+	// in background while the user browses other tabs. Clicking Machine then
 	// shows cached data instantly instead of a long skeleton like other tabs
 	// that render from local stores.
 	$effect(() => {
@@ -297,10 +297,6 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<TunnelSettings />
 						</div>
-					{:else if activeSection === 'account'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<AccountSettings />
-						</div>
 					{:else if activeSection === 'engines'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AIEnginesSettings />
@@ -375,11 +371,15 @@
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<ProfilesSettings />
 						</div>
-					{:else if activeSection === 'security'}
+					{:else if activeSection === 'access'}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<SecuritySettings />
+							<AccessSettings />
 						</div>
-					{:else if activeSection === 'device'}
+					{:else if activeSection === 'files'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<FilesFoldersSettings />
+						</div>
+					{:else if activeSection === 'machine'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AboutDeviceSettings />
 						</div>

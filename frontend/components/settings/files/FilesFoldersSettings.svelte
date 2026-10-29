@@ -116,11 +116,11 @@
 </script>
 
 <div class="py-1">
-<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Advanced</h3>
-<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Security and access control settings</p>
+<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Files & Folders</h3>
+<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Where projects can be picked from, and how large a file can be</p>
 
 <div class="flex flex-col gap-3.5">
-	<!-- Folder Access Restriction -->
+	<!-- Project Folder Locations -->
 	<div class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
 		<div class="flex items-start gap-3.5 mb-4">
 			<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-amber-400/15 text-amber-500">
@@ -128,7 +128,7 @@
 			</div>
 			<div class="flex flex-col gap-0.5 min-w-0 flex-1">
 				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">
-					Folder Access Restriction
+					Project Folder Locations
 				</div>
 				<div class="text-xs text-slate-600 dark:text-slate-500">
 					Restrict the <span class="font-medium text-slate-700 dark:text-slate-400">Select Project Folder</span> browser to only show specific base directories.

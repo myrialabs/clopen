@@ -21,9 +21,9 @@
 
 	const isNoAuth = $derived(authStore.isNoAuth);
 
-	function goToSecurity() {
+	function goToSignIn() {
 		onClose();
-		openSettingsModal('security');
+		openSettingsModal('access');
 	}
 
 	// Refresh tunnel status on open so the active-connection list is accurate.
@@ -168,11 +168,11 @@
 					</p>
 					<button
 						type="button"
-						onclick={goToSecurity}
+						onclick={goToSignIn}
 						class="inline-flex items-center gap-1.5 mt-2.5 py-1.5 px-3 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-md text-amber-800 dark:text-amber-200 text-xs font-semibold transition-colors"
 					>
 						<Icon name="lucide:shield-check" class="w-3.5 h-3.5" />
-						Switch to With Login in Security
+						Switch to With Login in Sign-in & Devices
 					</button>
 				</div>
 			</div>
@@ -311,7 +311,7 @@
 		<div class="pt-1 border-t border-slate-200 dark:border-slate-700/60">
 			<div class="flex items-center gap-2 mt-3 mb-2.5">
 				<Icon name="lucide:monitor-smartphone" class="w-4 h-4 text-slate-500 dark:text-slate-400" />
-				<span class="text-sm font-semibold text-slate-800 dark:text-slate-200">Your devices</span>
+				<span class="text-sm font-semibold text-slate-800 dark:text-slate-200">Signed-in devices</span>
 			</div>
 			<DeviceSessionsList />
 		</div>

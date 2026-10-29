@@ -30,7 +30,7 @@ const mockLogEvent = mock((entry: any) => {
 });
 
 // Mock auth-service functions
-const mockCreateOwner = mock((name: string) => ({
+const mockCreateOwner = mock(() => ({
 	user: mockUser,
 	sessionToken: mockSessionToken,
 	personalAccessToken: mockPersonalAccessToken,
@@ -91,7 +91,6 @@ mock.module('$backend/auth/auth-service', () => ({
 	logout: mock(() => {}),
 	logoutAllSessions: mock(() => 0),
 	regeneratePAT: mock(() => 'new-pat'),
-	updateUserName: mock(() => mockUser)
 }));
 
 mock.module('$backend/utils/ws', () => ({
@@ -141,12 +140,12 @@ describe('Session creation audit logging', () => {
 		// Call the handler
 		const handler = (loginHandler as any).httpRoutes.get('auth:setup');
 		await handler.handler({
-			data: { name: 'Owner' },
+			data: {},
 			conn: mockConnection
 		});
 
 		// Verify createOwner was called
-		expect(mockCreateOwner).toHaveBeenCalledWith('Owner', expect.anything());
+		expect(mockCreateOwner).toHaveBeenCalledWith(expect.anything());
 
 		// Verify logEvent was called with correct parameters
 		expect(mockLogEvent).toHaveBeenCalledTimes(1);
@@ -156,7 +155,6 @@ describe('Session creation audit logging', () => {
 			eventType: 'auth:setup',
 			ipAddress: mockIpAddress
 		});
-		expect(logEventCalls[0].eventDetails).toContain('Test User');
 
 		// Verify setAuth was called
 		expect(mockSetAuth).toHaveBeenCalled();
@@ -218,7 +216,7 @@ describe('Session creation audit logging', () => {
 		// Call the auth:setup handler
 		const handler = (loginHandler as any).httpRoutes.get('auth:setup');
 		const result = await handler.handler({
-			data: { name: 'Owner' },
+			data: {},
 			conn: mockConnection
 		});
 

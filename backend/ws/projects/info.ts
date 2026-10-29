@@ -4,7 +4,7 @@
  * Storage is a bounded walk of the project folder, nothing excluded. CPU and
  * RAM come from the shared host probe in `backend/host/metrics.ts`, narrowed to
  * the project's PTY shells and their descendants, so they sit on the same basis
- * Settings → Device reports for the whole machine. Engine processes Clopen runs
+ * Settings → Machine reports for the whole machine. Engine processes Clopen runs
  * outside a terminal are not shells and do not appear here.
  */
 

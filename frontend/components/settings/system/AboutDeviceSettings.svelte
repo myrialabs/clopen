@@ -341,12 +341,10 @@
 
 	// --- Derived presentation ---
 	const isServer = $derived(info ? info.isVirtual || !info.battery.hasBattery : false);
-	const title = $derived(isServer ? 'Server' : 'This Device');
-	const subtitle = $derived(
-		isServer
-			? 'Hardware and live status of the machine running clopen'
-			: 'Hardware and live status of this device'
-	);
+	// "This device" would mean the phone when it is opened through Remote
+	// Access, so the page always names the machine Clopen runs on.
+	const title = $derived(isServer ? 'Server' : 'Computer');
+	const subtitle = 'Hardware and live status of the machine running Clopen';
 
 	const memPercent = $derived(
 		info && info.memory.totalBytes > 0
