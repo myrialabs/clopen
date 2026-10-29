@@ -461,6 +461,13 @@ export interface ToolResult {
 	toolUseId: string;
 	content: string;
 	isError: boolean;
+	/**
+	 * AskUserQuestion only: the answers the user submitted, keyed by question
+	 * text, attached by the stream manager. `content` is the engine's prose for
+	 * the model and is worded differently by every engine, so the UI reads this
+	 * instead. Absent on results saved before it existed.
+	 */
+	answers?: Record<string, string>;
 }
 
 // ============================================================

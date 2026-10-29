@@ -4,6 +4,7 @@
 	import { renderedSessionId, sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { appState, updateSessionProcessState } from '$frontend/stores/core/app.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { readAskUserQuestionAnswers } from '$shared/utils/ask-user-question';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as AskUserQuestionInput);
@@ -14,32 +15,10 @@
 	// Every read goes through this normalized list so no code path can assume it.
 	const questions = $derived(Array.isArray(input?.questions) ? input.questions : []);
 
-	function parseResultAnswers(content: string, questions: { question: string }[]): Record<string, string> {
-		const answers: Record<string, string> = {};
-		try {
-			const json = JSON.parse(content);
-			if (json?.answers && typeof json.answers === 'object') return json.answers;
-		} catch { /* not JSON */ }
-		for (let i = 0; i < questions.length; i++) {
-			const q = questions[i].question;
-			const searchStr = `"${q}"="`;
-			const startIdx = content.indexOf(searchStr);
-			if (startIdx === -1) continue;
-			const answerStart = startIdx + searchStr.length;
-			let answerEnd = -1;
-			if (i < questions.length - 1) {
-				answerEnd = content.indexOf(`", "${questions[i + 1].question}"="`, answerStart);
-			}
-			if (answerEnd === -1) answerEnd = content.indexOf('". You can now continue', answerStart);
-			answers[q] = answerEnd !== -1 ? content.slice(answerStart, answerEnd) : content.slice(answerStart);
-		}
-		return answers;
-	}
-
 	const hasResult = $derived(!!result?.content);
 	const parsedAnswers = $derived.by(() => {
 		if (!result?.content) return {};
-		return parseResultAnswers(result.content, questions);
+		return readAskUserQuestionAnswers(result, questions);
 	});
 	const isError = $derived(hasResult && Object.keys(parsedAnswers).length === 0);
 	const isAnswered = $derived(hasResult && !isError);

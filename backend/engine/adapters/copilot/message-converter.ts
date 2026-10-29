@@ -855,7 +855,7 @@ export function convertToolComplete(
 
 	// AskUserQuestion: rewrite Copilot's plain-text result
 	// (e.g. "User selected: X") into the `{"answers": {<q>: <a>}}` JSON
-	// shape the UI's parseResultAnswers expects. Without this rewrite, the
+	// shape the UI's legacy parser reads. Without this rewrite, the
 	// parser finds no matching question key and renders the bubble in the
 	// red error state even though the user answered successfully.
 	if (state.toolNames.get(data.toolCallId) === 'AskUserQuestion') {

@@ -48,6 +48,7 @@ import { buildMemoryContext, withMemoryContext } from '../memory/context';
 import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
 import { resolveGitEnv } from '$backend/git/identity';
 import { debug } from '$shared/utils/logger';
+import { attachSubmittedAnswers } from '$shared/utils/ask-user-question';
 import { DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME } from '$shared/constants/engines';
 
 // ============================================================================
@@ -95,6 +96,12 @@ export interface StreamState {
 	preStreamSessionId?: string | null;
 	hasCompactBoundary?: boolean;
 	eventSeq: number;
+	/**
+	 * AskUserQuestion answers the user submitted, keyed by tool_use id, held
+	 * until the engine's tool_result for that id arrives and they are attached
+	 * to it (see attachSubmittedAnswers).
+	 */
+	submittedAnswers: Map<string, Record<string, string>>;
 }
 
 // ============================================================================
@@ -404,7 +411,8 @@ class StreamManager extends EventEmitter {
 			startedAt: new Date(),
 			messages: [],
 			abortController: new AbortController(),
-			eventSeq: 0 // Initialize sequence for deduplication
+			eventSeq: 0, // Initialize sequence for deduplication
+			submittedAnswers: new Map()
 		};
 
 		this.activeStreams.set(streamId, streamState);
@@ -1243,6 +1251,7 @@ class StreamManager extends EventEmitter {
 					case 'user': {
 						const userMsg = enrichMessageEngine(output, engineCtx) as UserMessage;
 						lastAssistantTextContent = null; // Reset dedup tracker
+						attachSubmittedAnswers(userMsg, streamState.submittedAnswers);
 
 						const messageTimestamp = userMsg.createdAt;
 						let savedMsgId: string | undefined;
@@ -1466,7 +1475,11 @@ class StreamManager extends EventEmitter {
 		}
 
 		debug.log('chat', 'Resolving AskUserQuestion answer:', { toolUseId, answers });
-		return engine.resolveUserAnswer(toolUseId, answers);
+		// Recorded first: an engine may emit the tool_result before this returns.
+		streamState.submittedAnswers.set(toolUseId, answers);
+		const handled = engine.resolveUserAnswer(toolUseId, answers);
+		if (!handled) streamState.submittedAnswers.delete(toolUseId);
+		return handled;
 	}
 
 	async cancelStream(streamId: string, reason?: string): Promise<boolean> {
