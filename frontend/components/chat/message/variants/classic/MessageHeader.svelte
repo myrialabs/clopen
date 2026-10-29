@@ -10,6 +10,7 @@
 
 <script lang="ts">
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+	import { isUnconfirmedMessage } from '$frontend/utils/unconfirmed-messages';
 	import type { IconName } from '$shared/types/ui/icons';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
@@ -39,6 +40,11 @@
 		onEdit: () => void;
 		onShowDebug: () => void;
 	} = $props();
+
+	// Undo and edit act on the saved message; there is none while a turn runs
+	// or before the server confirmed this one.
+	const unconfirmed = $derived(isUnconfirmedMessage(message));
+	const historyActionsDisabled = $derived(appState.isLoading || unconfirmed);
 
 	// State untuk copy button
 	let isCopied = $state(false);
@@ -107,10 +113,10 @@
 			{#if !isLastUserMessage}
 				<button
 					onclick={onRestore}
-					disabled={appState.isLoading}
-					class="inline-flex p-1.5 rounded-md transition-colors {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600'}"
+					disabled={historyActionsDisabled}
+					class="inline-flex p-1.5 rounded-md transition-colors {historyActionsDisabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600'}"
 					aria-label="Undo to this checkpoint"
-					title="Undo to this checkpoint"
+					title={unconfirmed ? 'Sending…' : 'Undo to this checkpoint'}
 				>
 					<Icon name="lucide:undo-2" class="w-3.5 h-3.5" />
 				</button>
@@ -119,10 +125,10 @@
 			<!-- Edit button for user messages -->
 			<button
 				onclick={onEdit}
-				disabled={appState.isLoading}
-				class="inline-flex p-1.5 rounded-md transition-colors {appState.isLoading ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600'}"
+				disabled={historyActionsDisabled}
+				class="inline-flex p-1.5 rounded-md transition-colors {historyActionsDisabled ? 'cursor-not-allowed opacity-40' : 'hover:bg-slate-200 dark:hover:bg-slate-600'}"
 				aria-label="Edit message"
-				title="Edit message"
+				title={unconfirmed ? 'Sending…' : 'Edit message'}
 			>
 				<Icon name="lucide:pencil" class="w-3.5 h-3.5" />
 			</button>

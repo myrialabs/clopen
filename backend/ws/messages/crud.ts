@@ -4,6 +4,7 @@
  * HTTP endpoints for message management:
  * - List messages (with optional include_all for history view)
  * - Get message by ID
+ * - Resolve which of a session's message ids are saved
  * - Delete message
  */
 
@@ -42,6 +43,26 @@ export const crudHandler = createRouter()
 	}, async ({ data }) => {
 		const message = requireMessageAccess(data.messageId);
 		return loadMessage(message);
+	})
+
+	// Which of these ids are saved messages of the session, and what they hold.
+	// A sender checks the bubbles it is still showing optimistically: a send
+	// whose echo never arrived (socket dropped, stopped early) may still have
+	// been saved, or may never have reached the server at all.
+	.http('messages:resolve', {
+		data: t.Object({
+			session_id: t.String({ minLength: 1 }),
+			ids: t.Array(t.String({ minLength: 1 }), { maxItems: 100 })
+		}),
+		response: t.Array(t.Any())
+	}, async ({ data }) => {
+		requireSessionAccess(data.session_id);
+		const found: ReturnType<typeof loadMessage>[] = [];
+		for (const id of new Set(data.ids)) {
+			const row = messageQueries.getById(id);
+			if (row && row.session_id === data.session_id) found.push(loadMessage(row));
+		}
+		return found;
 	})
 
 	// Get full (untrimmed) sub-agent messages nested under a message.

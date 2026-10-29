@@ -650,14 +650,17 @@ class StreamManager extends EventEmitter {
 			// Convert raw SDK prompt → UserMessage (unified)
 			const userMessage = convertRawPromptToUserMessage(rawPrompt);
 
-			// Save user message to DB
+			// Save user message to DB under the id the composer already shows it
+			// with, so its optimistic bubble names a real row from the start.
 			const userMessageTimestamp = new Date().toISOString();
 			const savedMessage = await this.saveMessage(
 				userMessage,
 				chatSessionId,
-				userMessageTimestamp
+				userMessageTimestamp,
+				userMessage.messageId
 			);
 			userMessageId = savedMessage?.id;
+			if (savedMessage) this.emit('session:turn-started', chatSessionId);
 
 			streamState.messages.push({
 				processId: streamState.processId,
@@ -1679,7 +1682,8 @@ class StreamManager extends EventEmitter {
 	private async saveMessage(
 		message: UnifiedMessage,
 		sessionId: string,
-		timestamp: string
+		timestamp: string,
+		preferredId?: string
 	): Promise<DatabaseMessage | null> {
 		try {
 			const currentHead = sessionQueries.getHead(sessionId);
@@ -1688,7 +1692,8 @@ class StreamManager extends EventEmitter {
 				session_id: sessionId,
 				message: message,
 				timestamp,
-				parent_message_id: currentHead || undefined
+				parent_message_id: currentHead || undefined,
+				preferred_id: preferredId
 			});
 
 			sessionQueries.updateHead(sessionId, savedMessage.id);

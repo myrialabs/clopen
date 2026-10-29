@@ -12,7 +12,7 @@
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
 	import { ChatService } from '$frontend/services/chat';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
@@ -21,6 +21,7 @@
 	import { editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
 	import { takeQueued, type QueuedMessage } from '$frontend/stores/ui/message-queue.svelte';
+	import { chatInputState, takeReturned } from '$frontend/stores/ui/chat-input.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -274,22 +275,27 @@
 		chatActions.handleCancelEdit();
 	};
 
+	/** Add a message's text and attachments to what is in the box already. */
+	function appendToComposer(text: string, attachments: { fileName: string; mediaType: string; data: string }[]) {
+		if (text) setMessageText(messageText.trim() ? `${messageText.trimEnd()}\n\n${text}` : text);
+		const restored = attachments
+			.map((a) => attachmentFromBase64({ fileName: a.fileName, mediaType: a.mediaType, base64: a.data }))
+			.filter((a): a is FileAttachment => a !== null);
+		if (restored.length > 0) {
+			fileHandling.replaceAttachments([...fileHandling.attachedFiles, ...restored]);
+			inputState.saveAttachments(fileHandling.attachedFiles);
+		}
+		inputState.saveText();
+		textareaElement?.focus();
+		setTimeout(() => adjustTextareaHeight(), 0);
+	}
+
 	// Take a queued message back into the box to change it.
 	async function handleEditQueued(item: QueuedMessage) {
 		try {
 			const taken = await takeQueued(item.id);
 			if (!taken) return;
-			setMessageText(messageText.trim() ? `${messageText.trimEnd()}\n\n${taken.text}` : taken.text);
-			const restored = taken.attachments
-				.map((a) => attachmentFromBase64({ fileName: a.fileName, mediaType: a.mediaType, base64: a.data }))
-				.filter((a): a is FileAttachment => a !== null);
-			if (restored.length > 0) {
-				fileHandling.replaceAttachments([...fileHandling.attachedFiles, ...restored]);
-				inputState.saveAttachments(fileHandling.attachedFiles);
-			}
-			inputState.saveText();
-			textareaElement?.focus();
-			setTimeout(() => adjustTextareaHeight(), 0);
+			appendToComposer(taken.text, taken.attachments);
 		} catch (error) {
 			debug.error('chat', 'Failed to take queued message back:', error);
 			addNotification({
@@ -300,6 +306,15 @@
 			});
 		}
 	}
+
+	// A message that never reached the server comes back into its session's box.
+	$effect(() => {
+		const chatSessionId = sessionState.currentSession?.id;
+		if (!chatSessionId || !chatInputState.returned.some((m) => m.chatSessionId === chatSessionId)) return;
+		untrack(() => {
+			for (const message of takeReturned(chatSessionId)) appendToComposer(message.text, message.attachments);
+		});
+	});
 
 	// Reactive effect for placeholder animation
 	$effect(() => {
@@ -402,6 +417,11 @@
 				appState.isCancelling = false;
 			}
 			lastCatchupKey = undefined;
+			// Nothing is running, so a bubble still waiting for its echo never
+			// gets one (it went missing with a dropped socket or an early Stop).
+			if (sessionId && transcriptReady && !chatService.isStartPending(sessionId)) {
+				void chatService.reconcileUnconfirmed(sessionId, { settled: true });
+			}
 		}
 	});
 
@@ -490,6 +510,10 @@
 
 				// Reconnect to live stream events so future partials/messages/complete flow in
 				chatService.reconnectToStream(chatSessionId, streamState.processId);
+
+				// The user message's echo was sent while this client was away; the
+				// saved row replaces the bubble still waiting for it.
+				void chatService.reconcileUnconfirmed(chatSessionId, { settled: false });
 
 				// Detect if an interactive tool (e.g. AskUserQuestion) is pending in existing messages
 				chatService.detectPendingInteractiveTools(chatSessionId);

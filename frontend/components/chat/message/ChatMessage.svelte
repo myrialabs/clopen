@@ -16,6 +16,7 @@
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { sessionState, loadMessagesForSession } from '$frontend/stores/core/sessions.svelte';
+	import { isUnconfirmedMessage } from '$frontend/utils/unconfirmed-messages';
 	import { setInputText } from '$frontend/stores/ui/chat-input.svelte';
 	import { startEdit, shouldDimMessage, type EditAttachment } from '$frontend/stores/ui/edit-mode.svelte';
 	import { debug } from '$shared/utils/logger';
@@ -247,6 +248,8 @@
 
 	// Handle restore button click - check conflicts first
 	async function handleRestore() {
+		// Not saved yet as far as this client knows — there is no checkpoint.
+		if (isUnconfirmedMessage(message) || appState.isLoading) return;
 		if (!messageId) {
 			addNotification({
 				type: 'error',
@@ -318,6 +321,8 @@
 
 	// Handle edit button click
 	async function handleEdit() {
+		// Not saved yet as far as this client knows — nothing to rewind to.
+		if (isUnconfirmedMessage(message) || appState.isLoading) return;
 		if (!messageId) {
 			addNotification({
 				type: 'error',
@@ -351,7 +356,7 @@
 		const messageText = textParts.join('\n\n');
 
 		// Enter edit mode; where it rewinds to is resolved by the server on submit
-		startEdit(messageId!, messageText, messageTimestamp, messageAttachments);
+		if (!startEdit(messageId, messageText, messageTimestamp, messageAttachments)) return;
 
 		// Populate input with message text
 		setInputText(messageText, true);

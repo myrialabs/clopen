@@ -4,6 +4,9 @@ import type { UnifiedMessage } from '$shared/types/unified';
 import { debug } from '$shared/utils/logger';
 import { trimSubAgentForWire } from '$shared/utils/subagent-wire-trim';
 
+/** A UUID in canonical 8-4-4-4-12 form, as crypto.randomUUID() produces. */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 /** Parse message JSON from a DB row. */
 function parseMessage(row: DatabaseMessage): UnifiedMessage {
 	return JSON.parse(row.data) as UnifiedMessage;
@@ -130,9 +133,22 @@ export const messageQueries = {
 		timestamp?: string;
 		branch_id?: string;
 		parent_message_id?: string;
+		/**
+		 * The id the sender already shows this message under (the composer's
+		 * optimistic bubble). Kept when it is a well-formed UUID nobody holds yet,
+		 * so the bubble and the saved row are one message from the start —
+		 * otherwise anything acting on the bubble before its echo arrives (edit,
+		 * undo) names a row that never existed. Anything else gets a fresh id.
+		 */
+		preferred_id?: string;
 	}): DatabaseMessage {
 		const db = getDatabase();
-		const id = crypto.randomUUID();
+		const preferred = messageData.preferred_id;
+		const id = typeof preferred === 'string'
+			&& UUID_PATTERN.test(preferred)
+			&& !db.prepare('SELECT 1 FROM messages WHERE id = ?').get(preferred)
+			? preferred
+			: crypto.randomUUID();
 		const timestamp = messageData.timestamp || new Date().toISOString();
 		const parentMessageId = messageData.parent_message_id || null;
 
@@ -401,6 +417,31 @@ export const messageQueries = {
 		}
 
 		return path;
+	},
+
+	/**
+	 * Whether a message of this session is on the branch the session shows:
+	 * its HEAD or one of HEAD's ancestors. Walks parent ids only, without
+	 * loading message bodies.
+	 */
+	isOnActivePath(sessionId: string, messageId: string): boolean {
+		const db = getDatabase();
+		const session = db.prepare(`
+			SELECT head_message_id FROM chat_sessions WHERE id = ?
+		`).get(sessionId) as { head_message_id: string | null } | null;
+
+		const parentOf = db.prepare(`
+			SELECT parent_message_id FROM messages WHERE id = ? AND session_id = ?
+		`);
+		const seen = new Set<string>();
+		let currentId = session?.head_message_id ?? null;
+		while (currentId && !seen.has(currentId)) {
+			if (currentId === messageId) return true;
+			seen.add(currentId);
+			const row = parentOf.get(currentId, sessionId) as { parent_message_id: string | null } | null;
+			currentId = row?.parent_message_id ?? null;
+		}
+		return false;
 	},
 
 	/**

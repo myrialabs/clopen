@@ -5,7 +5,7 @@ import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 import type { RestoreConflict, ConflictResolution } from '$frontend/services/snapshot/snapshot.service';
 import { soundNotification } from '$frontend/services/notification';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
-import { editModeState, cancelEdit } from '$frontend/stores/ui/edit-mode.svelte';
+import { editModeState, cancelEdit, finishEdit } from '$frontend/stores/ui/edit-mode.svelte';
 import { clearInput } from '$frontend/stores/ui/chat-input.svelte';
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
@@ -87,10 +87,17 @@ export function useChatActions(params: ChatActionsParams) {
 	/** Rewind to before the edited message, then send the new version. */
 	async function completeEdit(edit: PendingEdit, resolutions?: ConflictResolution) {
 		await snapshotService.restore(edit.targetId, edit.chatSessionId, resolutions);
+		// The rewind happened, so the edit is over — for its own session, even if
+		// the user has switched away while it ran.
+		finishEdit(edit.chatSessionId);
+		// Switched away: the composer, its draft and the transcript on screen now
+		// belong to another session and must not be touched. The edited text
+		// stays in the edited session's draft, ready to send from where the
+		// rewind left it.
+		if (sessionState.currentSession?.id !== edit.chatSessionId) return;
 		// The draft belongs to the edit; it is spent now.
 		params.clearDraft();
 		await loadMessagesForSession(edit.chatSessionId);
-		cancelEdit();
 		if (sessionState.currentSession?.id !== edit.chatSessionId) return;
 		await sendNow(edit.text, edit.files);
 	}
@@ -99,9 +106,26 @@ export function useChatActions(params: ChatActionsParams) {
 		const chatSessionId = sessionState.currentSession?.id;
 		const messageId = editModeState.messageId;
 		if (!chatSessionId || !messageId) return;
+		// An edit restored for another session must never rewind this one.
+		if (editModeState.chatSessionId !== chatSessionId) {
+			cancelEdit();
+			return;
+		}
 
 		// The rewind point comes from the server, from the edited message itself.
 		const { targetId } = await ws.http('chat:edit-target', { chatSessionId, messageId });
+		if (!targetId) {
+			// Gone from the session — rewound elsewhere. Nothing is left to
+			// replace; the text stays in the box to be sent as a new message.
+			cancelEdit();
+			addNotification({
+				type: 'warning',
+				title: 'Edit Ended',
+				message: 'The message being edited is no longer in this chat. Your text was kept — send it as a new message.',
+				duration: 6000
+			});
+			return;
+		}
 		const edit: PendingEdit = { chatSessionId, targetId, text, files };
 
 		// Same safeguard as Undo: files another chat changed since are not
