@@ -100,7 +100,7 @@
 			<div class="flex-1 min-w-0">
 				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
 				<div class="text-xs text-slate-600 dark:text-slate-500">
-					Best if you're just using Clopen on your own computer. It opens straight to the app with no sign-in — but anyone who can reach the address can use it, so keep it to your own machine or home network.
+					Opens straight to the app. Best for your own computer.
 				</div>
 			</div>
 			{#if currentMode === 'none'}
@@ -133,7 +133,7 @@
 			<div class="flex-1 min-w-0">
 				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
 				<div class="text-xs text-slate-600 dark:text-slate-500">
-					Best if you want to reach Clopen from anywhere — a public server, or your phone through Remote Access. A sign-in keeps it private, and Remote Access adds your other devices without typing a token.
+					Requires sign-in. Best for reaching Clopen from other devices.
 				</div>
 			</div>
 			{#if currentMode === 'required'}

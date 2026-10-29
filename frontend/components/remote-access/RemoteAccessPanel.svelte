@@ -163,8 +163,7 @@
 				<div class="flex-1 text-sm">
 					<p class="font-semibold text-amber-800 dark:text-amber-200 mb-1">No Login mode is active</p>
 					<p class="text-amber-700 dark:text-amber-300">
-						Anyone who opens the link gets <span class="font-semibold">full access without a token</span>. For
-						remote sharing we strongly recommend switching to With Login so access is protected.
+						Anyone with the link gets <span class="font-semibold">full access</span>. Switch to With Login to protect it.
 					</p>
 					<button
 						type="button"
