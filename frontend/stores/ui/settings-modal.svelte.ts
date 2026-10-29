@@ -96,7 +96,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'git-identities',
 		label: 'Git Accounts',
 		icon: 'lucide:user-round-cog',
-		description: 'Commit identity and credentials',
+		description: 'Commit identity and push access',
 		group: 'infrastructure'
 	},
 	{
@@ -224,21 +224,21 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'access',
 		label: 'Sign-in & Devices',
 		icon: 'lucide:shield',
-		description: 'Login, access token, and signed-in devices',
+		description: 'Login and devices',
 		group: 'system'
 	},
 	{
 		id: 'files',
 		label: 'Files & Folders',
 		icon: 'lucide:folder-cog',
-		description: 'Project locations and file size limit',
+		description: 'Project folders and size limit',
 		group: 'system'
 	},
 	{
 		id: 'machine',
 		label: 'Machine',
 		icon: 'lucide:server',
-		description: 'Hardware and status of the machine running Clopen',
+		description: 'Hardware and status',
 		group: 'system'
 	},
 	{

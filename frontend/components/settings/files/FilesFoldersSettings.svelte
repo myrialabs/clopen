@@ -117,7 +117,7 @@
 
 <div class="py-1">
 <h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Files & Folders</h3>
-<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Where projects can be picked from, and how large a file can be</p>
+<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Project folders and file size limit</p>
 
 <div class="flex flex-col gap-3.5">
 	<!-- Project Folder Locations -->
