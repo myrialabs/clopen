@@ -1171,7 +1171,9 @@ class StreamManager extends EventEmitter {
 					// ── Reasoning Message ──────────────────────────────────
 					case 'reasoning': {
 						const reasoning = enrichMessageEngine(output, engineCtx) as ReasoningMessage;
-						streamState.currentReasoningText = undefined;
+						// Only a root message settles the root's live text — a sub-agent's
+						// (parent-tagged) one finishing must not wipe the main turn's partial.
+						if (!reasoning.parent.toolUseId) streamState.currentReasoningText = undefined;
 
 						const reasoningTimestamp = reasoning.createdAt;
 						let savedReasoningId: string | undefined;
@@ -1226,7 +1228,7 @@ class StreamManager extends EventEmitter {
 							savedParentId = saved?.parent_message_id || null;
 						}
 
-						streamState.currentPartialText = undefined;
+						if (!assistantMsg.parent.toolUseId) streamState.currentPartialText = undefined;
 
 						streamState.messages.push({
 							processId: streamState.processId,

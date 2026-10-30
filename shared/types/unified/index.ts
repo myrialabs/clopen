@@ -100,6 +100,7 @@ export { toMcpServerStatus } from './stream';
 export type {
 	SubAgentToolActivity,
 	SubAgentTextActivity,
+	SubAgentReasoningActivity,
 	SubAgentActivity,
 	ToolResult,
 	McpToolUseBlock,

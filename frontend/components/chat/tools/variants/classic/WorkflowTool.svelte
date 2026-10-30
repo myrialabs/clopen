@@ -51,7 +51,7 @@
 							<span class="font-medium">{activity.name}</span>
 							{#if brief(activity)}<span class="ml-1 opacity-60">{brief(activity)}</span>{/if}
 						</li>
-					{:else}<li class="text-xs text-slate-600 dark:text-slate-400">{activity.text}</li>{/if}
+					{:else}<li class="text-xs text-slate-600 dark:text-slate-400" class:italic={activity.type === 'reasoning'}>{activity.text}</li>{/if}
 				{/each}
 			</ul>
 		</div>

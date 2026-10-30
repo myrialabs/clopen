@@ -955,7 +955,9 @@ class ChatService {
     // If this is a reasoning message, replace the matching reasoning
     // stream_event placeholder. Fall back to inserting before the first
     // non-reasoning stream_event so the display order stays reasoning → text.
-    if (message.type === 'reasoning') {
+    // Same rule as assistant: a sub-agent's reasoning never claims the root
+    // placeholder — it is pushed intact and folded into its parent tool.
+    if (message.type === 'reasoning' && !message.parent?.toolUseId) {
       for (let i = sessionState.messages.length - 1; i >= 0; i--) {
         const msg = sessionState.messages[i];
         if (msg.type === 'stream_event' && (msg as StreamingMessage).reasoning) {

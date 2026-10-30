@@ -72,6 +72,8 @@
 						</li>
 					{:else if activity.type === 'text'}
 						<li class="line-clamp-1">{activity.text}</li>
+					{:else if activity.type === 'reasoning'}
+						<li class="line-clamp-1 italic opacity-70">{activity.text}</li>
 					{/if}
 				{/each}
 			</ul>

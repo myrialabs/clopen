@@ -80,6 +80,10 @@
 					<li class="text-xs text-slate-600 dark:text-slate-400 line-clamp-2">
 						{activity.text}
 					</li>
+				{:else if activity.type === 'reasoning'}
+					<li class="text-xs italic text-slate-500 dark:text-slate-500 line-clamp-2">
+						{activity.text}
+					</li>
 				{/if}
 			{/each}
 		</ul>

@@ -148,11 +148,18 @@ The following invariants are mandatory:
 1. Emit the parent tool message before any child activity.
 2. Set every child message's `parent.toolUseId` to the parent tool call id
    before yielding it. Never emit a root-shaped child and patch it later.
+   This covers **every** message kind — `reasoning` included. Route child
+   output through `scopeToParentTool()` (`adapters/parent-scope.ts`) instead of
+   tagging per constructor: it scopes by output type, so a kind you forgot
+   cannot reach the root. A sub-agent's thinking once leaked into the main chat
+   because one converter tagged `assistant`/`user` but hard-coded `null` on
+   `reasoning`.
 3. Keep top-level tool results at `parent.toolUseId = null`; the id of the tool
    they answer belongs on the inner `tool_result.toolUseId`.
 4. Do not forward nested text/reasoning `stream_event` deltas unless the
    protocol can carry their parent id. Suppress them and emit the finalized
-   parent-tagged message instead.
+   parent-tagged message instead. `scopeToParentTool()` drops them (and every
+   other turn-level output: result, init, rate limit, notification).
 5. When activity comes from a side channel, merge it with the SDK stream using
    a push queue. Use the source's native notification mechanism (for example
    filesystem change events for JSONL transcripts), not interval polling.

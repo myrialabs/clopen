@@ -824,6 +824,7 @@ export function convertReasoningMessage(
 	reasoningText: string,
 	ocMessage: OCMessage,
 	sessionId: string,
+	parentToolUseId?: string,
 ): ReasoningMessage {
 	const assistantMsg = ocMessage.role === 'assistant' ? ocMessage as AssistantMessage : null;
 	const provId = assistantMsg?.providerID || '';
@@ -834,7 +835,7 @@ export function convertReasoningMessage(
 		createdAt: new Date().toISOString(),
 		messageId: crypto.randomUUID(),
 		sessionId,
-		parent: { messageId: null, sessionId: null, toolUseId: null },
+		parent: { messageId: null, sessionId: null, toolUseId: parentToolUseId || null },
 		engine: { type: 'opencode' as const, provider: provId, model: { id: mdlId, name: '' }, account: { id: 0, name: '' } },
 		text: reasoningText,
 	};
