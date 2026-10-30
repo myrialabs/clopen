@@ -1134,6 +1134,65 @@ export function hostBridgeScript(bindingName: string) {
 		);
 	}
 
+	// A copy that never touches `navigator.clipboard` — Ctrl/⌘+C, a "Copy"
+	// button built on `execCommand('copy')` — only ever reached the headless
+	// clipboard. The copy event is the one place all of them pass through, so
+	// what it copies is reported to the workspace clipboard from here.
+	//
+	// What a copy puts on the clipboard is decided by the page's own handlers:
+	// `clipboardData.setData` if one calls it, the selection otherwise, nothing
+	// if one cancels without setting data. Those handlers run after this
+	// capture listener, so the selection is read now, `setData` is recorded as
+	// it happens, and the outcome is settled once the event has finished.
+	let pendingCopy: { selection: string; data: string | null; event: Event } | null = null;
+
+	const readSelection = (): string => {
+		let active: Element | null = document.activeElement;
+		while (active && (active as HTMLElement).shadowRoot?.activeElement) {
+			active = (active as HTMLElement).shadowRoot!.activeElement;
+		}
+		const field = active as HTMLInputElement | HTMLTextAreaElement | null;
+		if (field && (field.tagName === 'INPUT' || field.tagName === 'TEXTAREA')) {
+			try {
+				const start = field.selectionStart ?? 0;
+				const end = field.selectionEnd ?? 0;
+				if (end > start) return field.value.slice(start, end);
+			} catch {
+				// Input types without selection (email, number) — fall through.
+			}
+		}
+		return window.getSelection()?.toString() ?? '';
+	};
+
+	const onCopy = (event: Event) => {
+		pendingCopy = { selection: readSelection(), data: null, event };
+		setTimeout(() => {
+			const copy = pendingCopy;
+			pendingCopy = null;
+			if (!copy) return;
+			const text = copy.data ?? (copy.event.defaultPrevented ? null : copy.selection);
+			if (text) void call('clipboard-copied', { text }).catch(() => {});
+		}, 0);
+	};
+	window.addEventListener('copy', onCopy, true);
+	window.addEventListener('cut', onCopy, true);
+
+	const DataTransferProto = (scope.DataTransfer as typeof DataTransfer | undefined)?.prototype;
+	if (DataTransferProto) {
+		const originalSetData = DataTransferProto.setData;
+		define(
+			DataTransferProto,
+			'setData',
+			nativeLike(function setData(this: DataTransfer, format: string, data: string) {
+				const kind = String(format).toLowerCase();
+				if (pendingCopy && (kind === 'text/plain' || kind === 'text')) {
+					pendingCopy.data = String(data);
+				}
+				return originalSetData.call(this, format, data);
+			} as never, 'setData')
+		);
+	}
+
 	// ── Notifications ───────────────────────────────────────────────────────
 	const NativeNotification = scope.Notification as (typeof Notification) | undefined;
 	if (NativeNotification) {

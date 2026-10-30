@@ -73,7 +73,8 @@
 		onReorderTab = (_tabId: string, _targetTabId: string) => {},
 		onNewTab = () => {},
 		onCloseAllTabs = () => {},
-		onOpenBrowsingData = () => {}
+		onOpenBrowsingData = () => {},
+		onOpenDiagnostics = () => {}
 	} = $props();
 
 	/**
@@ -589,6 +590,16 @@
 				aria-label="Preview browsing data"
 			>
 				<Icon name="lucide:cookie" class="h-4 w-4" />
+			</button>
+
+			<button
+				type="button"
+				onclick={() => onOpenDiagnostics()}
+				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
+				title="Preview diagnostics"
+				aria-label="Preview diagnostics"
+			>
+				<Icon name="lucide:activity" class="h-4 w-4" />
 			</button>
 
 			<button

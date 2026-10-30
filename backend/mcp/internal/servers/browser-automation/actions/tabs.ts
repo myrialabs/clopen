@@ -40,8 +40,14 @@ export const listTabs: ActionDef = {
 		const lines = tabs.map((tab, index) => {
 			const owner = browserMcpControl.getTabOwner(tab.id);
 			const control = owner ? (owner === ctx.chatSessionId ? ' [yours]' : ' [another session]') : '';
+			const opener =
+				tab.openedBy?.kind === 'agent'
+					? tab.openedBy.chatSessionId === ctx.chatSessionId
+						? ' [opened by you]'
+						: ' [opened by another chat]'
+					: ' [opened by the user]';
 			return [
-				`${index + 1}. ${tab.isActive ? '*' : ' '} ${tab.id}${control} — ${tab.title || 'Untitled'}`,
+				`${index + 1}. ${tab.isActive ? '*' : ' '} ${tab.id}${control}${opener} — ${tab.title || 'Untitled'}`,
 				`     ${tab.url || '(empty)'}`,
 				`     ${tab.deviceSize}/${tab.rotation}${tab.isLoading ? ' · loading' : ''}`
 			].join('\n');
@@ -71,6 +77,7 @@ export const openTab: ActionDef = {
 		const rotation = args.rotation || defaultRotation(deviceSize);
 
 		const tab = await ctx.service.createTab(args.url || undefined, deviceSize, rotation);
+		tab.openedBy = { kind: 'agent', chatSessionId: ctx.chatSessionId };
 		browserMcpControl.acquireControl(tab.id, ctx.chatSessionId, ctx.projectId);
 		ctx.invalidateTab();
 
@@ -116,7 +123,8 @@ export const closeTab: ActionDef = {
 	type: 'close_tab',
 	kind: 'control',
 	activity: 'Closing a tab',
-	doc: `close_tab {tabId?} — close a tab (default: the current one).`,
+	doc: `close_tab {tabId?} — close a tab (default: the current one).
+  Close every tab you opened once you are done with it. Keep one open only if this chat will use it again, it is waiting on the user (a login, an OTP, a captcha), or the user asked for it. Never close a tab the user opened unless asked.`,
 	schema: z.object({
 		type: z.literal('close_tab'),
 		tabId: z.string().optional().describe('Tab id from list_tabs. Omit to close the current tab.'),

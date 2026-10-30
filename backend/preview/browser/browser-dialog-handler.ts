@@ -22,13 +22,87 @@ import { nanoid } from 'nanoid';
  */
 const DIALOG_RESPONSE_TIMEOUT_MS = 120_000;
 
+/** A dialog the page is blocked on, as an agent is told about it. */
+export interface PendingDialogInfo {
+	dialogId: string;
+	type: 'alert' | 'confirm' | 'prompt' | 'beforeunload';
+	message: string;
+	defaultValue: string;
+	openedAt: number;
+}
+
+export interface DialogHandlerDeps {
+	/**
+	 * Whether an agent holds the tab. Its dialogs are the agent's to answer,
+	 * exactly as a person's would be theirs, so the unattended-page timeout
+	 * that dismisses them on nobody's behalf does not apply.
+	 */
+	isAgentHeld(tabId: string): boolean;
+}
+
 export class BrowserDialogHandler extends EventEmitter {
 	// Store pending dialogs waiting for response, tagged with the tab that raised
 	// them so closing one tab cannot dismiss another tab's prompt.
-	private pendingDialogs = new Map<string, { sessionId: string; dialog: Dialog; timeout: NodeJS.Timeout }>();
+	private pendingDialogs = new Map<
+		string,
+		{ sessionId: string; dialog: Dialog; timeout: NodeJS.Timeout; info: PendingDialogInfo }
+	>();
 
-	constructor() {
+	private deps: DialogHandlerDeps;
+
+	constructor(deps: DialogHandlerDeps = { isAgentHeld: () => false }) {
 		super();
+		this.deps = deps;
+	}
+
+	/**
+	 * The dialog a tab is blocked on, if any.
+	 *
+	 * A page with an open dialog runs no script and paints nothing, so every
+	 * read, screenshot or evaluate against it hangs until someone answers. An
+	 * agent asks this before acting instead of finding out by waiting.
+	 */
+	getPendingDialog(tabId: string): PendingDialogInfo | null {
+		let latest: PendingDialogInfo | null = null;
+		for (const entry of this.pendingDialogs.values()) {
+			if (entry.sessionId !== tabId) continue;
+			if (!latest || entry.info.openedAt >= latest.openedAt) latest = entry.info;
+		}
+		return latest;
+	}
+
+	/**
+	 * Resolve when the tab raises a dialog — for racing an action against it.
+	 * `dispose` must be called once the race is decided either way.
+	 */
+	waitForDialog(tabId: string): { promise: Promise<PendingDialogInfo>; dispose: () => void } {
+		let listener: ((event: { sessionId: string; dialogId: string }) => void) | null = null;
+		const promise = new Promise<PendingDialogInfo>((resolve) => {
+			listener = (event) => {
+				if (event.sessionId !== tabId) return;
+				const info = this.pendingDialogs.get(event.dialogId)?.info;
+				if (info) resolve(info);
+			};
+			this.on('dialog', listener);
+		});
+		return {
+			promise,
+			dispose: () => {
+				if (listener) this.off('dialog', listener);
+				listener = null;
+			}
+		};
+	}
+
+	/**
+	 * Answer whatever dialog a tab has open — the agent's way in, which names
+	 * the tab rather than a dialog id it never saw.
+	 */
+	async respondForTab(tabId: string, accept: boolean, promptText?: string): Promise<PendingDialogInfo | null> {
+		const info = this.getPendingDialog(tabId);
+		if (!info) return null;
+		const ok = await this.respondToDialog({ dialogId: info.dialogId, accept, promptText } as BrowserDialogResponse);
+		return ok ? info : null;
 	}
 
 	/**
@@ -73,17 +147,32 @@ export class BrowserDialogHandler extends EventEmitter {
 		debug.log('preview', `🎭 Dialog detected - Type: ${dialogType}, Session: ${sessionId}`);
 
 		// Store pending dialog for later response, with a deadline so an
-		// unattended page cannot stay blocked indefinitely.
-		const timeout = setTimeout(() => {
+		// unattended page cannot stay blocked indefinitely. A tab an agent holds
+		// is not unattended: the deadline is pushed back for as long as it does.
+		const expire = () => {
+			const entry = this.pendingDialogs.get(dialogId);
+			if (!entry) return;
+			if (this.deps.isAgentHeld(sessionId)) {
+				entry.timeout = setTimeout(expire, DIALOG_RESPONSE_TIMEOUT_MS);
+				return;
+			}
 			this.pendingDialogs.delete(dialogId);
 			debug.warn('preview', `⏱️ Dialog ${dialogId} unanswered, auto-dismissing`);
 			// beforeunload is the one dialog where dismissing is the safe default
 			// in both directions: it cancels the navigation rather than losing work.
 			dialog.dismiss().catch(() => {});
 			this.emit('dialog-closed', { sessionId, dialogId, timestamp: Date.now() });
-		}, DIALOG_RESPONSE_TIMEOUT_MS);
+		};
+		const timeout = setTimeout(expire, DIALOG_RESPONSE_TIMEOUT_MS);
 
-		this.pendingDialogs.set(dialogId, { sessionId, dialog, timeout });
+		const info: PendingDialogInfo = {
+			dialogId,
+			type: dialogType as PendingDialogInfo['type'],
+			message,
+			defaultValue,
+			openedAt: Date.now()
+		};
+		this.pendingDialogs.set(dialogId, { sessionId, dialog, timeout, info });
 
 		// Emit dialog event to frontend (sessionId will be converted to tabId by previewService)
 		const dialogEvent: any = {

@@ -19,6 +19,7 @@
 	import { getViewportDimensions, type DeviceSize, type Rotation } from '$frontend/utils/preview-constants';
 	import { BrowserWebCodecsService, type BrowserWebCodecsStreamStats } from '$frontend/services/preview/browser/browser-webcodecs.service';
 	import { probeHitTest, readPageSelection, type RemoteFocusState } from '../core/interactions.svelte';
+	import { noteDeviceCopy, primeClipboardRead } from '$frontend/services/preview/browser/clipboard-sync.service';
 	import { debug } from '$shared/utils/logger';
 
 	/**
@@ -532,6 +533,8 @@
 				} catch (error) {
 					debug.warn('preview', 'Could not write the preview selection to the clipboard:', error);
 				}
+				// The workspace clipboard is what an agent's paste reads from.
+				noteDeviceCopy(text);
 			}
 			return true;
 		}
@@ -670,6 +673,10 @@
 
 	function handleCanvasMouseDown(event: MouseEvent, canvas: HTMLCanvasElement) {
 		if (!sessionId) return;
+
+		// A press inside the preview is the gesture browsers require before they
+		// will ask for clipboard-read; asked once per device.
+		primeClipboardRead();
 
 		const coords = getCanvasCoordinates(event, canvas);
 

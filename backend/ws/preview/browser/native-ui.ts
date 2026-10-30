@@ -37,6 +37,22 @@ export const nativeUIPreviewHandler = createRouter()
 		return { success };
 	})
 
+	/**
+	 * The device's clipboard, as the viewer just read it.
+	 *
+	 * Sent on focus and on every copy or paste the user makes, so a paste in
+	 * the preview — by the user or by an agent — pastes what the user last
+	 * copied anywhere, not what the headless browser happens to hold.
+	 */
+	.on('preview:browser-clipboard-set', {
+		data: t.Object({
+			text: t.String()
+		})
+	}, async ({ data, conn }) => {
+		const { previewService } = requireBrowserPreviewAccess(conn);
+		previewService.setClipboardText(data.text, 'device');
+	})
+
 	// Action: Client responds to a dialog (alert, confirm, prompt)
 	.on('preview:browser-dialog-input', {
 		data: t.Object({
@@ -248,6 +264,14 @@ export const nativeUIPreviewHandler = createRouter()
 
 	.emit('preview:browser-copy-to-clipboard', t.Object({
 		text: t.String()
+	}))
+
+	// The workspace clipboard changed somewhere other than this device.
+	.emit('preview:browser-clipboard-sync', t.Object({
+		text: t.String(),
+		source: t.String(),
+		timestamp: t.Number(),
+		projectId: t.String()
 	}))
 
 	.emit('preview:browser-open-url-new-tab', t.Object({

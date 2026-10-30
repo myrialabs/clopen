@@ -5,15 +5,17 @@ import { BrowserConsoleManager } from './browser-console-manager.js';
 import { BrowserInteractionHandler, type AutonomousRunOutcome } from './browser-interaction-handler.js';
 import { BrowserNavigationTracker } from './browser-navigation-tracker.js';
 import { BrowserVideoCapture } from './browser-video-capture.js';
-import { BrowserDialogHandler } from './browser-dialog-handler.js';
+import { BrowserDialogHandler, type PendingDialogInfo } from './browser-dialog-handler.js';
 import { BrowserNativeUIHandler } from './browser-native-ui-handler.js';
 import { BrowserHostBridge, type HostResponse } from './browser-host-bridge.js';
 import { BrowserTabLifecycle } from './browser-tab-lifecycle.js';
+import { WorkspaceClipboard, type ClipboardSource } from './browser-clipboard.js';
 import { browserMcpControl } from './browser-mcp-control.js';
 import { browserPool } from './browser-pool.js';
 import { ws } from '$backend/utils/ws';
 import { getViewportDimensions } from '$shared/constants/preview.js';
 import { debug } from '$shared/utils/logger';
+import { sleep } from '$shared/utils/async';
 import { scopeProjectId } from '$shared/utils/workspace-scope';
 import type {
 	BrowserSiteData,
@@ -33,6 +35,9 @@ import type {
 	ClientDisplayMetrics,
 	ClientStreamFeedback
 } from './types';
+
+/** Time a window needs after leaving fullscreen before an override sticks. */
+const WINDOW_SETTLE_MS = 150;
 
 /**
  * Browser Preview Service
@@ -57,6 +62,8 @@ export class BrowserPreviewService extends EventEmitter {
 	private nativeUIHandler: BrowserNativeUIHandler;
 	private hostBridge: BrowserHostBridge;
 	private lifecycle: BrowserTabLifecycle;
+	/** What was copied last in this workspace — see browser-clipboard.ts. */
+	private clipboard = new WorkspaceClipboard();
 
 	// Store context menu info for later action execution
 	private contextMenus = new Map<string, BrowserContextMenuInfo>();
@@ -95,10 +102,16 @@ export class BrowserPreviewService extends EventEmitter {
 		this.consoleManager = new BrowserConsoleManager({
 			isWatched: (tabId) => this.lifecycle.hasViewers(tabId)
 		});
-		this.interactionHandler = new BrowserInteractionHandler();
+		this.interactionHandler = new BrowserInteractionHandler({
+			readClipboard: () => this.clipboard.read(),
+			getPendingDialog: (tabId) => this.dialogHandler.getPendingDialog(tabId),
+			waitForDialog: (tabId) => this.dialogHandler.waitForDialog(tabId)
+		});
 		this.navigationTracker = new BrowserNavigationTracker();
 		this.videoCapture = new BrowserVideoCapture();
-		this.dialogHandler = new BrowserDialogHandler();
+		this.dialogHandler = new BrowserDialogHandler({
+			isAgentHeld: (tabId) => browserMcpControl.isTabControlled(tabId, this.projectId)
+		});
 		this.nativeUIHandler = new BrowserNativeUIHandler();
 		this.hostBridge = new BrowserHostBridge();
 
@@ -262,6 +275,12 @@ export class BrowserPreviewService extends EventEmitter {
 		this.videoCapture.on('connection-state', (data) => {
 			this.emit('preview:browser-webcodecs-connection-state', data);
 		});
+		// The captured surface lost the page's shape (Chrome's own fullscreen
+		// stranded it). Detected from the frames themselves, so it is caught
+		// whatever caused it — not only when the page's shim saw the fullscreen.
+		this.videoCapture.on('surface-drift', (data: { sessionId: string }) => {
+			void this.restoreEmulatedViewport(data.sessionId, null);
+		});
 		this.videoCapture.on('cursor-change', (data) => {
 			this.emit('preview:browser-cursor-change', data);
 		});
@@ -293,7 +312,17 @@ export class BrowserPreviewService extends EventEmitter {
 				this.applyFullscreenState(data.tabId, data.requestId, data.payload);
 				return;
 			}
+			if (this.answerClipboardRequest(data.tabId, data.requestId, data.kind, data.payload)) return;
 			this.emit('preview:browser-host-request', data);
+		});
+		// A clipboard read the viewer answered tells us what their device holds.
+		this.hostBridge.on('clipboard-observed', (data: { text: string }) => {
+			this.clipboard.write(data.text, 'device');
+		});
+		// Everything copied anywhere but on the device goes down to the devices,
+		// which is what keeps the user's clipboard and the workspace's in step.
+		this.clipboard.on('changed', (data) => {
+			this.emit('preview:browser-clipboard-sync', data);
 		});
 		this.hostBridge.on('download', (data) => {
 			this.emit('preview:browser-download', data);
@@ -304,6 +333,9 @@ export class BrowserPreviewService extends EventEmitter {
 
 		// Forward native UI events
 		this.nativeUIHandler.on('copy-to-clipboard', (data) => {
+			// Into the workspace clipboard, which mirrors it to the devices; the
+			// event itself is only the viewer's confirmation that it happened.
+			this.clipboard.write(data.text, 'menu');
 			this.emit('preview:browser-copy-to-clipboard', data);
 		});
 		this.nativeUIHandler.on('open-url-new-tab', (data) => {
@@ -956,11 +988,16 @@ export class BrowserPreviewService extends EventEmitter {
 	 * it only happens on a fullscreen the page did not ask for, which is rare
 	 * enough that the restart it costs is not worth trying to avoid.
 	 */
-	private async restoreEmulatedViewport(tabId: string, requestId: string): Promise<void> {
+	private async restoreEmulatedViewport(tabId: string, requestId: string | null): Promise<void> {
 		try {
 			const tab = this.getTab(tabId);
 			if (tab) {
 				const { width, height } = getViewportDimensions(tab.deviceSize, tab.rotation);
+
+				// A fullscreen that never exited leaves the window itself in
+				// `fullscreen` state, and no viewport override survives that — the
+				// surface stays the window's shape. Put the window back first.
+				await this.normalizeWindow(tab.page);
 
 				// The capture path re-sends the override and recomputes the screencast
 				// geometry with it. With no stream running there is no geometry to
@@ -975,7 +1012,40 @@ export class BrowserPreviewService extends EventEmitter {
 		} finally {
 			// The page holds a promise on this. Nothing awaits it, but an unsettled
 			// request sits in the pending map until it times out.
-			this.hostBridge.respond(requestId, { ok: true });
+			if (requestId) this.hostBridge.respond(requestId, { ok: true });
+		}
+	}
+
+	/** Take a tab's window out of fullscreen/maximized/minimized, if it is in one. */
+	private async normalizeWindow(page: Page): Promise<void> {
+		const cdp = await page.createCDPSession().catch(() => null);
+		if (!cdp) return;
+		try {
+			const { windowId, bounds } = (await cdp.send('Browser.getWindowForTarget')) as {
+				windowId: number;
+				bounds: { windowState?: string };
+			};
+			if (bounds.windowState && bounds.windowState !== 'normal') {
+				await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } });
+
+				// The window resizes asynchronously. A viewport override sent
+				// before it has settled is applied to the old surface and then
+				// stranded again by the resize — measured: back at 1366×681.
+				for (let attempt = 0; attempt < 20; attempt++) {
+					const current = (await cdp.send('Browser.getWindowBounds', { windowId })) as {
+						bounds: { windowState?: string };
+					};
+					if (current.bounds.windowState === 'normal') break;
+					await sleep(25);
+				}
+				await sleep(WINDOW_SETTLE_MS);
+				debug.log('preview', `🪟 Window was left ${bounds.windowState}; set back to normal`);
+			}
+		} catch {
+			// Not every build lets a page session ask about its window; the
+			// viewport override below is the part that matters.
+		} finally {
+			await cdp.detach().catch(() => {});
 		}
 	}
 
@@ -1178,6 +1248,21 @@ export class BrowserPreviewService extends EventEmitter {
 		return await this.dialogHandler.respondToDialog(response);
 	}
 
+	/** The dialog a tab's page is blocked on, if any. */
+	getPendingDialog(tabId: string): PendingDialogInfo | null {
+		return this.dialogHandler.getPendingDialog(tabId);
+	}
+
+	/** Resolve when a tab raises a dialog; `dispose` once the race is decided. */
+	waitForDialog(tabId: string): { promise: Promise<PendingDialogInfo>; dispose: () => void } {
+		return this.dialogHandler.waitForDialog(tabId);
+	}
+
+	/** Answer the dialog a tab has open. Null when there was none to answer. */
+	async respondToTabDialog(tabId: string, accept: boolean, promptText?: string): Promise<PendingDialogInfo | null> {
+		return this.dialogHandler.respondForTab(tabId, accept, promptText);
+	}
+
 	// ============================================================================
 	// Native UI Methods (Select & Context Menu)
 	// ============================================================================
@@ -1232,6 +1317,119 @@ export class BrowserPreviewService extends EventEmitter {
 		this.contextMenus.delete(response.menuId);
 
 		return result;
+	}
+
+	// ============================================================================
+	// Diagnostics
+	// ============================================================================
+
+	/**
+	 * What every tab of this workspace is doing and costing, for the
+	 * diagnostics panel.
+	 *
+	 * Nothing here runs script in a page: a frozen tab must stay frozen for
+	 * being looked at, and a tab paused on a dialog would hang the read. Page
+	 * metrics come over the DevTools protocol, which answers either way, and
+	 * stream counters are only read from tabs that are actually streaming.
+	 */
+	async getDiagnostics() {
+		const tabs = await Promise.all(
+			this.getAllTabs().map(async (tab) => {
+				const frozen = this.lifecycle.isFrozen(tab.id);
+				const dialog = this.dialogHandler.getPendingDialog(tab.id);
+				const owner = browserMcpControl.getTabOwner(tab.id);
+
+				let jsHeapUsedBytes: number | null = null;
+				let domNodes: number | null = null;
+				if (!tab.page.isClosed()) {
+					const metrics = await Promise.race([
+						tab.page.metrics().catch(() => null),
+						new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500))
+					]);
+					jsHeapUsedBytes = metrics?.JSHeapUsedSize ?? null;
+					domNodes = metrics?.Nodes ?? null;
+				}
+
+				const streaming = this.isWebCodecsActive(tab.id);
+				const stream =
+					streaming && !frozen && !dialog
+						? await Promise.race([
+								this.getWebCodecsStats(tab.id).catch(() => null),
+								new Promise<null>((resolve) => setTimeout(() => resolve(null), 1500))
+							])
+						: null;
+
+				return {
+					id: tab.id,
+					title: tab.title,
+					url: tab.page.isClosed() ? tab.url : tab.page.url(),
+					state: frozen ? ('frozen' as const) : ('active' as const),
+					watched: this.lifecycle.hasViewers(tab.id),
+					isLoading: !!tab.isLoading,
+					openedBy: tab.openedBy?.kind ?? 'user',
+					agentHeld: !!owner,
+					dialog: dialog ? { type: dialog.type, message: dialog.message } : null,
+					createdAt: tab.createdAt,
+					lastAccessedAt: tab.lastAccessedAt,
+					jsHeapUsedBytes,
+					domNodes,
+					stream: stream
+						? {
+								videoBytesSent: stream.videoBytesSent ?? 0,
+								videoFramesEncoded: stream.videoFramesEncoded ?? 0,
+								connectionState: stream.connectionState ?? 'unknown'
+							}
+						: null
+				};
+			})
+		);
+
+		return { tabs, clipboard: this.clipboard.describe() };
+	}
+
+	// ============================================================================
+	// Clipboard
+	// ============================================================================
+
+	/**
+	 * Clipboard traffic from a page, answered here rather than by a viewer.
+	 *
+	 * Writes (and copy events) go into the workspace clipboard straight away:
+	 * there is no decision in them, and waiting on a device meant a page's
+	 * "Copy" button failed whenever nobody was watching. Reads are answered from
+	 * the workspace clipboard while an agent holds the tab — the agent is the
+	 * user there, and a prompt on someone's screen would stall its run. A read
+	 * on a tab a person is driving still asks that person, as a browser would.
+	 */
+	private answerClipboardRequest(tabId: string, requestId: string, kind: string, payload: unknown): boolean {
+		if (kind === 'clipboard-write' || kind === 'clipboard-copied') {
+			const text = (payload as { text?: unknown } | null)?.text;
+			if (typeof text === 'string') this.clipboard.write(text, 'page');
+			this.hostBridge.respond(requestId, { ok: true });
+			return true;
+		}
+
+		if (kind === 'clipboard-read' && browserMcpControl.isTabControlled(tabId, this.projectId)) {
+			this.hostBridge.respond(requestId, { ok: true, result: this.clipboard.read() });
+			return true;
+		}
+
+		return false;
+	}
+
+	/** The workspace clipboard's text. */
+	getClipboardText(): string {
+		return this.clipboard.read();
+	}
+
+	/** Who last wrote the workspace clipboard, for diagnostics. */
+	describeClipboard() {
+		return this.clipboard.describe();
+	}
+
+	/** Record a copy made somewhere other than a page (the user's device, the agent). */
+	setClipboardText(text: string, source: ClipboardSource): void {
+		this.clipboard.write(text, source);
 	}
 
 	// ============================================================================
@@ -1511,6 +1709,12 @@ class BrowserPreviewServiceManager {
 			ws.emit.project(roomId, 'preview:browser-copy-to-clipboard', data);
 		});
 
+		// The workspace clipboard changed — every device of this project writes it
+		// to its own clipboard (when focused; otherwise on its next focus).
+		service.on('preview:browser-clipboard-sync', (data) => {
+			ws.emit.project(roomId, 'preview:browser-clipboard-sync', { ...data, projectId });
+		});
+
 		service.on('preview:browser-open-url-new-tab', (data) => {
 			ws.emit.project(roomId, 'preview:browser-open-url-new-tab', data);
 		});
@@ -1612,6 +1816,21 @@ class BrowserPreviewServiceManager {
 				x: data.x,
 				y: data.y,
 				pressed: data.pressed ?? false,
+				timestamp: data.timestamp,
+				source: 'mcp' as const
+			});
+		});
+
+		browserMcpControl.on('cursor-glide', (data) => {
+			if (!data.projectId) return;
+			ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-glide', {
+				sessionId: data.tabId,
+				from: data.from,
+				control: data.control,
+				to: data.to,
+				durationMs: data.durationMs,
+				pressed: data.pressed,
+				easing: data.easing,
 				timestamp: data.timestamp,
 				source: 'mcp' as const
 			});

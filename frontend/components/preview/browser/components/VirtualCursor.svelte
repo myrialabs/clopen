@@ -24,7 +24,7 @@
 	 * between moving and dragging.
 	 */
 	let {
-		cursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({
+		cursor = $bindable<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean; gliding?: boolean }>({
 			x: 0,
 			y: 0,
 			visible: false,
@@ -176,9 +176,16 @@
 </script>
 
 {#if cursor.visible}
+	<!--
+		Positioned with a transform rather than left/top: moving it then costs a
+		composite, not a layout of the panel, which matters at 60 updates a
+		second. Only the agent's pointer eases, and only between discrete
+		positions — while a glide is animating, every frame is already the
+		exact point, and a transition on top would only make it lag behind.
+	-->
 	<div
-		class="absolute pointer-events-none z-50 transition-all duration-100 ease-out"
-		style="left: {cursor.x}px; top: {cursor.y}px; margin-left: -4.167px; margin-top: -2.5px;"
+		class="absolute left-0 top-0 pointer-events-none z-50 will-change-transform"
+		style="transform: translate3d({cursor.x - 4.167}px, {cursor.y - 2.5}px, 0); transition: {variant === 'mcp' && !cursor.gliding ? 'transform 100ms ease-out' : 'none'};"
 	>
 		<div class={floating ? 'vc-float' : ''}>
 			<!-- Cursor body with fixed size -->

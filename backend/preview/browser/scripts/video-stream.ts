@@ -814,6 +814,61 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 		}, NATIVE_TOP_OFF_DELAY_MS);
 	}
 
+	// ------------------------------------------------------------------
+	// Surface drift
+	// ------------------------------------------------------------------
+	//
+	// The captured surface is not guaranteed to stay the shape of the page.
+	// Chrome's own fullscreen (a <video> control, a fullscreen granted from
+	// C++, an embed the shim cannot reach) resizes the surface it composites
+	// to the browser window and leaves it there afterwards: a 1440×900 page
+	// came back captured at 1366×681. The layout viewport never changes, so the
+	// page is cropped and zoomed, and the frames — the wrong shape — reached
+	// the viewer letterboxed, then snapped back when something re-asserted the
+	// viewport. That alternation was the flicker.
+	//
+	// The page's own viewport is the authority: it stays at the emulated size
+	// throughout. A frame whose aspect disagrees with it is never encoded (the
+	// viewer keeps the last good frame, and the encoder and the viewer's
+	// canvas are never resized to a shape that is about to go away), and once
+	// the disagreement has lasted past a short grace the host is asked to
+	// re-assert the viewport. Should that keep failing, frames are let through
+	// rather than freezing the preview on a surface nobody can fix.
+	const DRIFT_TOLERANCE = 0.03;
+	const DRIFT_GRACE_MS = 250;
+	const DRIFT_RESTORE_COOLDOWN_MS = 1500;
+	const DRIFT_MAX_RESTORES = 3;
+	let driftSince = 0;
+	let lastDriftReport = 0;
+	let driftReports = 0;
+
+	function surfaceDrifted(width: number, height: number): boolean {
+		const viewportWidth = window.innerWidth;
+		const viewportHeight = window.innerHeight;
+		if (!width || !height || !viewportWidth || !viewportHeight) return false;
+
+		const expected = viewportWidth / viewportHeight;
+		const drifted = Math.abs(width / height - expected) / expected > DRIFT_TOLERANCE;
+		if (!drifted) {
+			driftSince = 0;
+			driftReports = 0;
+			return false;
+		}
+
+		const now = performance.now();
+		if (!driftSince) driftSince = now;
+		if (driftReports >= DRIFT_MAX_RESTORES) return false;
+
+		if (now - driftSince >= DRIFT_GRACE_MS && now - lastDriftReport >= DRIFT_RESTORE_COOLDOWN_MS) {
+			lastDriftReport = now;
+			driftReports++;
+			try {
+				(window as any).__reportSurfaceDrift?.(width, height);
+			} catch (e) {}
+		}
+		return true;
+	}
+
 	async function readNativeFrames() {
 		if (!nativeReader) return;
 
@@ -846,6 +901,9 @@ export function videoEncoderScript(config: StreamingConfig['video']) {
 				}
 
 				if (shouldSkipMotionFrame()) continue;
+
+				// Wrong shape: stranded by a Chrome fullscreen. Not encoded.
+				if (surfaceDrifted(frame.displayWidth, frame.displayHeight)) continue;
 
 				if (!(await ensureEncoderSize(frame.displayWidth, frame.displayHeight))) continue;
 

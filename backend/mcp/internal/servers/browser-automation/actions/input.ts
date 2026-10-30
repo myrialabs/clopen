@@ -32,7 +32,7 @@ export const type_: ActionDef = {
 	kind: 'input',
 	doc: `type {text, selector?|x,y?, clearFirst?, key?} — type into the focused field.
   Give a selector/coords to focus a field first, so one batch can fill a whole form without interleaving clicks.
-  clearFirst defaults to true (selects all, then overwrites). Set false to append.
+  clearFirst defaults to true: the field is emptied first and read back afterwards, so leftover text is caught and fixed rather than typed beside. Set false to append.
   For a single key use \`key\` (Enter, Tab, Escape, ArrowDown…); for a chord use the \`press\` action.`,
 	schema: z.object({
 		type: z.literal('type'),
@@ -58,7 +58,7 @@ export const press: ActionDef = {
 	type: 'press',
 	kind: 'input',
 	doc: `press {keys} — a key chord: "Control+A", "Meta+Shift+P", "Alt+ArrowLeft".
-  Modifiers are held for the duration and released in reverse, which is what shortcuts and IDE-like pages expect.`,
+  Modifiers are held for the duration and released in reverse, which is what shortcuts and IDE-like pages expect. Editing chords (select all, copy, cut, undo, redo) work with Control or Meta on any host; Ctrl/⌘+V pastes the shared clipboard.`,
 	schema: z.object({
 		type: z.literal('press'),
 		keys: z.string().describe('Chord, e.g. "Control+Shift+K". Aliases: Ctrl, Cmd, Command, Option, Meta.'),
@@ -70,11 +70,11 @@ export const press: ActionDef = {
 export const paste: ActionDef = {
 	type: 'paste',
 	kind: 'input',
-	doc: `paste {text} — insert text into the focused field as a paste.
-  Faster than \`type\` for long strings, and raises the same input events. Note this pastes the given text, not the user's clipboard.`,
+	doc: `paste {text?} — paste into the focused field: a real \`paste\` event (what spreadsheets and rich editors listen for), then the text at the caret unless the page handled it.
+  Omit text to paste the clipboard. The clipboard is shared with the page and the user's device: a page's "Copy" button, Ctrl/⌘+C and the user's own copies all land in it, and Ctrl/⌘+V via \`press\` pastes it too.`,
 	schema: z.object({
 		type: z.literal('paste'),
-		text: z.string().describe('Text to insert at the caret.'),
+		text: z.string().optional().describe('Text to paste. Omit to paste the clipboard.'),
 		...commonFields
 	}),
 	toInput: (a) => ({ type: 'paste', text: a.text })

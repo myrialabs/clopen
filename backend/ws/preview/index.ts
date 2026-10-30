@@ -188,6 +188,18 @@ export const previewRouter = createRouter()
 		timestamp: t.Number(),
 		source: t.Literal('mcp')
 	}))
+	// A whole pointer movement, animated by the viewer — see publishGlide.
+	.emit('preview:browser-mcp-cursor-glide', t.Object({
+		sessionId: t.String(),
+		from: t.Object({ x: t.Number(), y: t.Number() }),
+		control: t.Object({ x: t.Number(), y: t.Number() }),
+		to: t.Object({ x: t.Number(), y: t.Number() }),
+		durationMs: t.Number(),
+		pressed: t.Boolean(),
+		easing: t.Union([t.Literal('out'), t.Literal('linear')]),
+		timestamp: t.Number(),
+		source: t.Literal('mcp')
+	}))
 	.emit('preview:browser-mcp-cursor-click', t.Object({
 		sessionId: t.String(),
 		x: t.Number(),

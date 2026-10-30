@@ -12,6 +12,8 @@ import { debug } from '$shared/utils/logger';
 import { sleep } from '$shared/utils/async';
 import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
 import { resolveFrameTarget } from '$backend/preview/browser/frame-targeting';
+import { isPasteChord, pressChord, selectAll, type Modifier } from '$backend/preview/browser/keyboard-chords';
+import { pasteText } from '$backend/preview/browser/paste';
 
 // Throttle cursor detection evaluate calls per session (100ms = ~10/sec is plenty)
 const lastCursorEvalTime = new Map<string, number>();
@@ -25,6 +27,16 @@ function isNavigationError(error: Error): boolean {
 		msg.includes('waiting for navigation') ||
 		msg.includes('inspected target navigated') ||
 		msg.includes('cannot find context');
+}
+
+/** The held modifiers of a forwarded key event, in press order. */
+function modifiersOf(action: { ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; shiftKey?: boolean }): Modifier[] {
+	const modifiers: Modifier[] = [];
+	if (action.ctrlKey) modifiers.push('Control');
+	if (action.metaKey) modifiers.push('Meta');
+	if (action.altKey) modifiers.push('Alt');
+	if (action.shiftKey) modifiers.push('Shift');
+	return modifiers;
 }
 
 export const interactPreviewHandler = createRouter()
@@ -207,10 +219,9 @@ export const interactPreviewHandler = createRouter()
 								const shouldClear = action.clearFirst === true; // default false for user
 
 								if (shouldClear) {
-									// Select all text first (Ctrl+A), then type will overwrite
-									await session.page.keyboard.down('Control');
-									await session.page.keyboard.press('KeyA');
-									await session.page.keyboard.up('Control');
+									// Select all, then typing overwrites it. Platform-aware: a
+									// bare Ctrl+A selects nothing on a macOS host.
+									await selectAll(session.page);
 									await sleep(50); // Small delay for selection
 								}
 
@@ -230,23 +241,16 @@ export const interactPreviewHandler = createRouter()
 					case 'key':
 						if (action.key) {
 							try {
-								// Handle modifier keys (Ctrl+C, Ctrl+V, etc.)
-								const modifiers: string[] = [];
-								if (action.ctrlKey) modifiers.push('Control');
-								if (action.metaKey) modifiers.push('Meta');
-								if (action.altKey) modifiers.push('Alt');
-								if (action.shiftKey) modifiers.push('Shift');
+								const modifiers = modifiersOf(action);
 
 								if (modifiers.length > 0) {
-									// Press modifiers first
-									for (const mod of modifiers) {
-										await session.page.keyboard.down(mod as KeyInput);
-									}
-									// Press the main key
-									await session.page.keyboard.press(action.key as KeyInput);
-									// Release modifiers in reverse order
-									for (const mod of modifiers.reverse()) {
-										await session.page.keyboard.up(mod as KeyInput);
+									if (isPasteChord(modifiers, action.key)) {
+										// Never the headless clipboard: paste what the workspace holds.
+										await pasteText(session.page, previewService.getClipboardText());
+									} else {
+										// Editing shortcuts carry their command where the host
+										// would otherwise ignore them (⌘A on macOS).
+										await pressChord(session.page, modifiers, action.key);
 									}
 								} else {
 									// No modifiers, just press the key
@@ -312,39 +316,13 @@ export const interactPreviewHandler = createRouter()
 						break;
 
 					case 'paste':
-						// Insert into whatever holds focus, in whichever frame that
-						// is. Synthesising Ctrl+V would paste the *headless* browser's
-						// clipboard, which is not the one the user copied into.
+						// What the user pasted is what their device's clipboard holds,
+						// so the workspace clipboard learns it too. The paste itself
+						// raises a real `paste` event first — spreadsheets and rich
+						// editors only listen for that.
 						if (typeof action.text === 'string') {
-							for (const frame of session.page.frames()) {
-								try {
-									const inserted = await frame.evaluate((text: string) => {
-										const active = document.activeElement as HTMLElement | null;
-										if (!active) return false;
-
-										const isField = active.tagName === 'INPUT' || active.tagName === 'TEXTAREA';
-										if (!isField && !active.isContentEditable) return false;
-
-										if (isField) {
-											const field = active as HTMLInputElement | HTMLTextAreaElement;
-											const start = field.selectionStart ?? field.value.length;
-											const end = field.selectionEnd ?? field.value.length;
-											field.value = field.value.slice(0, start) + text + field.value.slice(end);
-											const caret = start + text.length;
-											field.setSelectionRange(caret, caret);
-										} else {
-											document.execCommand('insertText', false, text);
-										}
-
-										active.dispatchEvent(new Event('input', { bubbles: true }));
-										active.dispatchEvent(new Event('change', { bubbles: true }));
-										return true;
-									}, action.text);
-									if (inserted) break;
-								} catch {
-									// Frame detached mid-paste; try the next one.
-								}
-							}
+							previewService.setClipboardText(action.text, 'device');
+							await pasteText(session.page, action.text);
 						}
 						break;
 
@@ -450,20 +428,10 @@ export const interactPreviewHandler = createRouter()
 
 					case 'keynav':
 						if (action.key) {
-							const modifiers: string[] = [];
-							if (action.ctrlKey) modifiers.push('Control');
-							if (action.metaKey) modifiers.push('Meta');
-							if (action.altKey) modifiers.push('Alt');
-							if (action.shiftKey) modifiers.push('Shift');
+							const modifiers = modifiersOf(action);
 
 							if (modifiers.length > 0) {
-								for (const mod of modifiers) {
-									await session.page.keyboard.down(mod as KeyInput);
-								}
-								await session.page.keyboard.press(action.key as KeyInput);
-								for (const mod of modifiers.reverse()) {
-									await session.page.keyboard.up(mod as KeyInput);
-								}
+								await pressChord(session.page, modifiers, action.key);
 							} else {
 								await session.page.keyboard.press(action.key as KeyInput);
 							}
