@@ -80,6 +80,23 @@ export interface McpCursorEvent {
 	source: 'mcp';
 }
 
+/**
+ * A whole pointer movement, announced once and animated by the viewer.
+ * Quadratic Bezier from `from` through `control` to `to` over `durationMs`.
+ */
+export interface McpGlideEvent {
+	tabId: string;
+	projectId?: string;
+	from: { x: number; y: number };
+	control: { x: number; y: number };
+	to: { x: number; y: number };
+	durationMs: number;
+	pressed: boolean;
+	easing: 'out' | 'linear';
+	timestamp: number;
+	source: 'mcp';
+}
+
 export interface McpClickEvent {
 	tabId: string;
 	projectId?: string;
@@ -629,6 +646,23 @@ export class BrowserMcpControl extends EventEmitter {
 		};
 
 		this.emit('cursor-position', event);
+	}
+
+	/** Announce a pointer movement for the viewer to animate locally. */
+	emitCursorGlide(
+		tabId: string,
+		glide: Omit<McpGlideEvent, 'tabId' | 'projectId' | 'timestamp' | 'source'>
+	): void {
+		const ownership = this.tabOwnership.get(tabId);
+		if (!ownership) return;
+
+		this.emit('cursor-glide', {
+			tabId,
+			projectId: ownership.projectId,
+			...glide,
+			timestamp: Date.now(),
+			source: 'mcp'
+		} satisfies McpGlideEvent);
 	}
 
 	/**

@@ -56,7 +56,7 @@
 		 * Position only. Whether the pointer is *drawn* is decided by the lock —
 		 * see `mcpCursor` below.
 		 */
-		mcpCursorPage = null as { x: number; y: number; clicking?: boolean; pressed?: boolean } | null,
+		mcpCursorPage = null as { x: number; y: number; clicking?: boolean; pressed?: boolean; gliding?: boolean } | null,
 
 		// MCP Control State
 		isMcpControlled = $bindable(false),
@@ -110,7 +110,7 @@
 	let previewContainer = $state<HTMLDivElement | undefined>();
 	let touchCursorPos = $state<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({ x: 0, y: 0, visible: false });
 
-	type OverlayCursor = { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean };
+	type OverlayCursor = { x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean; gliding?: boolean };
 
 	const HIDDEN_CURSOR: OverlayCursor = { x: 0, y: 0, visible: false };
 
@@ -186,7 +186,8 @@
 			y: frameGeom.top + y * (frameGeom.height / pageSize.height),
 			visible: true,
 			clicking: mcpCursorPage?.clicking,
-			pressed: mcpCursorPage?.pressed
+			pressed: mcpCursorPage?.pressed,
+			gliding: mcpCursorPage?.gliding
 		};
 	});
 

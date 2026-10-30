@@ -18,6 +18,7 @@
  */
 
 import type { BrowserAutonomousAction, BrowserTab } from '$backend/preview/browser/types';
+import type { PendingDialogInfo } from '$backend/preview/browser/browser-dialog-handler';
 import { projectContextService } from '$backend/mcp/internal/project-context';
 import { debug } from '$shared/utils/logger';
 import { ACTIONS_BY_TYPE } from './actions/index';
@@ -57,6 +58,10 @@ export interface RunReport {
 	url?: string;
 	/** Set when the batch had to open a tab because the browser had none. */
 	openedTabId?: string;
+	/** A dialog the page is blocked on — the agent has to answer it next. */
+	dialog?: PendingDialogInfo & { tabId: string };
+	/** Tabs this chat session opened that are still open, for the close-when-done nudge. */
+	agentTabs?: Array<{ id: string; url: string }>;
 }
 
 /** Consecutive input gestures form one native run; control actions stand alone. */
@@ -139,7 +144,9 @@ export async function runActions(args: RunArgs): Promise<RunReport> {
 
 		// Check every step this group produced, not just the last: one native
 		// run can fail in the middle and still finish with a successful action.
-		stopped = report.steps.slice(before).some((step) => !step.ok && !tolerates(step));
+		// A dialog stops the batch whatever `optional` says: the page runs
+		// nothing until it is answered, so every later step would only hang.
+		stopped = !!report.dialog || report.steps.slice(before).some((step) => !step.ok && !tolerates(step));
 	}
 
 	report.failed = report.steps.some((step) => !step.ok && !tolerates(step));
@@ -155,10 +162,21 @@ export async function runActions(args: RunArgs): Promise<RunReport> {
 		if (current) {
 			report.tabId = current.id;
 			report.url = current.page.url();
+
+			// A dialog can open after the last action returned (an alert on a
+			// timer, a response handler). The next call would find the page
+			// paused with no idea why, so it is reported now.
+			const open = report.dialog ? null : service.getPendingDialog(current.id);
+			if (open) report.dialog = { ...open, tabId: current.id };
 		}
 	} catch {
 		// No tab left (closed by the batch, or none was ever open).
 	}
+
+	report.agentTabs = service
+		.getAllTabs()
+		.filter((candidate) => candidate.openedBy?.kind === 'agent' && candidate.openedBy.chatSessionId === chatSessionId)
+		.map((candidate) => ({ id: candidate.id, url: candidate.page.isClosed() ? candidate.url : candidate.page.url() }));
 
 	return report;
 }
@@ -194,12 +212,54 @@ async function runControl(item: { index: number; args: ActionArgs }, deps: RunDe
 		// themselves from inside the engine (see ActionDef.activity); a control
 		// action has no gesture, and is often the longest step in a batch — a
 		// 30-second `wait_for` with a silent cursor on it reads as a hang.
+		// A page with a dialog open evaluates nothing and paints nothing, so a
+		// read or a screenshot would hang until someone answered. Only the
+		// tab-level actions and `dialog` itself still make sense.
+		const guarded = tab && def.needsTab !== false && def.type !== 'dialog';
+		const open = guarded ? deps.service.getPendingDialog(tab.id) : null;
+		if (tab && open) {
+			report.dialog = { ...open, tabId: tab.id };
+			report.steps.push({
+				index: item.index,
+				type: def.type,
+				ok: false,
+				error: `a ${open.type} dialog is open — answer it with the dialog action first`
+			});
+			return 1;
+		}
+
 		if (tab && def.activity) {
 			labelled = tab.id;
 			browserMcpControl.emitActivity(tab.id, def.activity);
 		}
 
-		const output = await def.run(item.args, deps.makeContext(tab));
+		const running = def.run(item.args, deps.makeContext(tab));
+		const watch = guarded && tab ? deps.service.waitForDialog(tab.id) : null;
+		let winner: { kind: 'done'; output: Awaited<typeof running> } | { kind: 'dialog'; info: PendingDialogInfo };
+		try {
+			winner = await Promise.race([
+				running.then((output) => ({ kind: 'done' as const, output })),
+				...(watch ? [watch.promise.then((info) => ({ kind: 'dialog' as const, info }))] : [])
+			]);
+		} finally {
+			watch?.dispose();
+		}
+
+		if (winner.kind === 'dialog') {
+			// The action is parked behind the dialog and finishes on its own once
+			// it is answered; nothing here waits for that.
+			running.catch(() => {});
+			report.dialog = { ...winner.info, tabId: tab!.id };
+			report.steps.push({
+				index: item.index,
+				type: def.type,
+				ok: false,
+				error: `interrupted: a ${winner.info.type} dialog opened`
+			});
+			return 1;
+		}
+
+		const output = winner.output;
 		report.steps.push({ index: item.index, type: def.type, ok: true, summary: output.summary, detail: output.detail });
 		if (output.images?.length) report.images.push(...output.images);
 	} catch (error) {
@@ -264,12 +324,17 @@ async function runInputGroup(items: Array<{ index: number; args: ActionArgs }>, 
 
 	const outcome = await deps.service.performAutonomousActions(tab.id, primitives, deps.signal);
 
+	if (outcome.blockedBy) report.dialog = { ...outcome.blockedBy, tabId: tab.id };
+
 	// One engine result per primitive, in order.
 	mapped.forEach((entry, position) => {
 		const result = outcome.results[position];
 		if (!result) {
 			// The engine stopped before reaching this one.
-			report.steps.push({ index: entry.index, type: entry.type, ok: false, error: 'did not run (batch stopped earlier)' });
+			const reason = outcome.blockedBy
+				? 'did not run — the page is paused on a dialog'
+				: 'did not run (batch stopped earlier)';
+			report.steps.push({ index: entry.index, type: entry.type, ok: false, error: reason });
 			return;
 		}
 

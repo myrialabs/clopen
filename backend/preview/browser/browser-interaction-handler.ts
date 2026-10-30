@@ -18,7 +18,7 @@
  */
 
 import { EventEmitter } from 'events';
-import type { CDPSession, ElementHandle, KeyInput, Page } from 'puppeteer';
+import type { CDPSession, ElementHandle, Frame, KeyInput, Page } from 'puppeteer';
 import type {
 	BrowserActionResult,
 	BrowserActionTarget,
@@ -29,33 +29,71 @@ import { debug } from '$shared/utils/logger';
 import { sleep } from '$shared/utils/async';
 import { browserMcpControl } from './browser-mcp-control';
 import { isNativeDraggable, resolveHandle, resolveTarget } from './element-locator';
-
-/** Modifier aliases an agent (or a model trained on other tools) might use. */
-const MODIFIER_ALIASES: Record<string, 'Control' | 'Shift' | 'Alt' | 'Meta'> = {
-	ctrl: 'Control',
-	control: 'Control',
-	shift: 'Shift',
-	alt: 'Alt',
-	option: 'Alt',
-	meta: 'Meta',
-	cmd: 'Meta',
-	command: 'Meta',
-	super: 'Meta',
-	win: 'Meta'
-};
+import { isPasteChord, parseChord, pressChord, selectAll } from './keyboard-chords';
+import { pasteText } from './paste';
+import type { PendingDialogInfo } from './browser-dialog-handler';
 
 export interface AutonomousRunOutcome {
 	results: BrowserActionResult[];
 	/** True when the run stopped early because the tab or the stream went away. */
 	aborted: boolean;
+	/**
+	 * The dialog that stopped the run. A page with a dialog open runs no script,
+	 * so nothing after it could have worked — the agent has to answer it first.
+	 */
+	blockedBy?: PendingDialogInfo;
+}
+
+export interface InteractionDeps {
+	/** The workspace clipboard — what a paste pastes. */
+	readClipboard(): string;
+	getPendingDialog(tabId: string): PendingDialogInfo | null;
+	waitForDialog(tabId: string): { promise: Promise<PendingDialogInfo>; dispose: () => void };
+}
+
+/** Thrown inside an action that a dialog cut short, so its loops stop. */
+class DialogInterrupt extends Error {
+	constructor() {
+		super('interrupted by a dialog');
+	}
+}
+
+/**
+ * How long a new batch waits for the previous one's interrupted action to
+ * unwind. That action is parked inside a CDP call the dialog blocked; once the
+ * dialog is answered it resumes, hits its next checkpoint and stops — but it
+ * must finish doing so before new input starts, or the two would interleave.
+ */
+const INFLIGHT_SETTLE_MS = 5_000;
+
+/** What a focused editable reads, and where it lives. */
+interface FocusedField {
+	frame: Frame;
+	kind: 'input' | 'textarea' | 'editable';
+	value: string;
+	secret: boolean;
 }
 
 export class BrowserInteractionHandler extends EventEmitter {
 	// Track cursor positions per session
 	private sessionCursorPositions: Map<string, { x: number; y: number }> = new Map();
 
-	constructor() {
+	/** Per tab: whether the batch running on it was cut short by a dialog. */
+	private runTokens = new Map<string, { interrupted: boolean }>();
+
+	/** Per tab: the action still unwinding from an interrupted batch. */
+	private inflight = new Map<string, Promise<unknown>>();
+
+	private deps: InteractionDeps;
+
+	constructor(deps: InteractionDeps) {
 		super();
+		this.deps = deps;
+	}
+
+	/** Stop here if a dialog has cut this tab's batch short. */
+	private checkpoint(sessionId: string): void {
+		if (this.runTokens.get(sessionId)?.interrupted) throw new DialogInterrupt();
 	}
 
 	// ========================================================================
@@ -76,6 +114,39 @@ export class BrowserInteractionHandler extends EventEmitter {
 
 	private publishClick(sessionId: string, x: number, y: number, button: 'left' | 'right' | 'middle' = 'left') {
 		browserMcpControl.emitCursorClick(sessionId, x, y, button);
+	}
+
+	/**
+	 * Announce a whole pointer movement at once.
+	 *
+	 * The overlay used to be fed one event per interpolation step, 16ms apart,
+	 * and drew whatever arrived. Any delay on the way — a busy event loop, a
+	 * congested socket — bunched those events up, and the pointer stuttered
+	 * across the page. The viewer now gets the path and its duration and
+	 * animates it locally, so the motion is smooth whatever the server is
+	 * doing; the position the pointer comes to rest at still follows as a
+	 * normal cursor event.
+	 */
+	private publishGlide(
+		sessionId: string,
+		glide: {
+			from: { x: number; y: number };
+			control: { x: number; y: number };
+			to: { x: number; y: number };
+			durationMs: number;
+			pressed?: boolean;
+			easing?: 'out' | 'linear';
+		}
+	) {
+		this.updateCursorPosition(sessionId, glide.to.x, glide.to.y);
+		browserMcpControl.emitCursorGlide(sessionId, {
+			from: glide.from,
+			control: glide.control,
+			to: glide.to,
+			durationMs: Math.max(0, Math.round(glide.durationMs)),
+			pressed: !!glide.pressed,
+			easing: glide.easing ?? 'out'
+		});
 	}
 
 	/**
@@ -143,9 +214,21 @@ export class BrowserInteractionHandler extends EventEmitter {
 
 		// Get session for emitting cursor position
 		const sessionId = (page as any).__sessionId;
-		const perStepDelay = opts.totalMs ? Math.max(0, opts.totalMs / Math.max(1, steps)) : null;
+		const stepDelay = opts.totalMs ? Math.max(0, opts.totalMs / Math.max(1, steps)) : 20;
+
+		// One announcement for the whole path; the viewer animates it.
+		if (sessionId) {
+			this.publishGlide(sessionId, {
+				from: { x: fromX, y: fromY },
+				control: { x: controlPointX, y: controlPointY },
+				to: { x: toX, y: toY },
+				durationMs: steps * stepDelay,
+				pressed: opts.pressed
+			});
+		}
 
 		for (let i = 0; i <= steps; i++) {
+			if (sessionId) this.checkpoint(sessionId);
 			const t = i / steps;
 
 			// Apply ease-out cubic easing: starts fast, ends slow
@@ -157,17 +240,16 @@ export class BrowserInteractionHandler extends EventEmitter {
 
 			await page.mouse.move(x, y);
 
-			// Emit cursor position for visual tracking
-			if (sessionId) this.publishCursor(sessionId, x, y, opts.pressed);
-
 			// Smooth delay between movements (15-25ms) for MCP automation
-			await sleep(perStepDelay ?? 15 + Math.random() * 10);
+			await sleep(opts.totalMs ? stepDelay : 15 + Math.random() * 10);
 		}
 	}
 
 	// MCP-optimized typing with fast, consistent speed
 	private async mcpType(page: Page, text: string, baseDelay: number = 30) {
+		const sessionId = (page as any).__sessionId;
 		for (let i = 0; i < text.length; i++) {
+			if (sessionId) this.checkpoint(sessionId);
 			const char = text[i];
 
 			// Fast typing with slight variance (20-40ms) for MCP automation
@@ -288,16 +370,16 @@ export class BrowserInteractionHandler extends EventEmitter {
 			return;
 		}
 
-		for (let i = 1; i <= steps; i++) {
-			// Same ease-out as the real glide, so the two read as one pointer.
-			const t = 1 - Math.pow(1 - i / steps, 3);
-			this.publishCursor(
-				sessionId,
-				Math.round(from.x + (to.x - from.x) * t),
-				Math.round(from.y + (to.y - from.y) * t)
-			);
-			await sleep(16);
-		}
+		// Same ease-out as the real glide, so the two read as one pointer.
+		const durationMs = steps * 16;
+		this.publishGlide(sessionId, {
+			from,
+			control: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+			to,
+			durationMs
+		});
+		await sleep(durationMs);
+		this.checkpoint(sessionId);
 
 		this.publishCursor(sessionId, to.x, to.y);
 	}
@@ -376,24 +458,6 @@ export class BrowserInteractionHandler extends EventEmitter {
 		if (opts.pulse) this.publishClick(sessionId, point.x, point.y);
 	}
 
-	/** "Control+Shift+K" → modifiers to hold plus the key to press. */
-	private parseChord(chord: string): { modifiers: Array<'Control' | 'Shift' | 'Alt' | 'Meta'>; key: string } {
-		const parts = chord.split('+').map((p) => p.trim()).filter(Boolean);
-		const modifiers: Array<'Control' | 'Shift' | 'Alt' | 'Meta'> = [];
-		let key = '';
-
-		for (const part of parts) {
-			const modifier = MODIFIER_ALIASES[part.toLowerCase()];
-			if (modifier) {
-				if (!modifiers.includes(modifier)) modifiers.push(modifier);
-			} else {
-				key = part;
-			}
-		}
-
-		return { modifiers, key };
-	}
-
 	/**
 	 * Touch has to be turned on before it can be dispatched: without emulation
 	 * the renderer drops touch events and the page's own feature detection
@@ -409,6 +473,111 @@ export class BrowserInteractionHandler extends EventEmitter {
 			await client.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
 			await client.detach().catch(() => {});
 		}
+	}
+
+	// ========================================================================
+	// Field verification
+	// ========================================================================
+
+	/**
+	 * The focused editable field and what it reads, in whichever frame has it.
+	 * Null when focus is on something that is not a text field.
+	 */
+	private async readFocusedField(page: Page): Promise<FocusedField | null> {
+		const frames = page.frames().filter((frame) => !frame.isDetached());
+		// Child frames first: when focus is inside one, the main frame only
+		// reports the <iframe> element.
+		for (const frame of [...frames.slice(1), frames[0]].filter(Boolean)) {
+			try {
+				const field = await frame.evaluate(() => {
+					let active: Element | null = document.activeElement;
+					while (active && (active as HTMLElement).shadowRoot?.activeElement) {
+						active = (active as HTMLElement).shadowRoot!.activeElement;
+					}
+					if (!active || active === document.body || active.tagName === 'IFRAME') return null;
+
+					if (active.tagName === 'INPUT') {
+						const type = ((active as HTMLInputElement).type || 'text').toLowerCase();
+						const nonText = ['checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'range', 'color', 'image'];
+						if (nonText.includes(type)) return null;
+						return { kind: 'input' as const, value: (active as HTMLInputElement).value, secret: type === 'password' };
+					}
+					if (active.tagName === 'TEXTAREA') {
+						return { kind: 'textarea' as const, value: (active as HTMLTextAreaElement).value, secret: false };
+					}
+					if ((active as HTMLElement).isContentEditable) {
+						return { kind: 'editable' as const, value: (active as HTMLElement).innerText, secret: false };
+					}
+					return null;
+				});
+				if (field) return { frame, ...field };
+			} catch {
+				// Frame navigated away mid-read.
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Confirm a fill replaced what was there, and make it so if it did not.
+	 *
+	 * Select-all is a keyboard shortcut, and a page can swallow it — a
+	 * controlled React input that re-renders between the keystrokes, a widget
+	 * that binds Ctrl/⌘+A to something else. When that happens the new text
+	 * lands beside the old ("ABC" + "DEF" = "ABCDEF"), and the agent, told it
+	 * typed six characters, carried on with a corrupted form. So the field is
+	 * read back: if the old text is still in it, the value is set through the
+	 * native setter with an input event (which is what frameworks bind to), and
+	 * if even that does not hold, the action fails with what the field reads.
+	 *
+	 * A field that reformats its input (a phone mask, thousands separators) is
+	 * not a failure: the agent is simply told what the field now reads.
+	 */
+	private async settleFill(page: Page, text: string, before: FocusedField | null, label?: string): Promise<string> {
+		const done = label ?? `typed ${text.length} char(s)`;
+		const after = await this.readFocusedField(page);
+		if (!after || after.value === text) return done;
+
+		const show = (field: FocusedField) =>
+			field.secret ? '(hidden: password field)' : `"${field.value.length > 120 ? `${field.value.slice(0, 120)}…` : field.value}"`;
+
+		const leftover = !!before?.value && after.value.includes(before.value);
+		if (!leftover) return `${done} → the field reads ${show(after)}`;
+
+		await after.frame
+			.evaluate((value: string) => {
+				let active: Element | null = document.activeElement;
+				while (active && (active as HTMLElement).shadowRoot?.activeElement) {
+					active = (active as HTMLElement).shadowRoot!.activeElement;
+				}
+				if (!active) return;
+
+				if (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA') {
+					const proto = active.tagName === 'INPUT' ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+					// The prototype's setter, not the element's: React shadows `value`
+					// on the instance and would otherwise swallow the change.
+					Object.getOwnPropertyDescriptor(proto, 'value')?.set?.call(active, value);
+					active.dispatchEvent(new Event('input', { bubbles: true }));
+					active.dispatchEvent(new Event('change', { bubbles: true }));
+					return;
+				}
+
+				if ((active as HTMLElement).isContentEditable) {
+					window.getSelection()?.selectAllChildren(active);
+					if (value) document.execCommand('insertText', false, value);
+					else document.execCommand('delete');
+				}
+			}, text)
+			.catch(() => {});
+
+		const fixed = await this.readFocusedField(page);
+		if (!fixed || fixed.value === text) {
+			return `${done} (select-all did not take in this field, so the value was set directly)`;
+		}
+		if (before?.value && fixed.value.includes(before.value)) {
+			throw new Error(`could not replace the field's previous text — it reads ${show(fixed)}`);
+		}
+		return `${done} (value set directly) → the field reads ${show(fixed)}`;
 	}
 
 	// ========================================================================
@@ -453,6 +622,21 @@ export class BrowserInteractionHandler extends EventEmitter {
 		const parked = this.getCurrentMousePosition(sessionId);
 		this.publishCursor(sessionId, parked.x, parked.y);
 
+		// While the dialog is still open there is nothing to wait for: the
+		// interrupted action stays parked behind it, so say so straight away.
+		const stillOpen = this.deps.getPendingDialog(sessionId);
+		if (stillOpen) return { results, aborted: false, blockedBy: stillOpen };
+
+		// The previous batch's interrupted action has to have stopped before
+		// this one moves the pointer or types anything.
+		const previous = this.inflight.get(sessionId);
+		if (previous) {
+			await Promise.race([previous, sleep(INFLIGHT_SETTLE_MS)]);
+			this.inflight.delete(sessionId);
+		}
+		const token = { interrupted: false };
+		this.runTokens.set(sessionId, token);
+
 		for (let i = 0; i < actions.length; i++) {
 			// Check if session is still valid before each action
 			if (!isValidSession()) {
@@ -460,11 +644,40 @@ export class BrowserInteractionHandler extends EventEmitter {
 				return { results, aborted: true };
 			}
 
+			// A page with a dialog open runs nothing: no click lands, no read
+			// returns. Saying so now beats every later action hanging on it.
+			const open = this.deps.getPendingDialog(sessionId);
+			if (open) return { results, aborted: false, blockedBy: open };
+
 			const action = actions[i];
 			browserMcpControl.emitActivity(sessionId, this.describeActivity(action));
 
+			const run = this.runAction(sessionId, session, action);
+			const dialog = this.deps.waitForDialog(sessionId);
+
 			try {
-				const outcome = await this.runAction(sessionId, session, action);
+				const winner = await Promise.race([
+					run.then((outcome) => ({ kind: 'done' as const, outcome })),
+					dialog.promise.then((info) => ({ kind: 'dialog' as const, info }))
+				]);
+
+				if (winner.kind === 'dialog') {
+					// The action is parked inside a call the dialog blocked. Tell its
+					// loops to stop at their next checkpoint, and remember it so the
+					// next batch waits for it to unwind.
+					token.interrupted = true;
+					this.inflight.set(sessionId, run.catch(() => {}));
+
+					results.push({
+						action: action.type,
+						ok: true,
+						detail: `a ${winner.info.type} dialog opened during this action`,
+						timestamp: Date.now()
+					});
+					return { results, aborted: false, blockedBy: winner.info };
+				}
+
+				const outcome = winner.outcome;
 				results.push({
 					action: action.type,
 					ok: true,
@@ -490,6 +703,8 @@ export class BrowserInteractionHandler extends EventEmitter {
 					debug.warn('preview', `⚠️ Browser/page closed during action ${i + 1}/${actions.length}, stopping autonomous actions`);
 					return { results, aborted: true };
 				}
+			} finally {
+				dialog.dispose();
 			}
 
 			// Fast delay between actions for MCP automation (50-100ms)
@@ -699,17 +914,19 @@ export class BrowserInteractionHandler extends EventEmitter {
 				}
 
 				const shouldClear = action.clearFirst !== false;
-				if (shouldClear && action.text) {
-					// Select all, then typing overwrites the selection.
-					await page.keyboard.down('Control');
-					await page.keyboard.press('KeyA');
-					await page.keyboard.up('Control');
-					await sleep(30);
-				}
 
-				if (action.text) {
+				if (action.text !== undefined) {
+					const before = shouldClear ? await this.readFocusedField(page) : null;
+					if (shouldClear) {
+						// Select all, then typing overwrites the selection.
+						await selectAll(page);
+						await sleep(30);
+					}
+
 					await this.mcpType(page, action.text, action.delay ?? 30);
-					return `typed ${action.text.length} char(s)`;
+
+					if (!shouldClear) return `typed ${action.text.length} char(s)`;
+					return this.settleFill(page, action.text, before);
 				}
 				if (action.key) {
 					await page.keyboard.press(action.key as KeyInput);
@@ -722,39 +939,37 @@ export class BrowserInteractionHandler extends EventEmitter {
 				const chord = action.keys || action.key;
 				if (!chord) throw new Error('press needs `keys`');
 
-				const { modifiers, key } = this.parseChord(chord);
+				const { modifiers, key } = parseChord(chord);
 				if (!key) throw new Error(`press could not find a key in "${chord}"`);
 
 				await this.showFocused(sessionId, page, { pulse: true });
 
-				for (const modifier of modifiers) await page.keyboard.down(modifier);
-				try {
-					await page.keyboard.press(key as KeyInput);
-				} finally {
-					for (const modifier of [...modifiers].reverse()) {
-						await page.keyboard.up(modifier).catch(() => {});
-					}
+				// A paste chord pastes the workspace clipboard: the headless
+				// browser's own is not the one anything was copied into.
+				if (isPasteChord(modifiers, key)) {
+					const text = this.deps.readClipboard();
+					if (!text) return `pressed ${chord} — the clipboard is empty, nothing pasted`;
+					const how = await pasteText(page, text);
+					return `pressed ${chord} → pasted ${text.length} char(s) from the clipboard${how === 'handled-by-page' ? ' (handled by the page)' : ''}`;
 				}
 
+				await pressChord(page, modifiers, key);
 				return `pressed ${chord}`;
 			}
 
 			case 'paste': {
-				if (typeof action.text !== 'string') throw new Error('paste needs `text`');
+				// No text means "paste the clipboard" — what Ctrl/⌘+V does.
+				const text = typeof action.text === 'string' ? action.text : this.deps.readClipboard();
+				if (!text) throw new Error('paste needs `text`, and the clipboard is empty');
 
 				await this.showFocused(sessionId, page, { pulse: true });
 
-				// Insert through CDP rather than synthesising Ctrl+V: the headless
-				// browser's clipboard is not the agent's, and insertText raises the
-				// same beforeinput/input events a real paste does.
-				const client = await page.createCDPSession();
-				try {
-					await client.send('Input.insertText', { text: action.text });
-				} finally {
-					await client.detach().catch(() => {});
-				}
-
-				return `pasted ${action.text.length} char(s)`;
+				// A real paste: the `paste` event first (spreadsheets and rich
+				// editors only listen for that), then the text at the caret if the
+				// page did not take care of it.
+				const how = await pasteText(page, text);
+				const origin = typeof action.text === 'string' ? '' : ' from the clipboard';
+				return `pasted ${text.length} char(s)${origin}${how === 'handled-by-page' ? ' (handled by the page)' : ''}`;
 			}
 
 			case 'focus': {
@@ -785,12 +1000,11 @@ export class BrowserInteractionHandler extends EventEmitter {
 					await this.showFocused(sessionId, page, { pulse: true });
 				}
 
-				await page.keyboard.down('Control');
-				await page.keyboard.press('KeyA');
-				await page.keyboard.up('Control');
+				const before = await this.readFocusedField(page);
+				await selectAll(page);
 				await page.keyboard.press('Backspace');
 
-				return 'cleared field';
+				return this.settleFill(page, '', before, 'cleared field');
 			}
 
 			case 'select_option': {
@@ -896,16 +1110,24 @@ export class BrowserInteractionHandler extends EventEmitter {
 						type: 'touchStart',
 						touchPoints: [{ x: from.x, y: from.y, id: 1 }]
 					});
+					this.publishGlide(sessionId, {
+						from,
+						control: { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 },
+						to,
+						durationMs: totalMs,
+						pressed: true,
+						easing: 'linear'
+					});
 
 					for (let s = 1; s <= steps; s++) {
 						const t = s / steps;
 						const x = Math.round(from.x + (to.x - from.x) * t);
 						const y = Math.round(from.y + (to.y - from.y) * t);
+						this.checkpoint(sessionId);
 						await client.send('Input.dispatchTouchEvent', {
 							type: 'touchMove',
 							touchPoints: [{ x, y, id: 1 }]
 						});
-						this.publishCursor(sessionId, x, y, true);
 						await sleep(totalMs / steps);
 					}
 

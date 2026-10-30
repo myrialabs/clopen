@@ -16,13 +16,15 @@ Everything is one call. Pass an array of actions and they run in order, which is
 HOW TO USE IT WELL
 
 1. Batch. Put every step you can predict into one call: open_tab → wait_for → click → type → click → screenshot is a single call, not six. Split only where the next step depends on something you must read first.
-2. Target by selector or text, not coordinates. Elements are resolved in every frame, scrolled into view, and aimed at their centre — coordinates go stale the moment the page reflows. Use \`find\` when you are unsure what to name; use x/y only for canvases and images.
+2. Target by selector or text, not coordinates. Elements are resolved in every frame, scrolled into view, and aimed at their centre — coordinates go stale the moment the page reflows. Text targeting prefers an exact match on something clickable that is actually on top (a modal's button over the paragraph that mentions it); use \`find\` when you are unsure what to name; use x/y only for canvases and images.
 3. Read with analyze_dom, not screenshots. Text, links and structure come back as text, for the whole document, at a fraction of the cost. Screenshot when the answer is visual: canvas, charts, layout, iframes, captchas.
 4. Navigate by URL. If analyze_dom gave you an href, \`navigate\` to it. Clicking a link to move around is slower and fails more.
 5. Synchronise with wait_for, not wait. wait_for returns the instant the condition holds; a fixed delay is either too short (the batch fails) or too long (every run pays for it).
 6. Failure stops the batch. Anything after a failed action is skipped and reported as skipped. Mark a step \`optional: true\` when it may legitimately not apply — dismissing a cookie banner that might not be there — or set onError:"continue" for genuinely independent steps.
 7. Obstacles are yours to clear. Captcha, modal, cookie wall: solve or dismiss it and carry on. Do not stop to ask.
 8. Check the report. Every action reports its own outcome, and the report ends with the tab and URL you left behind. If a result contradicts your plan, say so and re-plan rather than continuing on the assumption it worked.
+9. Native dialogs are yours. When a page opens alert / confirm / prompt, the report says DIALOG OPEN and quotes it; nothing else runs until you answer with the dialog action. Decide as the user would — nobody else will.
+10. Clean up your tabs. Close every tab you opened once you are done with it; the report lists the ones still open. Keep one only if this chat will use it again, it is waiting on the user (a login, an OTP, a captcha), or the user asked for it. Never close a tab the user opened unless asked.
 
 WORKFLOWS
 

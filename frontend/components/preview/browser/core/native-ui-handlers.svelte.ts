@@ -388,17 +388,11 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 	 * Handle copy to clipboard
 	 */
 	function handleCopyToClipboard(data: { text: string }) {
-		debug.log('preview', `📋 Copy to clipboard: ${data.text}`);
+		debug.log('preview', `📋 Copy to clipboard: ${data.text.length} char(s)`);
 
-		// Copy to clipboard
-		if (navigator.clipboard && navigator.clipboard.writeText) {
-			navigator.clipboard.writeText(data.text).then(() => {
-				debug.log('preview', '✅ Copied to clipboard');
-			}).catch((error) => {
-				debug.error('preview', '❌ Failed to copy to clipboard:', error);
-			});
-		}
-
+		// The write itself arrives as `preview:browser-clipboard-sync` and is
+		// applied by the clipboard sync service, which also handles a window
+		// that is not focused. This event is only the confirmation.
 		if (onCopyToClipboard) {
 			onCopyToClipboard(data.text);
 		}

@@ -79,7 +79,70 @@ let mcpFocusedBackendIds = $state(new Set<string>());
  * focus mark above, never from this — otherwise the tail of an interrupted
  * batch would put it back on screen after the agent had been told to stop.
  */
-let mcpCursorByBackendId = $state<Record<string, { x: number; y: number; pressed: boolean; clicking: boolean }>>({});
+let mcpCursorByBackendId = $state<
+	Record<string, { x: number; y: number; pressed: boolean; clicking: boolean; gliding: boolean }>
+>({});
+
+/**
+ * Pointer movements being animated, per tab.
+ *
+ * The server announces a whole movement once — path and duration — and the
+ * pointer is animated here frame by frame. It used to stream a position every
+ * 16ms instead, and any delay in transit bunched those up into a stutter.
+ */
+interface ActiveGlide {
+	from: { x: number; y: number };
+	control: { x: number; y: number };
+	to: { x: number; y: number };
+	durationMs: number;
+	pressed: boolean;
+	easing: 'out' | 'linear';
+	startedAt: number;
+	frame: number;
+}
+const activeGlides = new Map<string, ActiveGlide>();
+
+function glidePoint(glide: ActiveGlide, progress: number): { x: number; y: number } {
+	const t = glide.easing === 'linear' ? progress : 1 - Math.pow(1 - progress, 3);
+	const a = (1 - t) * (1 - t);
+	const b = 2 * (1 - t) * t;
+	const c = t * t;
+	return {
+		x: a * glide.from.x + b * glide.control.x + c * glide.to.x,
+		y: a * glide.from.y + b * glide.control.y + c * glide.to.y
+	};
+}
+
+function stopGlide(backendTabId: string): void {
+	const glide = activeGlides.get(backendTabId);
+	if (!glide) return;
+	cancelAnimationFrame(glide.frame);
+	activeGlides.delete(backendTabId);
+}
+
+function startGlide(backendTabId: string, glide: Omit<ActiveGlide, 'startedAt' | 'frame'>): void {
+	stopGlide(backendTabId);
+
+	if (glide.durationMs <= 0 || typeof requestAnimationFrame !== 'function') {
+		setMcpCursor(backendTabId, { ...glide.to, pressed: glide.pressed });
+		return;
+	}
+
+	const entry: ActiveGlide = { ...glide, startedAt: performance.now(), frame: 0 };
+	const tick = (now: number) => {
+		if (activeGlides.get(backendTabId) !== entry) return;
+		const progress = Math.min(1, (now - entry.startedAt) / entry.durationMs);
+		const point = glidePoint(entry, progress);
+		setMcpCursor(backendTabId, { ...point, pressed: entry.pressed, gliding: progress < 1 });
+		if (progress < 1) {
+			entry.frame = requestAnimationFrame(tick);
+		} else {
+			activeGlides.delete(backendTabId);
+		}
+	};
+	activeGlides.set(backendTabId, entry);
+	entry.frame = requestAnimationFrame(tick);
+}
 
 export function getMcpControlledBackendIds(): ReadonlySet<string> {
 	return mcpControlledBackendIds;
@@ -91,7 +154,7 @@ export function isBackendTabMcpFocused(backendTabId: string | null): boolean {
 
 export function getMcpCursor(
 	backendTabId: string | null
-): { x: number; y: number; pressed: boolean; clicking: boolean } | null {
+): { x: number; y: number; pressed: boolean; clicking: boolean; gliding: boolean } | null {
 	return backendTabId ? (mcpCursorByBackendId[backendTabId] ?? null) : null;
 }
 
@@ -108,7 +171,7 @@ const clickResetTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Record where an agent's pointer is on a tab. Never decides visibility. */
 export function setMcpCursor(
 	backendTabId: string,
-	cursor: { x: number; y: number; pressed?: boolean; clicking?: boolean }
+	cursor: { x: number; y: number; pressed?: boolean; clicking?: boolean; gliding?: boolean }
 ): void {
 	mcpCursorByBackendId = {
 		...mcpCursorByBackendId,
@@ -116,7 +179,8 @@ export function setMcpCursor(
 			x: cursor.x,
 			y: cursor.y,
 			pressed: !!cursor.pressed,
-			clicking: !!cursor.clicking
+			clicking: !!cursor.clicking,
+			gliding: !!cursor.gliding
 		}
 	};
 }
@@ -137,6 +201,7 @@ export function clearMcpCursorClick(backendTabId: string): void {
 }
 
 function forgetMcpCursor(backendTabId: string): void {
+	stopGlide(backendTabId);
 	const timer = clickResetTimers.get(backendTabId);
 	if (timer) {
 		clearTimeout(timer);
@@ -467,6 +532,7 @@ registerDock({
 		mcpControlledBackendIds = new Set();
 		mcpFocusedBackendIds = new Set();
 		mcpActivityByBackendId = {};
+		for (const tabId of Array.from(activeGlides.keys())) stopGlide(tabId);
 		mcpCursorByBackendId = {};
 		for (const timer of clickResetTimers.values()) clearTimeout(timer);
 		clickResetTimers.clear();
@@ -761,10 +827,27 @@ export function initPreviewTabSync(): void {
 	 * the panel for the same reason the lock is.
 	 */
 	ws.on('preview:browser-mcp-cursor-position', (data) => {
+		// The resting point of a movement still being animated: let the
+		// animation arrive there itself rather than jumping ahead of it.
+		const glide = activeGlides.get(data.sessionId);
+		if (glide && Math.abs(glide.to.x - data.x) < 2 && Math.abs(glide.to.y - data.y) < 2) return;
+		stopGlide(data.sessionId);
 		setMcpCursor(data.sessionId, { x: data.x, y: data.y, pressed: data.pressed });
 	});
 
+	ws.on('preview:browser-mcp-cursor-glide', (data) => {
+		startGlide(data.sessionId, {
+			from: data.from,
+			control: data.control,
+			to: data.to,
+			durationMs: data.durationMs,
+			pressed: data.pressed,
+			easing: data.easing
+		});
+	});
+
 	ws.on('preview:browser-mcp-cursor-click', (data) => {
+		stopGlide(data.sessionId);
 		setMcpCursor(data.sessionId, { x: data.x, y: data.y, clicking: true });
 		const tabId = data.sessionId;
 		const existing = clickResetTimers.get(tabId);

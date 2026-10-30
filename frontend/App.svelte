@@ -14,6 +14,7 @@
 	import { backgroundTerminalService } from '$frontend/services/terminal/background';
 	import { initializeMCPPreview } from '$frontend/services/preview';
 	import { initPreviewTabSync } from '$frontend/stores/features/preview-tabs-workspace.svelte';
+	import { initPreviewClipboardSync } from '$frontend/services/preview/browser/clipboard-sync.service';
 	import { globalStreamMonitor } from '$frontend/services/notification/global-stream-monitor';
 	import { initSessionDeepLink } from '$frontend/services/navigation/session-deep-link';
 	import { tunnelStore } from '$frontend/stores/features/tunnel.svelte';
@@ -48,6 +49,7 @@
 			// Register always-on preview tab-lifecycle sync so MCP-opened tabs appear
 			// in real time even when the Preview panel is hidden/unmounted.
 			initPreviewTabSync();
+			initPreviewClipboardSync();
 
 			// Restore tunnel status and listen for realtime updates
 			tunnelStore.checkStatus();

@@ -44,6 +44,7 @@ import { getChromeExecutablePath } from '$backend/engine/install-recipes';
 import { getClopenDir } from '$backend/utils/paths';
 import { scopeSlug } from '$shared/utils/workspace-scope';
 import { open as openSealed, seal } from '$backend/database/crypto/envelope';
+import { isProfileInUseError, releaseProfile, sweepOrphanedProfiles } from './profile-lock';
 
 puppeteer.use(StealthPlugin());
 
@@ -218,10 +219,23 @@ function cookieFile(profileKey: string): string {
 	return join(profilesRoot(), `${profileDirName(profileKey)}.cookies`);
 }
 
+/** End a browser's process if it is still running. Safe to call on a dead one. */
+function killBrowserProcess(browser: Browser): void {
+	const child = browser.process();
+	if (!child || child.exitCode !== null || child.signalCode !== null) return;
+	try {
+		child.kill('SIGKILL');
+	} catch {
+		// Already gone.
+	}
+}
+
 class BrowserPool {
 	private browsers = new Map<string, ProfileBrowser>();
 	private sessions = new Map<string, PooledSession>();
 	private launches = new Map<string, Promise<ProfileBrowser>>();
+	/** One sweep of orphaned Chromes per server, before its first launch. */
+	private orphanSweep: Promise<void> | null = null;
 	private config: PoolConfig;
 
 	constructor(config: Partial<PoolConfig> = {}) {
@@ -268,12 +282,38 @@ class BrowserPool {
 		debug.log('preview', `  using Chrome at: ${executablePath}`);
 		debug.log('preview', `  profile: ${userDataDir}`);
 
-		const browser = (await puppeteer.launch({
-			headless: true,
-			executablePath,
-			userDataDir,
-			args: CHROME_ARGS
-		})) as unknown as Browser;
+		// Orphans from a previous server are cleared before the first launch,
+		// and this profile is made launchable before every one.
+		this.orphanSweep ??= sweepOrphanedProfiles(profilesRoot());
+		await this.orphanSweep;
+		await releaseProfile(userDataDir);
+
+		const launch = () =>
+			puppeteer.launch({
+				headless: true,
+				executablePath,
+				userDataDir,
+				args: CHROME_ARGS,
+				// A pipe, not a WebSocket. Chrome exits the moment its end of the
+				// pipe closes, so it cannot outlive this server — a crash, a kill
+				// or a restart used to leave a headless Chrome running with the
+				// profile locked, and every later launch failed with "The browser
+				// is already running" until the machine was restarted. There is
+				// also no socket to drop when a laptop sleeps.
+				pipe: true
+			}) as unknown as Promise<Browser>;
+
+		let browser: Browser;
+		try {
+			browser = await launch();
+		} catch (error) {
+			if (!isProfileInUseError(error)) throw error;
+			// Something grabbed the profile between the check and the launch —
+			// most likely a Chrome still shutting down. One more pass, then give up.
+			debug.warn('preview', `⚠️ Profile ${userDataDir} still held at launch, recovering once`);
+			await releaseProfile(userDataDir);
+			browser = await launch();
+		}
 
 		const entry: ProfileBrowser = {
 			key: profileKey,
@@ -288,6 +328,10 @@ class BrowserPool {
 		browser.on('disconnected', () => {
 			debug.warn('preview', `⚠️ Chrome for ${profileKey} disconnected`);
 			this.forgetBrowser(entry);
+			// Losing the connection does not end the process. Forgetting a Chrome
+			// that is still running leaves it holding the profile, and the
+			// recovery launch that follows is refused for it.
+			killBrowserProcess(browser);
 		});
 
 		// Chrome opens a page of its own at launch. Every tab we care about is
@@ -515,6 +559,8 @@ class BrowserPool {
 			await entry.browser.close();
 		} catch (error) {
 			debug.warn('preview', `⚠️ Error closing Chrome for ${entry.key}: ${error}`);
+		} finally {
+			killBrowserProcess(entry.browser);
 		}
 	}
 
@@ -680,6 +726,7 @@ class BrowserPool {
 			await entry.browser.close().catch((error) => {
 				debug.warn('preview', `⚠️ Error closing Chrome for ${profileKey}: ${error}`);
 			});
+			killBrowserProcess(entry.browser);
 		}
 
 		try {
@@ -793,6 +840,20 @@ class BrowserPool {
 				pageOpen: !session.page.isClosed()
 			}))
 		};
+	}
+
+	/**
+	 * Every running workspace Chrome, with the pid of its browser process — the
+	 * root of the process tree the diagnostics panel measures.
+	 */
+	getRunningBrowsers(): Array<{ profileKey: string; pid: number | null; sessions: number }> {
+		return Array.from(this.browsers.values())
+			.filter((entry) => entry.browser.connected)
+			.map((entry) => ({
+				profileKey: entry.key,
+				pid: entry.browser.process()?.pid ?? null,
+				sessions: entry.sessions.size
+			}));
 	}
 
 	/**

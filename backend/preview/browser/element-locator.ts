@@ -68,24 +68,191 @@ interface ElementMeta {
 }
 
 /**
- * XPath that matches the *innermost* elements containing the text.
+ * Rank the elements of one frame that a piece of visible text could mean.
  *
- * Without the `not(.//*[...])` guard every ancestor up to <body> matches too,
- * and the first hit would be the whole document rather than the button the
- * agent meant.
+ * Runs inside the page, in a single round trip. Text alone is ambiguous in
+ * exactly the place agents use it most: "Click **Continue** to verify" sits
+ * right above a Continue button in the same modal, and taking the first match
+ * in document order clicked the bold word in the sentence. So every match is
+ * scored, the way a person picks the thing they meant:
+ *
+ * - **Exact** text beats a match that merely contains the words.
+ * - **Clickable** beats inert. A match inside a button, link, labelled
+ *   control or `cursor: pointer` element is aimed at that element, not at
+ *   the span holding the text.
+ * - **On top** beats covered: the element actually under its own centre is
+ *   reachable; one behind a modal's backdrop is not.
+ * - Inside an open **dialog** beats the page behind it.
+ *
+ * Also matches what has no text node — `<input type=submit value=…>`,
+ * icon buttons named by `aria-label` or `title` — which a text search used to
+ * miss entirely.
+ *
+ * Self-contained on purpose: it is serialised into the page.
  */
-function innermostTextXPath(text: string): string {
-	const escaped = xpathLiteral(text.toLowerCase());
-	const lower = `translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`;
-	return `xpath///*[contains(${lower}, ${escaped}) and not(.//*[contains(${lower}, ${escaped})])]`;
+function rankTextMatches(query: string, includeHidden: boolean, limit: number) {
+	const needle = query.replace(/\s+/g, ' ').trim().toLowerCase();
+	if (!needle) return [];
+
+	const norm = (value: string | null | undefined) => (value ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+	const CLICKABLE_ROLES = new Set([
+		'button', 'link', 'menuitem', 'menuitemcheckbox', 'menuitemradio', 'tab', 'option',
+		'checkbox', 'radio', 'switch', 'treeitem', 'gridcell'
+	]);
+
+	const isClickable = (el: Element): boolean => {
+		const tag = el.tagName;
+		if (tag === 'BUTTON' || tag === 'SUMMARY' || tag === 'SELECT' || tag === 'LABEL') return true;
+		if (tag === 'A' && (el as HTMLAnchorElement).hasAttribute('href')) return true;
+		if (tag === 'INPUT') {
+			const type = ((el as HTMLInputElement).type || '').toLowerCase();
+			return ['button', 'submit', 'reset', 'checkbox', 'radio', 'image'].includes(type);
+		}
+		const role = el.getAttribute('role');
+		if (role && CLICKABLE_ROLES.has(role)) return true;
+		if (el.hasAttribute('onclick')) return true;
+		return false;
+	};
+
+	const isVisible = (el: Element): boolean => {
+		const rect = el.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return false;
+		const style = window.getComputedStyle(el);
+		return style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity) !== 0;
+	};
+
+	/** The control a click on this text would actually be aimed at. */
+	const actionableFor = (el: Element): { target: Element; clickable: boolean } => {
+		let node: Element | null = el;
+		for (let depth = 0; node && depth < 6; depth++) {
+			if (isClickable(node)) return { target: node, clickable: true };
+			node = node.parentElement ?? ((node.getRootNode() as ShadowRoot).host || null);
+		}
+		// No semantic control — a styled div with a click handler still shows a
+		// pointer cursor, which is the only hint the page gives.
+		node = el;
+		for (let depth = 0; node && depth < 4; depth++) {
+			if (window.getComputedStyle(node).cursor === 'pointer') return { target: node, clickable: true };
+			node = node.parentElement;
+		}
+		return { target: el, clickable: false };
+	};
+
+	/** Deepest element under a point, through open shadow roots. */
+	const hitAt = (x: number, y: number): Element | null => {
+		let hit = document.elementFromPoint(x, y);
+		while (hit && (hit as HTMLElement).shadowRoot) {
+			const inner = (hit as HTMLElement).shadowRoot!.elementFromPoint(x, y);
+			if (!inner || inner === hit) break;
+			hit = inner;
+		}
+		return hit;
+	};
+
+	const inDialog = (el: Element): boolean =>
+		!!el.closest('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]');
+
+	// Innermost elements whose text contains the query: descend only into
+	// branches that contain it, and stop where no child does.
+	const textMatches: Element[] = [];
+	const visit = (root: Element | ShadowRoot) => {
+		for (const child of Array.from(root.children)) {
+			const tag = child.tagName;
+			if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'TEMPLATE') continue;
+			const shadow = (child as HTMLElement).shadowRoot;
+			const contains = norm(child.textContent).includes(needle);
+			if (shadow) visit(shadow);
+			if (!contains) continue;
+			const deeper = Array.from(child.children).some((grand) => norm(grand.textContent).includes(needle));
+			if (deeper) visit(child);
+			else textMatches.push(child);
+		}
+	};
+	if (document.body) visit(document.body);
+
+	// Elements named by an attribute rather than by text.
+	const named: Element[] = [];
+	for (const el of Array.from(document.querySelectorAll('input[type=submit], input[type=button], input[type=reset], [aria-label], [title]'))) {
+		const label = norm(
+			el.tagName === 'INPUT' ? (el as HTMLInputElement).value || el.getAttribute('aria-label') : el.getAttribute('aria-label') || el.getAttribute('title')
+		);
+		if (label.includes(needle)) named.push(el);
+	}
+
+	const order = new Map<Element, number>();
+	const scored = new Map<Element, { el: Element; score: number }>();
+	let position = 0;
+
+	for (const candidate of [...textMatches, ...named]) {
+		const { target, clickable } = actionableFor(candidate);
+		if (!order.has(target)) order.set(target, position++);
+		if (!includeHidden && !isVisible(target)) continue;
+
+		const ownText = norm(candidate.textContent) || norm(candidate.getAttribute('aria-label')) || norm((candidate as HTMLInputElement).value) || norm(candidate.getAttribute('title'));
+		const targetText = norm((target as HTMLElement).innerText ?? target.textContent);
+
+		let score = 0;
+		if (ownText === needle || targetText === needle) score += 100;
+		else if (ownText.startsWith(needle) || targetText.startsWith(needle)) score += 40;
+		else score += 10;
+
+		if (clickable) score += 50;
+		if ((target as HTMLButtonElement).disabled) score -= 30;
+		if (inDialog(target)) score += 20;
+
+		const rect = target.getBoundingClientRect();
+		const cx = rect.left + rect.width / 2;
+		const cy = rect.top + rect.height / 2;
+		if (cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight) {
+			const hit = hitAt(cx, cy);
+			if (hit && (target === hit || target.contains(hit))) score += 60;
+			else if (hit && !hit.contains(target)) score -= 80;
+		}
+
+		const previous = scored.get(target);
+		if (!previous || score > previous.score) scored.set(target, { el: target, score });
+	}
+
+	return Array.from(scored.values())
+		.sort((a, b) => b.score - a.score || (order.get(a.el) ?? 0) - (order.get(b.el) ?? 0))
+		.slice(0, limit);
 }
 
-/** XPath has no escape character; a mixed-quote string must be built with concat(). */
-function xpathLiteral(value: string): string {
-	if (!value.includes("'")) return `'${value}'`;
-	if (!value.includes('"')) return `"${value}"`;
-	const parts = value.split("'").map((part) => `'${part}'`);
-	return `concat(${parts.join(`, "'", `)})`;
+/** Ranked text matches from every frame, best first. Caller disposes the handles. */
+async function rankedTextHandles(
+	page: Page,
+	text: string,
+	opts: { includeHidden?: boolean; limit?: number } = {}
+): Promise<Array<{ handle: ElementHandle<Element>; frame: Frame; score: number }>> {
+	const found: Array<{ handle: ElementHandle<Element>; frame: Frame; score: number; frameIndex: number }> = [];
+	const frames = page.frames();
+
+	for (let frameIndex = 0; frameIndex < frames.length; frameIndex++) {
+		const frame = frames[frameIndex];
+		if (frame.isDetached()) continue;
+
+		try {
+			const list = await frame.evaluateHandle(rankTextMatches, text, !!opts.includeHidden, opts.limit ?? 20);
+			try {
+				const entries = await list.getProperties();
+				for (const entry of entries.values()) {
+					const el = (await entry.getProperty('el')) as ElementHandle<Element>;
+					const score = Number(await (await entry.getProperty('score')).jsonValue());
+					found.push({ handle: el, frame, score, frameIndex });
+					await entry.dispose().catch(() => {});
+				}
+			} finally {
+				await list.dispose().catch(() => {});
+			}
+		} catch {
+			// A frame that navigated mid-sweep must not abort the others.
+		}
+	}
+
+	// Best score wins across frames; the main frame breaks ties, then page order.
+	found.sort((a, b) => b.score - a.score || a.frameIndex - b.frameIndex);
+	return found.map(({ handle, frame, score }) => ({ handle, frame, score }));
 }
 
 /** Read everything the caller might want to show, in one round trip per element. */
@@ -153,6 +320,14 @@ async function readMeta(handle: ElementHandle<Element>): Promise<ElementMeta> {
 
 /** Collect candidate handles for a query, main frame first. */
 async function collectHandles(page: Page, query: LocateQuery): Promise<Array<{ handle: ElementHandle<Element>; frame: Frame }>> {
+	// Text is ranked, not listed in document order — see rankTextMatches.
+	if (query.text && !query.selector) {
+		return rankedTextHandles(page, query.text, {
+			includeHidden: query.visibleOnly === false,
+			limit: Math.max(query.limit ?? 20, (query.nth ?? 0) + 1)
+		});
+	}
+
 	const found: Array<{ handle: ElementHandle<Element>; frame: Frame }> = [];
 
 	for (const frame of page.frames()) {
@@ -163,8 +338,6 @@ async function collectHandles(page: Page, query: LocateQuery): Promise<Array<{ h
 
 			if (query.selector) {
 				handles.push(...(await frame.$$(query.selector)));
-			} else if (query.text) {
-				handles.push(...(await frame.$$(innermostTextXPath(query.text))));
 			} else if (query.role) {
 				// A role is expressed either explicitly or by the element itself:
 				// `<button>` carries the button role without saying so. Both are
@@ -259,7 +432,7 @@ export async function resolveHandle(
 	target: BrowserActionTarget,
 	opts: { scrollIntoView?: boolean } = {}
 ): Promise<ElementHandle<Element> | null> {
-	const candidates = await collectHandles(page, { selector: target.selector, text: target.text });
+	const candidates = await collectHandles(page, { selector: target.selector, text: target.text, nth: target.nth });
 	if (candidates.length === 0) return null;
 
 	const wanted = target.nth ?? 0;

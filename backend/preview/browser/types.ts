@@ -121,6 +121,14 @@ export interface BrowserTab {
 	createdAt: number;
 	lastAccessedAt: number;
 
+	/**
+	 * Who opened the tab. An agent is expected to close the tabs it opens once
+	 * it is done with them, so the tabs it still has open are listed back to it
+	 * in every report; a tab the user opened is never its to close unasked.
+	 * Absent means the user (or a tab from before this was recorded).
+	 */
+	openedBy?: { kind: 'agent'; chatSessionId: string } | { kind: 'user' };
+
 	// Internal
 	isDestroyed?: boolean;
 	/**

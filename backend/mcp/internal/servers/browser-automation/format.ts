@@ -38,7 +38,30 @@ export function formatReport(report: RunReport): {
 	if (report.aborted) {
 		lines.push('', 'Interrupted: the chat stream was cancelled, so the remaining actions did not run.');
 	} else if (report.skipped > 0) {
-		lines.push('', `${report.skipped} action(s) skipped after the failure above (onError defaults to "stop").`);
+		lines.push(
+			'',
+			report.dialog
+				? `${report.skipped} action(s) skipped: the page is paused on the dialog below.`
+				: `${report.skipped} action(s) skipped after the failure above (onError defaults to "stop").`
+		);
+	}
+
+	if (report.dialog) {
+		const { tabId, type, message, defaultValue } = report.dialog;
+		const prompt = type === 'prompt' ? `, text:"…"` : '';
+		lines.push(
+			'',
+			`DIALOG OPEN on ${tabId} — ${type}: ${JSON.stringify(message)}${type === 'prompt' && defaultValue ? ` (default ${JSON.stringify(defaultValue)})` : ''}`,
+			`The page runs nothing until it is answered. Decide as the user would and reply with {type:"dialog", response:"accept"|"dismiss"${prompt}}.`
+		);
+	}
+
+	if (report.agentTabs?.length) {
+		const listed = report.agentTabs.map((tab) => `${tab.id} (${tab.url || 'blank'})`).join(', ');
+		lines.push(
+			'',
+			`Tabs you opened that are still open: ${listed}. Close each with close_tab once you are done — keep one only if this chat will use it again, it is waiting on the user, or the user asked to keep it.`
+		);
 	}
 
 	const content: Array<{ type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }> = [

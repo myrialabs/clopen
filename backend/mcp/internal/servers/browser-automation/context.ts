@@ -114,6 +114,7 @@ export async function getActiveTabSession(
 
 	debug.log('mcp', `📑 No tab open for project ${resolvedProjectId} — opening a blank one`);
 	const tab = await service.createTab(undefined, 'laptop', 'landscape');
+	tab.openedBy = { kind: 'agent', chatSessionId };
 	browserMcpControl.acquireControl(tab.id, chatSessionId, resolvedProjectId);
 
 	return { tab, service, opened: true };

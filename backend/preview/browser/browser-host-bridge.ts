@@ -34,6 +34,9 @@ export type HostRequestKind =
 	| 'media-devices'
 	| 'clipboard-read'
 	| 'clipboard-write'
+	// Not a capability: the page reporting what a copy event put on the
+	// clipboard, so it reaches the workspace clipboard. Answered by the service.
+	| 'clipboard-copied'
 	| 'notification-permission'
 	| 'notification-show'
 	| 'speech-start'
@@ -108,6 +111,7 @@ const REQUEST_TIMEOUT_MS: Record<HostRequestKind, number> = {
 	'media-devices': 15_000,
 	'clipboard-read': 30_000,
 	'clipboard-write': 15_000,
+	'clipboard-copied': 5_000,
 	'notification-permission': 60_000,
 	'notification-show': 15_000,
 	// Only the handshake is timed; results stream back as events afterwards.
@@ -304,6 +308,11 @@ export class BrowserHostBridge extends EventEmitter {
 
 		clearTimeout(pending.timeout);
 		this.pending.delete(requestId);
+		// A read the viewer answered is the device's clipboard as of now — the
+		// freshest copy of it the workspace will see.
+		if (pending.kind === 'clipboard-read' && response.ok && typeof response.result === 'string') {
+			this.emit('clipboard-observed', { tabId: pending.tabId, text: response.result });
+		}
 		// The page asked once, but the prompt was raised on every device watching
 		// this tab. Whoever answered first answered for all of them, so the rest
 		// are told to take their copy down.

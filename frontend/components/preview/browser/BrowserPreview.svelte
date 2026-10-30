@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Toolbar from './components/Toolbar.svelte';
 	import BrowsingDataModal from './components/BrowsingDataModal.svelte';
+	import DiagnosticsModal from './components/DiagnosticsModal.svelte';
 	import Container from './components/Container.svelte';
 	import SelectDropdown from './components/SelectDropdown.svelte';
 	import ContextMenu from './components/ContextMenu.svelte';
@@ -240,6 +241,7 @@
 	 */
 	/** Whether the "what this preview remembers" panel is open. */
 	let isBrowsingDataOpen = $state(false);
+	let isDiagnosticsOpen = $state(false);
 
 	const sleepingTabIds = $derived(
 		new Set(tabs.filter((tab) => isBackendTabSleeping(tab.sessionId)).map((tab) => tab.id))
@@ -976,6 +978,7 @@
 			mcpFocusedTabIds={mcpHandler.getFocusedTabIds()}
 			{sleepingTabIds}
 			onOpenBrowsingData={() => (isBrowsingDataOpen = true)}
+			onOpenDiagnostics={() => (isDiagnosticsOpen = true)}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
 			onStop={stopLoading}
@@ -1129,6 +1132,7 @@
 <!-- Outside the panel's {#if}: closing the preview while the panel is open
      should not strand a half-finished clear. -->
 <BrowsingDataModal bind:isOpen={isBrowsingDataOpen} />
+<DiagnosticsModal bind:isOpen={isDiagnosticsOpen} />
 
 <style>
 	/* Dot Pattern Background */

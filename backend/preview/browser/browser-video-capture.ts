@@ -237,6 +237,19 @@ const DEFAULT_CODEC_SUPPORT: ClientCodecSupport = {
 	hardware: []
 };
 
+/** Aspect disagreement between the captured surface and the page that counts as drift. */
+const SURFACE_DRIFT_TOLERANCE = 0.03;
+
+/** How long a mismatch must last before it counts as drift rather than a resize in flight. */
+const SURFACE_DRIFT_GRACE_MS = 250;
+
+/** Minimum gap between two viewport restores asked for by the same tab. */
+const SURFACE_DRIFT_COOLDOWN_MS = 1500;
+
+/** Restores a tab may ask for within SURFACE_DRIFT_WINDOW_MS before frames are let through. */
+const SURFACE_DRIFT_MAX_RESTORES = 3;
+const SURFACE_DRIFT_WINDOW_MS = 30_000;
+
 /**
  * CDP screencast feeder with ack-gated flow control.
  *
@@ -264,6 +277,8 @@ class ScreencastFeeder {
 	private lastDispatchAt = 0;
 	private lastAckAt = 0;
 	private pendingAckId: number | null = null;
+	/** When the surface first stopped matching the page, or 0. */
+	private driftSince = 0;
 
 	constructor(
 		private readonly cdp: CDPSession,
@@ -271,7 +286,9 @@ class ScreencastFeeder {
 		private readonly getSession: () => VideoStreamSession | undefined,
 		private readonly getTab: () => BrowserTab | undefined,
 		private readonly onInvalidSession: () => void,
-		private readonly isValidSession: () => boolean
+		private readonly isValidSession: () => boolean,
+		/** Returns whether a restore is under way (and the frame should be held back). */
+		private readonly onSurfaceDrift: (width: number, height: number) => boolean
 	) {
 		this.cdp.on('Page.screencastFrame', (event: any) => this.handleFrame(event));
 	}
@@ -405,6 +422,31 @@ class ScreencastFeeder {
 		if (session.captureMode === 'native') {
 			this.ack(event.sessionId);
 			return;
+		}
+
+		// A surface stranded by Chrome's fullscreen produces frames of the wrong
+		// shape. They are not forwarded — the viewer keeps the last good one —
+		// and the host is told so it can put the viewport back.
+		const surfaceWidth = Number(event.metadata?.deviceWidth) || 0;
+		const surfaceHeight = Number(event.metadata?.deviceHeight) || 0;
+		const viewport = tab?.page.viewport();
+		if (viewport && surfaceWidth > 0 && surfaceHeight > 0) {
+			const expected = viewport.width / viewport.height;
+			const drifted = Math.abs(surfaceWidth / surfaceHeight - expected) / expected > SURFACE_DRIFT_TOLERANCE;
+			if (!drifted) {
+				this.driftSince = 0;
+			} else {
+				// A device-size change leaves a frame or two of the old shape in
+				// flight; those are held back but are not worth a restore.
+				const now = Date.now();
+				if (!this.driftSince) this.driftSince = now;
+				const restoring =
+					now - this.driftSince < SURFACE_DRIFT_GRACE_MS || this.onSurfaceDrift(surfaceWidth, surfaceHeight);
+				if (restoring) {
+					this.ack(event.sessionId);
+					return;
+				}
+			}
 		}
 
 		const now = Date.now();
@@ -620,6 +662,12 @@ export class BrowserVideoCapture extends EventEmitter {
 	private tabInjection = new Map<string, TabInjectionState>();
 	private epochCounter = 0;
 	private watchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+	/** Per tab: when a surface drift last asked for a restore. */
+	private lastDriftReportAt = new Map<string, number>();
+
+	/** Per tab: restores asked for within the current window. */
+	private driftRestores = new Map<string, number[]>();
 
 	constructor() {
 		super();
@@ -895,6 +943,11 @@ export class BrowserVideoCapture extends EventEmitter {
 
 		await expose('__sendEncoderStats', (stats: EncoderStats) => {
 			this.applyEncoderStats(sessionId, stats);
+		});
+
+		// The captured surface stopped matching the page — see video-stream.ts.
+		await expose('__reportSurfaceDrift', (width: number, height: number) => {
+			this.reportSurfaceDrift(sessionId, width, height);
 		});
 
 		state.bindingsExposed = true;
@@ -1373,7 +1426,8 @@ export class BrowserVideoCapture extends EventEmitter {
 			() => {
 				void this.stopStreaming(sessionId);
 			},
-			isValidSession
+			isValidSession,
+			(width, height) => this.reportSurfaceDrift(sessionId, width, height)
 		);
 
 		this.feeders.set(sessionId, feeder);
@@ -2070,6 +2124,34 @@ export class BrowserVideoCapture extends EventEmitter {
 	}
 
 	/**
+	 * The captured surface no longer has the page's shape.
+	 *
+	 * Raised by the in-page encoder and by the screencast feeder; whoever owns
+	 * the tab re-asserts the viewport. Rate-limited per tab: the frames keep
+	 * arriving drifted until the restore lands, and each would otherwise ask
+	 * again.
+	 */
+	private reportSurfaceDrift(sessionId: string, width: number, height: number): boolean {
+		const now = Date.now();
+		const recent = (this.driftRestores.get(sessionId) ?? []).filter(
+			(at) => now - at < SURFACE_DRIFT_WINDOW_MS
+		);
+		this.driftRestores.set(sessionId, recent);
+
+		// A drift that keeps coming back after several restores is not one this
+		// can fix; the caller stops holding frames back rather than freezing.
+		if (recent.length >= SURFACE_DRIFT_MAX_RESTORES) return false;
+
+		if (now - (this.lastDriftReportAt.get(sessionId) ?? 0) < SURFACE_DRIFT_COOLDOWN_MS) return true;
+		this.lastDriftReportAt.set(sessionId, now);
+		recent.push(now);
+
+		debug.warn('webcodecs', `📐 Captured surface drifted to ${width}x${height} on ${sessionId}; restoring the viewport`);
+		this.emit('surface-drift', { sessionId, width, height });
+		return true;
+	}
+
+	/**
 	 * Restart capture at the current geometry.
 	 * Used as a refresh/recovery path when the frontend detects a stuck stream.
 	 */
@@ -2178,6 +2260,8 @@ export class BrowserVideoCapture extends EventEmitter {
 	 * Stop video streaming
 	 */
 	async stopStreaming(sessionId: string, session?: BrowserTab): Promise<void> {
+		this.lastDriftReportAt.delete(sessionId);
+		this.driftRestores.delete(sessionId);
 		const videoSession = this.sessions.get(sessionId);
 		if (!videoSession) return;
 
