@@ -113,8 +113,12 @@ export function processSubAgentMessages(messages: FrontendMessage[]): SubAgentAc
     }
   }
 
-  // Second pass: build activity list from assistant messages
+  // Second pass: build activity list from reasoning + assistant messages
   for (const msg of messages) {
+    if (msg.type === 'reasoning' && 'text' in msg) {
+      if (msg.text.trim()) activities.push({ type: 'reasoning', text: msg.text });
+      continue;
+    }
     if (msg.type !== 'assistant' || !('content' in msg)) continue;
     for (const item of msg.content) {
       if (item.type === 'tool_use') {

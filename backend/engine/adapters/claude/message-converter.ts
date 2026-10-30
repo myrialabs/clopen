@@ -45,6 +45,7 @@ import type {
 	StopReason,
 } from '$shared/types/unified';
 import { toCanonicalToolName, toMcpServerStatus } from '$shared/types/unified';
+import { scopeToParentTool } from '../parent-scope';
 
 // ============================================================
 // Helper Mappers
@@ -220,7 +221,7 @@ export function convertAssistantMessage(msg: SDKAssistantMessage): EngineOutput[
 				createdAt: new Date().toISOString(),
 				messageId: crypto.randomUUID(),
 				sessionId,
-				parent: { messageId: null, sessionId: null, toolUseId: null },
+				parent: { messageId: null, sessionId: null, toolUseId: msg.parent_tool_use_id || null },
 				engine: { type: 'claude-code', provider: 'anthropic', model: { id: betaMessage.model || '', name: '' }, account: { id: 0, name: '' } },
 				text: reasoningText,
 			};
@@ -521,7 +522,30 @@ export function* convertSdkMessage(msg: SDKMessage): Generator<EngineOutput> {
 	yield* dispatchSdkMessage(msg, createStreamConverterState());
 }
 
+/**
+ * With `forwardSubagentText` on, the SDK forwards a sub-agent's whole
+ * conversation — thinking, text, and its live `stream_event` partials — tagged
+ * with `parent_tool_use_id`. Everything converted from such a frame is scoped to
+ * that parent tool here, by output type, so no converter below can let a
+ * child's output reach the main turn (see parent-scope.ts).
+ */
 function* dispatchSdkMessage(msg: SDKMessage, state: StreamConverterState): Generator<EngineOutput> {
+	const parentToolUseId = (msg as { parent_tool_use_id?: string | null }).parent_tool_use_id || null;
+	if (!parentToolUseId) {
+		yield* dispatchUnscopedSdkMessage(msg, state);
+		return;
+	}
+	// A child's partials never reach the converter: their content-block indices
+	// would collide with the main turn's in `state.reasoningBlocks`, and the
+	// finalized child message arrives anyway.
+	if (msg.type === 'stream_event') return;
+	for (const output of dispatchUnscopedSdkMessage(msg, state)) {
+		const scoped = scopeToParentTool(output, parentToolUseId);
+		if (scoped) yield scoped;
+	}
+}
+
+function* dispatchUnscopedSdkMessage(msg: SDKMessage, state: StreamConverterState): Generator<EngineOutput> {
 	switch (msg.type) {
 		case 'assistant':
 			for (const output of convertAssistantMessage(msg as SDKAssistantMessage)) {

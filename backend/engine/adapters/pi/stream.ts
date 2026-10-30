@@ -44,6 +44,7 @@ import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
+import { scopeToParentTool } from '../parent-scope';
 import { DbCredentialStore, canonicalPiProviderId, getPiAccountForProvider, parsePiCredential } from './credential';
 import { createPiRuntime } from './presets';
 import { getPiAgentDir } from './environment';
@@ -264,11 +265,9 @@ export class PiEngine implements AIEngine {
 					});
 					let text = '';
 					const unsub = sub.subscribe((ev) => {
-						for (const out of subConverter.convert(ev)) {
-							if (out.type === 'stream_event' || out.type === 'result' || out.type === 'system_init' || out.type === 'notification') continue;
-							if (out.type === 'assistant' || out.type === 'user' || out.type === 'reasoning') {
-								out.parent = { messageId: null, sessionId: null, toolUseId: toolCallId };
-							}
+						for (const raw of subConverter.convert(ev)) {
+							const out = scopeToParentTool(raw, toolCallId);
+							if (!out) continue;
 							if (out.type === 'assistant') {
 								const t = out.content.filter((b) => b.type === 'text').map((b) => (b.type === 'text' ? b.text : '')).join('');
 								if (t.trim()) text = t;

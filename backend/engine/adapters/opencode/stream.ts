@@ -20,6 +20,7 @@ import type {
 	EventSessionError,
 	Part,
 	ToolPart,
+	ReasoningPart,
 	Message as OCMessage,
 } from '@opencode-ai/sdk';
 import { fetchOpenCodeModels } from './models';
@@ -357,6 +358,7 @@ export class OpenCodeEngine implements AIEngine {
 			const childAssistantMessages = new Map<string, OCMessage>(); // child msgID → message
 			const childEmittedToolParts = new Set<string>();
 			const childCompletedToolParts = new Set<string>();
+			const childEmittedReasoningParts = new Set<string>();
 			let lastAgentToolCallId: string | null = null;
 
 			/**
@@ -491,6 +493,15 @@ export class OpenCodeEngine implements AIEngine {
 												childCompletedToolParts.add(part.id);
 												yield convertToolResultOnly(childToolPart, sessionId, agentCallId);
 											}
+										}
+									} else if (part.type === 'reasoning') {
+										// The sub-agent's thinking belongs to its Agent block. Its
+										// deltas never stream (they would land in the main turn's
+										// placeholder); the finished part is emitted once, tagged.
+										const childReasoning = part as ReasoningPart;
+										if (childReasoning.time?.end && childReasoning.text?.trim() && !childEmittedReasoningParts.has(part.id)) {
+											childEmittedReasoningParts.add(part.id);
+											yield convertReasoningMessage(childReasoning.text, childMsg, sessionId, agentCallId);
 										}
 									}
 								}

@@ -36,6 +36,7 @@ import { artifactFilter } from '$backend/profiles';
 import { resolvePermissionsFromDb, isToolAllowed } from '$backend/permissions';
 import { buildJsonPrompt, extractJson, emptyGenerationError } from '../../structured-helpers';
 import { EngineRuns } from '../run-registry';
+import { scopeToParentTool } from '../parent-scope';
 import { subagentQueries } from '$backend/database/queries';
 import { readSubagentMd } from '$backend/subagents/store';
 import { getClineAccountForProvider, parseClineCredential, resolveClineAuth } from './credential';
@@ -251,26 +252,21 @@ export class ClineEngine implements AIEngine {
 					});
 
 					// Route the sub-agent's persisted messages into the PARENT stream as
-					// sub-activities: tag each with `parent.toolUseId = <Agent block id>`
-					// so the frontend folds them under the Agent tool. Only tool_use
-					// steps (+ their tool_result) are surfaced — the collapsed sub-agent
-					// view is a tool trail; the sub-agent's prose is already returned as
-					// the Agent tool's result (its `outputText`). So we drop transient
-					// events, reasoning, and text-only assistant messages.
+					// sub-activities: `scopeToParentTool` tags each with
+					// `parent.toolUseId = <Agent block id>` so the frontend folds them
+					// under the Agent tool, and drops transient events. Tool steps (+
+					// their tool_result) and reasoning are surfaced; text-only assistant
+					// messages are not — the sub-agent's prose is already returned as the
+					// Agent tool's result (its `outputText`).
 					const subConverter = createClineMessageConverter({
 						engine: { type: 'cline', provider, model: { id: modelId, name: modelId }, account: { id: account.id, name: account.name } },
 						sessionId: crypto.randomUUID(),
 					});
 					const unsub = subAgent.subscribe((ev) => {
-						for (const out of subConverter.convert(ev)) {
-							if (out.type === 'user') {
-								// tool_result messages — carry the sub-agent's tool outputs.
-							} else if (out.type === 'assistant' && out.content.some(b => b.type === 'tool_use')) {
-								// tool_use step — keep.
-							} else {
-								continue; // drop stream/result/init/notification/reasoning/text-only
-							}
-							out.parent = { messageId: null, sessionId: null, toolUseId: toolCallId };
+						for (const raw of subConverter.convert(ev)) {
+							const out = scopeToParentTool(raw, toolCallId);
+							if (!out) continue;
+							if (out.type === 'assistant' && !out.content.some(b => b.type === 'tool_use')) continue;
 							queueHolder.queue?.push(out);
 						}
 					});

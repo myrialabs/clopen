@@ -447,9 +447,16 @@ export interface SubAgentTextActivity {
 	text: string;
 }
 
+/** The sub-agent's own thinking — rendered inside its parent tool, never at root. */
+export interface SubAgentReasoningActivity {
+	type: 'reasoning';
+	text: string;
+}
+
 export type SubAgentActivity =
 	| SubAgentToolActivity
-	| SubAgentTextActivity;
+	| SubAgentTextActivity
+	| SubAgentReasoningActivity;
 
 // ============================================================
 // Tool Result

@@ -14,7 +14,7 @@
 	{#if count > 0}
 		<div class="max-h-39 overflow-y-auto pl-[34px] text-[10px] text-slate-400 dark:text-slate-500">
 			{#each toolInput.subActivities as activity}
-				<div class="truncate">
+				<div class="truncate" class:italic={activity.type === 'reasoning'}>
 					{#if activity.type === 'tool_use'}<span class="font-medium">{activity.name}</span>{:else}{activity.text}{/if}
 				</div>
 			{/each}
