@@ -16,7 +16,7 @@
 
 <script lang="ts">
 	import { onDestroy } from 'svelte';
-	import { getViewportDimensions, type DeviceSize, type Rotation } from '$frontend/utils/preview-constants';
+	import { resolveViewport, type DeviceSize, type Rotation, type ViewportSize } from '$frontend/utils/preview-constants';
 	import { BrowserWebCodecsService, type BrowserWebCodecsStreamStats } from '$frontend/services/preview/browser/browser-webcodecs.service';
 	import { probeHitTest, readPageSelection, type RemoteFocusState } from '../core/interactions.svelte';
 	import { noteDeviceCopy, primeClipboardRead } from '$frontend/services/preview/browser/clipboard-sync.service';
@@ -36,6 +36,8 @@
 		sessionInfo = $bindable<any>(null),
 		deviceSize = $bindable<DeviceSize>('laptop'),
 		rotation = $bindable<Rotation>('portrait'),
+		/** The tab's exact size. Falls back to the class default when absent. */
+		viewport = null as ViewportSize | null,
 		currentCursor = $bindable('default'),
 		canvasAPI = $bindable<any>(null),
 		isConnected = $bindable(false),
@@ -79,9 +81,10 @@
 	 * pixels, so CSS pixels is what this has to produce.
 	 */
 	const pageSize = $derived(
-		getViewportDimensions(
+		resolveViewport(
 			(deviceSize || sessionInfo?.deviceSize || 'laptop') as DeviceSize,
-			(rotation || sessionInfo?.rotation || 'landscape') as Rotation
+			(rotation || sessionInfo?.rotation || 'landscape') as Rotation,
+			viewport
 		)
 	);
 
@@ -724,14 +727,10 @@
 		// IMPORTANT: Use props as primary source of truth, fallback to sessionInfo
 		// Props are reactive and updated when user changes device/rotation
 		// sessionInfo may be stale (snapshot from launch time)
-		const currentDevice: DeviceSize = deviceSize || sessionInfo?.deviceSize || 'laptop';
-		const currentRotation: Rotation = rotation || sessionInfo?.rotation || 'landscape';
+		// The page's own size — the same one every pointer is mapped against.
+		const { width: canvasWidth, height: canvasHeight } = pageSize;
 
-		// Use getViewportDimensions helper for consistent viewport calculation
-		// This ensures portrait = height > width, landscape = width > height
-		const { width: canvasWidth, height: canvasHeight } = getViewportDimensions(currentDevice, currentRotation);
-
-		debug.log('webcodecs', `setupCanvasInternal: device=${currentDevice}, rotation=${currentRotation}, canvas=${canvasWidth}x${canvasHeight}`);
+		debug.log('webcodecs', `setupCanvasInternal: device=${deviceSize}, rotation=${rotation}, canvas=${canvasWidth}x${canvasHeight}`);
 
 		// Get scale from parent (BrowserPreviewContainer calculates this)
 		// This is provided via previewDimensions binding
@@ -1388,10 +1387,9 @@
 	$effect(() => {
 		if (canvasElement && sessionInfo) {
 			// Access reactive values to track changes
-			const currentDevice = deviceSize;
-			const currentRotation = rotation;
+			const { width, height } = pageSize;
 
-			debug.log('webcodecs', `Device/rotation changed: ${currentDevice}/${currentRotation}, reconfiguring canvas`);
+			debug.log('webcodecs', `Viewport changed: ${deviceSize}/${rotation} ${width}x${height}, reconfiguring canvas`);
 			setupCanvasInternal();
 		}
 	});
@@ -1637,8 +1635,7 @@
 	// Rotating to portrait or switching to a phone shrinks the page under the
 	// cursor, which would otherwise be left pointing past its edge.
 	$effect(() => {
-		void deviceSize;
-		void rotation;
+		void pageSize;
 		if (!canvasElement) return;
 
 		trackpadCursorX = Math.max(0, Math.min(pageSize.width, trackpadCursorX));

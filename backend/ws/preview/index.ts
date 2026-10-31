@@ -79,6 +79,11 @@ export const previewRouter = createRouter()
 		url: t.String(),
 		title: t.String(),
 		isActive: t.Boolean(),
+		deviceSize: t.Optional(t.String()),
+		rotation: t.Optional(t.String()),
+		width: t.Optional(t.Number()),
+		height: t.Optional(t.Number()),
+		deviceModel: t.Optional(t.Union([t.String(), t.Null()])),
 		/**
 		 * The launch this tab came from, when a client started it. Absent for
 		 * tabs the backend opened on its own (an agent, a popup).
@@ -229,6 +234,16 @@ export const previewRouter = createRouter()
 		rotation: t.String(),
 		width: t.Number(),
 		height: t.Number(),
+		deviceModel: t.Optional(t.Union([t.String(), t.Null()])),
+		timestamp: t.Number()
+	}))
+	// The colours a phone or tablet page asks to be framed in — its
+	// theme-color and background — for the system bands drawn around it.
+	.emit('preview:browser-page-colors', t.Object({
+		projectId: t.String(),
+		tabId: t.String(),
+		statusBar: t.String(),
+		background: t.String(),
 		timestamp: t.Number()
 	}))
 	// Live tab metadata: the page's own title and favicon plus whether

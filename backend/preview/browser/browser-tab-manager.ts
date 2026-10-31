@@ -1,7 +1,8 @@
 import type { Browser, BrowserContext, Page, Target } from 'puppeteer';
 import { EventEmitter } from 'events';
-import { getViewportDimensions } from '$shared/constants/preview.js';
-import type { BrowserTab, BrowserTabInfo, DeviceSize, Rotation } from './types';
+import { planDevice, type DeviceRequest } from '$shared/constants/preview.js';
+import type { BrowserTab, BrowserTabInfo, DeviceSize, Rotation, ViewportSize } from './types';
+import { applyDevice, mergeEmulation, type EmulatedDevice, type EmulationPatch } from './viewport';
 import { DEFAULT_STREAMING_CONFIG } from './types';
 import { browserPool, type PooledSession } from './browser-pool';
 import { BrowserAudioCapture } from './browser-audio-capture';
@@ -194,8 +195,24 @@ export class BrowserTabManager extends EventEmitter {
 			preNavigationSetup?: (page: Page, tabId: string) => Promise<void>;
 			/** Client-minted name for this launch, so Stop can reach it. */
 			launchId?: string;
+			/** An exact size; the model's own size when omitted. */
+			viewport?: ViewportSize | null;
+			/** The device model; the class default when omitted. */
+			deviceModel?: string | null;
+			/** Device settings on top of the model. */
+			emulation?: EmulationPatch | null;
 		}
 	): Promise<BrowserTab> {
+		const device = planDevice(null, {
+			deviceSize,
+			rotation,
+			size: options?.viewport,
+			deviceModel: options?.deviceModel
+		});
+		const { viewport, deviceModel } = device;
+		rotation = device.rotation;
+		const emulation = mergeEmulation({}, options?.emulation);
+
 		// The counter restarts per workspace, so the scope token is what stops a
 		// worktree's `tab-1` from being matched as the main tree's on the client.
 		const tabId = `tab-${scopeSlug(this.projectId)}-${this.nextTabNumber++}`;
@@ -244,7 +261,7 @@ export class BrowserTabManager extends EventEmitter {
 
 		// Setup page (viewport, headers, etc.)
 		debug.log('preview', `⚙️ Setting up page...`);
-		await this.setupPage(page, deviceSize, rotation);
+		await this.setupPage(page, { deviceSize, viewport, emulation });
 		debug.log('preview', `✅ Page setup complete`);
 
 		// Run pre-navigation setup if provided (e.g., dialog handling)
@@ -295,6 +312,9 @@ export class BrowserTabManager extends EventEmitter {
 			// Device
 			deviceSize,
 			rotation,
+			viewport,
+			deviceModel,
+			emulation,
 
 			// Console
 			consoleLogs: [],
@@ -342,6 +362,9 @@ export class BrowserTabManager extends EventEmitter {
 			isActive: tab.isActive,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
+			width: tab.viewport.width,
+			height: tab.viewport.height,
+			deviceModel: tab.deviceModel,
 			// Echoed so the client can tie this tab to the launch it started,
 			// rather than guessing from "some tab is launching" — which stopped
 			// being true the moment the user pressed Stop.
@@ -632,25 +655,39 @@ export class BrowserTabManager extends EventEmitter {
 	}
 
 	/**
-	 * Change viewport settings (device size and rotation) for an existing tab
+	 * Change the device a tab is shown on: its class, model, orientation, exact
+	 * size, and the device settings on top. See `planDevice` for how a partial
+	 * request is completed; `emulation` fields left out keep their value and
+	 * `null` hands them back to the device.
 	 */
-	async setViewport(tabId: string, deviceSize: DeviceSize, rotation: Rotation): Promise<boolean> {
+	async setViewport(
+		tabId: string,
+		request: DeviceRequest & { emulation?: EmulationPatch | null }
+	): Promise<boolean> {
 		const tab = this.tabs.get(tabId);
 		if (!tab) {
 			debug.warn('preview', `❌ Cannot set viewport: Tab ${tabId} not found`);
 			return false;
 		}
 
-		// Get new viewport dimensions
-		const { width: viewportWidth, height: viewportHeight } = getViewportDimensions(deviceSize, rotation);
+		const next = planDevice(
+			{ deviceSize: tab.deviceSize, rotation: tab.rotation, viewport: tab.viewport, deviceModel: tab.deviceModel },
+			request
+		);
+		const emulation = mergeEmulation(tab.emulation, request.emulation);
+		const { width: viewportWidth, height: viewportHeight } = next.viewport;
 
 		try {
-			// Update viewport on the page
-			await tab.page.setViewport({ width: viewportWidth, height: viewportHeight });
+			// Metadata first: a touch or mobile change reloads the page, and
+			// anything that asks the tab for its viewport while that runs must
+			// get the new one.
+			tab.deviceSize = next.deviceSize;
+			tab.rotation = next.rotation;
+			tab.viewport = next.viewport;
+			tab.deviceModel = next.deviceModel;
+			tab.emulation = emulation;
 
-			// Update tab metadata
-			tab.deviceSize = deviceSize;
-			tab.rotation = rotation;
+			await applyDevice(tab.page, tab);
 
 			// Mark tab activity
 			this.markTabActivity(tabId);
@@ -658,14 +695,15 @@ export class BrowserTabManager extends EventEmitter {
 			// Emit viewport changed event
 			this.emit('preview:browser-viewport-changed', {
 				tabId,
-				deviceSize,
-				rotation,
+				deviceSize: next.deviceSize,
+				rotation: next.rotation,
 				width: viewportWidth,
 				height: viewportHeight,
+				deviceModel: next.deviceModel,
 				timestamp: Date.now()
 			});
 
-			debug.log('preview', `📱 Viewport changed for tab ${tabId}: ${deviceSize} (${rotation}) - ${viewportWidth}x${viewportHeight}`);
+			debug.log('preview', `📱 Viewport changed for tab ${tabId}: ${next.deviceModel ?? next.deviceSize} (${next.rotation}) - ${viewportWidth}x${viewportHeight}`);
 
 			return true;
 		} catch (error) {
@@ -718,6 +756,10 @@ export class BrowserTabManager extends EventEmitter {
 			isStreaming: tab.isStreaming,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
+			width: tab.viewport.width,
+			height: tab.viewport.height,
+			deviceModel: tab.deviceModel,
+			emulation: tab.emulation,
 			isActive: tab.isActive,
 			canGoBack: tab.canGoBack,
 			canGoForward: tab.canGoForward
@@ -737,6 +779,10 @@ export class BrowserTabManager extends EventEmitter {
 			isStreaming: tab.isStreaming,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
+			width: tab.viewport.width,
+			height: tab.viewport.height,
+			deviceModel: tab.deviceModel,
+			emulation: tab.emulation,
 			isActive: tab.isActive,
 			canGoBack: tab.canGoBack,
 			canGoForward: tab.canGoForward
@@ -917,7 +963,7 @@ export class BrowserTabManager extends EventEmitter {
 			tab.canGoBack = false;
 			tab.canGoForward = false;
 
-			await this.setupPage(pooled.page, tab.deviceSize, tab.rotation);
+			await this.setupPage(pooled.page, tab);
 
 			const setupHook = this.tabSetupHooks.get(tabId);
 			if (setupHook) {
@@ -983,11 +1029,8 @@ export class BrowserTabManager extends EventEmitter {
 	/**
 	 * Setup page (viewport, headers, injections)
 	 */
-	private async setupPage(page: Page, deviceSize: DeviceSize, rotation: Rotation) {
-		// Get viewport dimensions from config
-		const { width: viewportWidth, height: viewportHeight } = getViewportDimensions(deviceSize, rotation);
-
-		await page.setViewport({ width: viewportWidth, height: viewportHeight });
+	private async setupPage(page: Page, device: EmulatedDevice) {
+		await applyDevice(page, device);
 
 		// Set page timeouts - more generous for stability
 		page.setDefaultTimeout(30000);

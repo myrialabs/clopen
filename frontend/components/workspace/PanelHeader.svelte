@@ -16,8 +16,16 @@
 		PANEL_OPTIONS
 	} from '$frontend/stores/ui/workspace.svelte';
 	import type { DeviceSize } from '$frontend/utils/preview-constants';
+	import type { IconName } from '$shared/types/ui/icons';
 
-	import { DEVICE_VIEWPORTS } from '$frontend/utils/preview-constants';
+	import {
+		DEVICE_PRESETS,
+		PREVIEW_ZOOM_LEVELS,
+		canRotate,
+		getDevicePreset,
+		type DevicePreset,
+		type PreviewZoom
+	} from '$frontend/utils/preview-constants';
 	import ContextIndicator from '$frontend/components/chat/widgets/ContextIndicator.svelte';
 
 	interface Props {
@@ -101,6 +109,23 @@
 	function selectDevice(size: DeviceSize) {
 		previewPanelRef?.panelActions?.setDeviceSize(size);
 		closeDeviceDropdown();
+	}
+
+	/** A model keeps the tab's orientation within its class, and stands up or lies down by nature across classes. */
+	function selectPreset(preset: DevicePreset) {
+		previewPanelRef?.panelActions?.selectDeviceModel(preset.deviceSize, preset.id);
+		closeDeviceDropdown();
+	}
+
+	const DEVICE_GROUPS: Array<{ size: Exclude<DeviceSize, 'responsive'>; label: string; icon: IconName }> = [
+		{ size: 'desktop', label: 'Desktop', icon: 'lucide:monitor' },
+		{ size: 'laptop', label: 'Laptop', icon: 'lucide:laptop' },
+		{ size: 'tablet', label: 'Tablet', icon: 'lucide:tablet' },
+		{ size: 'mobile', label: 'Mobile', icon: 'lucide:smartphone' }
+	];
+
+	function zoomLabel(zoom: PreviewZoom): string {
+		return zoom === 'fit' ? 'Fit' : `${Math.round(zoom * 100)}%`;
 	}
 
 	function handleResize() {
@@ -336,17 +361,21 @@
 
 				<!-- Device size dropdown -->
 				{@const currentDevice = previewPanelRef?.panelActions?.getDeviceSize()}
-				{@const deviceLabel = currentDevice === 'desktop' ? 'Desktop' : currentDevice === 'laptop' ? 'Laptop' : currentDevice === 'tablet' ? 'Tablet' : 'Mobile'}
-				{@const deviceIcon = currentDevice === 'desktop' ? 'lucide:monitor' : currentDevice === 'laptop' ? 'lucide:laptop' : currentDevice === 'tablet' ? 'lucide:tablet' : 'lucide:smartphone'}
+				{@const currentViewport = previewPanelRef?.panelActions?.getViewport()}
+				{@const currentPreset = getDevicePreset(previewPanelRef?.panelActions?.getDeviceModel())}
+				{@const deviceLabel = currentDevice === 'responsive' ? 'Responsive' : (currentPreset?.label ?? DEVICE_GROUPS.find((g) => g.size === currentDevice)?.label ?? 'Laptop')}
+				{@const deviceIcon = currentDevice === 'responsive' ? 'lucide:scaling' : (DEVICE_GROUPS.find((g) => g.size === currentDevice)?.icon ?? 'lucide:laptop')}
+				{@const mcpLocked = previewPanelRef?.panelActions?.getIsMcpControlled()}
+				{@const showFrame = previewPanelRef?.panelActions?.getShowFrame() ?? true}
+				{@const zoom = previewPanelRef?.panelActions?.getZoom() ?? 'fit'}
 				<div class="relative">
 					<button
 						type="button"
-						class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
-						onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : toggleDeviceDropdown}
-						disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
-						title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : `Device: ${deviceLabel}`}
+						class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+						onclick={toggleDeviceDropdown}
+						title={`Device: ${deviceLabel}${currentViewport ? ` · ${currentViewport.width}×${currentViewport.height}` : ''}`}
 					>
-						<Icon name={deviceIcon} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+						<Icon name={deviceIcon as IconName} class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 					</button>
 
 					<!-- Dropdown menu -->
@@ -355,71 +384,84 @@
 							class="fixed inset-0 z-40"
 							onclick={closeDeviceDropdown}
 						></div>
-						<div class="absolute top-full right-0 mt-1 z-50 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg overflow-hidden {isMobile ? 'min-w-44' : 'min-w-40'}">
+						<div class="absolute top-full right-0 mt-1 z-50 max-h-[70vh] overflow-y-auto bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg {isMobile ? 'min-w-60' : 'min-w-56'}">
+							{#if mcpLocked}
+								<div class="px-3 py-2 text-xs text-amber-600 dark:text-amber-400 border-b border-slate-200 dark:border-slate-700">
+									Size is controlled by the agent right now.
+								</div>
+							{/if}
+
+							{#each DEVICE_GROUPS as group (group.size)}
+								<div class="px-3 pt-2 pb-1 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+									<Icon name={group.icon} class="w-3.5 h-3.5" />
+									{group.label}
+								</div>
+								{#each DEVICE_PRESETS.filter((preset) => preset.deviceSize === group.size) as preset (preset.id)}
+									{@const active = currentPreset?.id === preset.id}
+									<button
+										type="button"
+										disabled={mcpLocked}
+										class="flex items-center gap-2 w-full px-3 {isMobile ? 'py-2' : 'py-1.5'} pl-8 text-left text-sm bg-transparent border-none transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 enabled:cursor-pointer enabled:hover:bg-violet-500/10 {active ? 'bg-violet-500/5 text-violet-600' : 'text-slate-700 dark:text-slate-300'}"
+										onclick={() => selectPreset(preset)}
+									>
+										<span class="flex-1">{preset.label}</span>
+										<span class="text-xs tabular-nums text-slate-500 dark:text-slate-400">{preset.width}×{preset.height}</span>
+										{#if active}
+											<Icon name="lucide:check" class="w-3.5 h-3.5 text-violet-600" />
+										{/if}
+									</button>
+								{/each}
+							{/each}
+
+							<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
 							<button
 								type="button"
-								class="flex items-center gap-2.5 w-full px-3 {isMobile ? 'py-2.5' : 'py-2'} text-left text-sm bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 {previewPanelRef?.panelActions?.getDeviceSize() === 'desktop' ? 'bg-violet-500/5 text-violet-600' : 'text-slate-700 dark:text-slate-300'}"
-								onclick={() => selectDevice('desktop')}
+								disabled={mcpLocked}
+								class="flex items-center gap-2.5 w-full px-3 {isMobile ? 'py-2.5' : 'py-2'} text-left text-sm bg-transparent border-none transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 enabled:cursor-pointer enabled:hover:bg-violet-500/10 {currentDevice === 'responsive' ? 'bg-violet-500/5 text-violet-600' : 'text-slate-700 dark:text-slate-300'}"
+								onclick={() => selectDevice('responsive')}
 							>
-								<Icon name="lucide:monitor" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+								<Icon name="lucide:scaling" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 								<div class="flex-1">
-									<div class="font-medium">Desktop</div>
-									<div class="text-xs text-slate-500 dark:text-slate-400">
-										{DEVICE_VIEWPORTS.desktop.width}×{DEVICE_VIEWPORTS.desktop.height}
-									</div>
+									<div class="font-medium">Responsive</div>
+									<div class="text-xs text-slate-500 dark:text-slate-400">Any size — drag or type it</div>
 								</div>
-								{#if previewPanelRef?.panelActions?.getDeviceSize() === 'desktop'}
+								{#if currentDevice === 'responsive'}
 									<Icon name="lucide:check" class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} text-violet-600" />
 								{/if}
 							</button>
+
+							<div class="my-1 border-t border-slate-200 dark:border-slate-700"></div>
 							<button
 								type="button"
-								class="flex items-center gap-2.5 w-full px-3 {isMobile ? 'py-2.5' : 'py-2'} text-left text-sm bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 {previewPanelRef?.panelActions?.getDeviceSize() === 'laptop' ? 'bg-violet-500/5 text-violet-600' : 'text-slate-700 dark:text-slate-300'}"
-								onclick={() => selectDevice('laptop')}
+								disabled={currentDevice === 'responsive'}
+								class="flex items-center gap-2.5 w-full px-3 {isMobile ? 'py-2.5' : 'py-2'} text-left text-sm bg-transparent border-none text-slate-700 dark:text-slate-300 transition-all duration-150 disabled:cursor-not-allowed disabled:opacity-50 enabled:cursor-pointer enabled:hover:bg-violet-500/10"
+								onclick={() => previewPanelRef?.panelActions?.setShowFrame(!showFrame)}
 							>
-								<Icon name="lucide:laptop" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-								<div class="flex-1">
-									<div class="font-medium">Laptop</div>
-									<div class="text-xs text-slate-500 dark:text-slate-400">
-										{DEVICE_VIEWPORTS.laptop.width}×{DEVICE_VIEWPORTS.laptop.height}
-									</div>
-								</div>
-								{#if previewPanelRef?.panelActions?.getDeviceSize() === 'laptop'}
-									<Icon name="lucide:check" class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} text-violet-600" />
-								{/if}
+								<Icon name="lucide:frame" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+								<span class="flex-1">Show device frame</span>
+								<span
+									class="relative inline-flex h-4 w-7 shrink-0 rounded-full transition-colors {showFrame && currentDevice !== 'responsive' ? 'bg-violet-600' : 'bg-slate-300 dark:bg-slate-600'}"
+								>
+									<span
+										class="absolute top-0.5 h-3 w-3 rounded-full bg-white shadow transition-all {showFrame && currentDevice !== 'responsive' ? 'left-3.5' : 'left-0.5'}"
+									></span>
+								</span>
 							</button>
-							<button
-								type="button"
-								class="flex items-center gap-2.5 w-full px-3 {isMobile ? 'py-2.5' : 'py-2'} text-left text-sm bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 {previewPanelRef?.panelActions?.getDeviceSize() === 'tablet' ? 'bg-violet-500/5 text-violet-600' : 'text-slate-700 dark:text-slate-300'}"
-								onclick={() => selectDevice('tablet')}
-							>
-								<Icon name="lucide:tablet" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-								<div class="flex-1">
-									<div class="font-medium">Tablet</div>
-									<div class="text-xs text-slate-500 dark:text-slate-400">
-										{DEVICE_VIEWPORTS.tablet.width}×{DEVICE_VIEWPORTS.tablet.height}
-									</div>
+							<div class="flex items-center gap-2.5 px-3 {isMobile ? 'py-2.5' : 'py-2'} text-sm text-slate-700 dark:text-slate-300">
+								<Icon name="lucide:zoom-in" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
+								<span class="flex-1">Zoom</span>
+								<div class="flex gap-0.5 rounded-md bg-slate-100 dark:bg-slate-900/60 p-0.5">
+									{#each ['fit', ...PREVIEW_ZOOM_LEVELS] as level (level)}
+										<button
+											type="button"
+											class="rounded px-1.5 py-0.5 text-xs tabular-nums transition-colors cursor-pointer {zoom === level ? 'bg-white dark:bg-slate-700 text-violet-600 dark:text-violet-400 shadow-sm' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}"
+											onclick={() => previewPanelRef?.panelActions?.setZoom(level as PreviewZoom)}
+										>
+											{zoomLabel(level as PreviewZoom)}
+										</button>
+									{/each}
 								</div>
-								{#if previewPanelRef?.panelActions?.getDeviceSize() === 'tablet'}
-									<Icon name="lucide:check" class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} text-violet-600" />
-								{/if}
-							</button>
-							<button
-								type="button"
-								class="flex items-center gap-2.5 w-full px-3 {isMobile ? 'py-2.5' : 'py-2'} text-left text-sm bg-transparent border-none cursor-pointer transition-all duration-150 hover:bg-violet-500/10 {previewPanelRef?.panelActions?.getDeviceSize() === 'mobile' ? 'bg-violet-500/5 text-violet-600' : 'text-slate-700 dark:text-slate-300'}"
-								onclick={() => selectDevice('mobile')}
-							>
-								<Icon name="lucide:smartphone" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
-								<div class="flex-1">
-									<div class="font-medium">Mobile</div>
-									<div class="text-xs text-slate-500 dark:text-slate-400">
-										{DEVICE_VIEWPORTS.mobile.width}×{DEVICE_VIEWPORTS.mobile.height}
-									</div>
-								</div>
-								{#if previewPanelRef?.panelActions?.getDeviceSize() === 'mobile'}
-									<Icon name="lucide:check" class="{isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} text-violet-600" />
-								{/if}
-							</button>
+							</div>
 						</div>
 					{/if}
 				</div>
@@ -443,12 +485,17 @@
 
 				<!-- Rotation toggle -->
 				{@const rotation = previewPanelRef?.panelActions?.getRotation()}
+				{@const rotationLocked = previewPanelRef?.panelActions?.getIsMcpControlled() || !canRotate(previewPanelRef?.panelActions?.getDeviceSize() ?? 'laptop')}
 				<button
 					type="button"
-					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {previewPanelRef?.panelActions?.getIsMcpControlled() ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
-					onclick={previewPanelRef?.panelActions?.getIsMcpControlled() ? undefined : () => previewPanelRef?.panelActions?.toggleRotation()}
-					disabled={previewPanelRef?.panelActions?.getIsMcpControlled()}
-					title={previewPanelRef?.panelActions?.getIsMcpControlled() ? 'Controlled by MCP agent' : `Orientation: ${rotation === 'portrait' ? 'Portrait' : 'Landscape'} — click to toggle`}
+					class="flex items-center justify-center {isMobile ? 'w-9 h-8' : 'w-6 h-6'} bg-transparent border-none rounded-md transition-all duration-150 {rotationLocked ? 'text-slate-400 dark:text-slate-600 cursor-not-allowed opacity-50' : 'text-slate-500 cursor-pointer hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+					onclick={rotationLocked ? undefined : () => previewPanelRef?.panelActions?.toggleRotation()}
+					disabled={rotationLocked}
+					title={previewPanelRef?.panelActions?.getIsMcpControlled()
+						? 'Controlled by MCP agent'
+						: rotationLocked
+							? 'A laptop screen does not rotate'
+							: `Orientation: ${rotation === 'portrait' ? 'Portrait' : 'Landscape'} — click to toggle`}
 				>
 					<Icon name="lucide:rotate-cw" class={isMobile ? 'w-4.5 h-4.5' : 'w-4 h-4'} />
 				</button>

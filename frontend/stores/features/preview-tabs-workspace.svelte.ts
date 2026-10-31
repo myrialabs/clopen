@@ -21,6 +21,7 @@
 import {
 	createTabManager,
 	getTabTitle,
+	viewportFrom,
 	type TabManager
 } from '$frontend/components/preview/browser/core/tab-manager.svelte';
 import {
@@ -34,7 +35,7 @@ import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 import { registerDock, getActiveWorkspaceProjectId } from '$frontend/stores/ui/project-workspace.svelte';
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+import type { DeviceSize, PageColors, Rotation, ViewportSize } from '$frontend/utils/preview-constants';
 import { sameTabTarget } from '$frontend/utils/preview-url';
 import { findLaunchSlot, resolveLandedUrl } from '$frontend/utils/preview-launch';
 
@@ -272,6 +273,24 @@ function setBackendTabSleeping(backendTabId: string, sleeping: boolean): void {
 }
 
 /**
+ * The colours each page asks to be framed in, by backend tab id.
+ *
+ * Kept here for the same reason as the full-screen state: the event can land
+ * while the panel is hidden, and the frame has to be right the moment it is
+ * drawn rather than after the next change.
+ */
+let pageColorsByBackendId = $state<Record<string, PageColors>>({});
+
+export function getPageColors(backendTabId: string | null): PageColors | null {
+	return (backendTabId && pageColorsByBackendId[backendTabId]) || null;
+}
+
+function setPageColors(backendTabId: string, colors: PageColors | null): void {
+	const { [backendTabId]: _previous, ...rest } = pageColorsByBackendId;
+	pageColorsByBackendId = colors ? { ...rest, [backendTabId]: colors } : rest;
+}
+
+/**
  * Backend tab ids whose page is showing something full screen.
  *
  * Held here, not in the panel, for the same reason as the lock state: the
@@ -312,6 +331,10 @@ interface TabSnapshotSlot {
 	title: string;
 	deviceSize: DeviceSize;
 	rotation: Rotation;
+	/** Exact size, when the tab had one. Absent in snapshots that predate it. */
+	viewport?: ViewportSize | null;
+	/** Device model, when the tab had one. Absent in snapshots that predate it. */
+	deviceModel?: string | null;
 	sessionId: string | null;
 	isActive: boolean;
 	/**
@@ -352,6 +375,8 @@ function materializeBackendTab(backendTab: ExistingTabInfo): string {
 		canGoForward: backendTab.canGoForward ?? false,
 		deviceSize: backendTab.deviceSize as DeviceSize,
 		rotation: backendTab.rotation as Rotation,
+		viewport: viewportFrom(backendTab),
+		deviceModel: backendTab.deviceModel ?? null,
 		isConnected: true,
 		isStreamReady: false,
 		isLoading: false,
@@ -423,7 +448,9 @@ function materializeBlankTab(slot: TabSnapshotSlot): string {
 	previewTabManager.updateTab(frontendId, {
 		title: slot.title || getTabTitle(slot.url),
 		deviceSize: slot.deviceSize,
-		rotation: slot.rotation
+		rotation: slot.rotation,
+		viewport: slot.viewport ?? null,
+		deviceModel: slot.deviceModel ?? null
 	});
 	return frontendId;
 }
@@ -537,6 +564,7 @@ registerDock({
 		for (const timer of clickResetTimers.values()) clearTimeout(timer);
 		clickResetTimers.clear();
 		fullscreenBackendIds = new Set();
+		pageColorsByBackendId = {};
 		restoredSnapshot = null;
 	},
 	snapshot(): TabSnapshotSlot[] {
@@ -549,6 +577,8 @@ registerDock({
 			title: tab.title,
 			deviceSize: tab.deviceSize,
 			rotation: tab.rotation,
+			viewport: tab.viewport,
+			deviceModel: tab.deviceModel,
 			sessionId: tab.sessionId,
 			isActive: tab.id === activeTabId,
 			launching: !tab.sessionId && !!tab.isLaunchingBrowser
@@ -677,6 +707,8 @@ export function initPreviewTabSync(): void {
 				title: landed ? data.title : launchingTab.title || data.title,
 				deviceSize: data.deviceSize || 'laptop',
 				rotation: data.rotation || 'landscape',
+				viewport: viewportFrom(data) ?? launchingTab.viewport,
+				deviceModel: data.deviceModel ?? launchingTab.deviceModel,
 				isConnected: true,
 				isStreamReady: false,
 				isLoading: false,
@@ -700,6 +732,8 @@ export function initPreviewTabSync(): void {
 			title: data.title,
 			deviceSize: data.deviceSize || 'laptop',
 			rotation: data.rotation || 'landscape',
+			viewport: viewportFrom(data),
+			deviceModel: data.deviceModel ?? null,
 			isConnected: true,
 			isStreamReady: false,
 			isLoading: false,
@@ -728,6 +762,7 @@ export function initPreviewTabSync(): void {
 		setMcpControlled(data.tabId, false);
 		setMcpActivity(data.tabId, null);
 		setBackendTabFullscreen(data.tabId, false);
+		setPageColors(data.tabId, null);
 		setMcpFocused(data.tabId, false);
 		// The tab itself is gone, so unlike a release there is nothing left for a
 		// remembered pointer position to be about.
@@ -777,7 +812,9 @@ export function initPreviewTabSync(): void {
 		if (tab) {
 			previewTabManager.updateTab(tab.id, {
 				deviceSize: data.deviceSize,
-				rotation: data.rotation
+				rotation: data.rotation,
+				viewport: viewportFrom(data),
+				deviceModel: data.deviceModel ?? null
 			});
 		}
 	});
@@ -864,6 +901,11 @@ export function initPreviewTabSync(): void {
 	ws.on('preview:browser-fullscreen-state' as any, (data: any) => {
 		if (!isEventForActiveProject(data)) return;
 		setBackendTabFullscreen(data.tabId, !!data.active);
+	});
+
+	ws.on('preview:browser-page-colors' as any, (data: any) => {
+		if (!isEventForActiveProject(data)) return;
+		setPageColors(data.tabId, { statusBar: data.statusBar, background: data.background });
 	});
 
 	// The server froze a page nobody was watching, or woke one because someone

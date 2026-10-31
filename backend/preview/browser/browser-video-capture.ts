@@ -41,6 +41,7 @@ import type {
 import { DEFAULT_STREAMING_CONFIG, resolveCodecCandidates } from './types';
 import { videoEncoderScript } from './scripts/video-stream';
 import { audioCaptureScript } from './scripts/audio-stream';
+import { applyViewport } from './viewport';
 
 /**
  * Install the audio tap in every frame.
@@ -2096,9 +2097,10 @@ export class BrowserVideoCapture extends EventEmitter {
 	// ------------------------------------------------------------------
 
 	/**
-	 * Update viewport without reconnection (hot-swap)
+	 * Re-apply the tab's viewport and recompute the capture around it, without
+	 * reconnecting (hot-swap). The size is the tab's own — see `BrowserTab.viewport`.
 	 */
-	async updateViewport(sessionId: string, session: BrowserTab, width: number, height: number): Promise<boolean> {
+	async updateViewport(sessionId: string, session: BrowserTab): Promise<boolean> {
 		const videoSession = this.sessions.get(sessionId);
 		if (!videoSession?.isActive || !session.page || session.page.isClosed()) {
 			debug.warn('webcodecs', `Cannot update viewport: session not active`);
@@ -2106,11 +2108,12 @@ export class BrowserVideoCapture extends EventEmitter {
 		}
 
 		try {
+			const { width, height } = session.viewport;
 			debug.log('webcodecs', `🔄 Hot-swapping viewport to ${width}x${height}`);
 
 			// The emulated viewport is what the page lays out against; capture
 			// resolution is derived from it and the viewer's display metrics.
-			await session.page.setViewport({ width, height });
+			await applyViewport(session.page, session);
 
 			// Force a recompute even if the derived size happens to land close
 			// to the previous one — the page content changed shape.

@@ -21,7 +21,7 @@
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { onMount, onDestroy } from 'svelte';
-	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+	import { resolveViewport, type DeviceSize, type PreviewZoom, type Rotation, type ViewportSize } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
 	import { cancelBrowserLaunch } from './core/tab-operations.svelte';
@@ -32,6 +32,7 @@
 	import {
 		getMcpActivity,
 		getMcpCursor,
+		getPageColors,
 		isBackendTabFullscreen,
 		isBackendTabSleeping
 	} from '$frontend/stores/features/preview-tabs-workspace.svelte';
@@ -46,6 +47,12 @@
 		mode = $bindable<'split' | 'tab'>('split'),
 		deviceSize = $bindable<DeviceSize>('laptop'),
 		rotation = $bindable<Rotation>('portrait'),
+		/** The active tab's exact size; null for its class default. */
+		viewport = $bindable(null as ViewportSize | null),
+		/** The active tab's device model; null for its class default. */
+		deviceModel = $bindable(null as string | null),
+		showFrame = $bindable(true),
+		zoom = $bindable('fit' as PreviewZoom),
 		previewDimensions = $bindable<any>({ scale: 1 })
 	} = $props();
 
@@ -427,6 +434,8 @@
 			errorMessage = tab.errorMessage;
 			deviceSize = tab.deviceSize;
 			rotation = tab.rotation;
+			viewport = tab.viewport;
+			deviceModel = tab.deviceModel;
 			consoleLogs = tab.consoleLogs;
 			canGoBack = tab.canGoBack;
 			canGoForward = tab.canGoForward;
@@ -935,6 +944,12 @@
 		changeDeviceSize: (size: DeviceSize) => {
 			coordinator.changeDeviceSize(size, previewDimensions?.scale);
 		},
+		setViewportSize: (size: DeviceSize, value: ViewportSize) => {
+			coordinator.setViewportSize(size, value, previewDimensions?.scale);
+		},
+		selectDeviceModel: (size: DeviceSize, model: string) => {
+			coordinator.selectDeviceModel(size, model, previewDimensions?.scale);
+		},
 		toggleRotation: () => {
 			coordinator.toggleRotation(previewDimensions?.scale);
 		},
@@ -1015,6 +1030,12 @@
 				bind:isReconnecting
 				bind:deviceSize
 				bind:rotation
+				viewport={resolveViewport(deviceSize as DeviceSize, rotation as Rotation, viewport)}
+				{deviceModel}
+				pageColors={getPageColors(sessionId)}
+				{showFrame}
+				{zoom}
+				onResizeViewport={(size: ViewportSize) => coordinator.setViewportSize(deviceSize as DeviceSize, size, previewDimensions?.scale)}
 				bind:sessionId
 				bind:sessionInfo
 				bind:isConnected

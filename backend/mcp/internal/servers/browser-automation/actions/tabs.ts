@@ -16,20 +16,111 @@ import { browserMcpControl } from '$backend/preview';
 import { debug } from '$shared/utils/logger';
 import type { ActionDef, TablessActionContext } from './types';
 import { commonFields } from './shared';
+import {
+	DEVICE_MODEL_IDS,
+	DEVICE_PRESETS,
+	DEVICE_SIZES,
+	VIEWPORT_LIMITS,
+	canRotate,
+	defaultRotation,
+	getDeviceEmulation,
+	getDevicePreset,
+	type DeviceSize
+} from '$shared/constants/preview';
+import type { BrowserTab } from '$backend/preview/browser/types';
+import type { EmulationPatch } from '$backend/preview/browser/viewport';
 
-const DEVICE_SIZES = ['desktop', 'laptop', 'tablet', 'mobile'] as const;
 const ROTATIONS = ['portrait', 'landscape'] as const;
 
-/** Devices that read as held rather than sat in front of. */
-function defaultRotation(deviceSize: string): 'portrait' | 'landscape' {
-	return deviceSize === 'desktop' || deviceSize === 'laptop' ? 'landscape' : 'portrait';
+const DEVICE_DOC = `device: a model — ${DEVICE_MODEL_IDS.join(' · ')} — sets its class, size, mockup and emulation (list_devices for sizes).
+  deviceSize: desktop · laptop (default) · tablet · mobile · responsive (no mockup, any size); picks the class's default model.
+  width+height (${VIEWPORT_LIMITS.min}–${VIEWPORT_LIMITS.max}) set an exact size on the current model and decide the orientation themselves.
+  touch, mobile (true/false/"auto"): touch events and the mobile viewport (<meta viewport>, overlay scrollbars) — on for tablet/mobile by default; changing either reloads the page.
+  colorScheme ("light"/"dark"/"auto"), reducedMotion ("reduce"/"no-preference"/"auto"): emulated media features.`;
+
+const sizeField = (what: string) =>
+	z.number().int().min(VIEWPORT_LIMITS.min).max(VIEWPORT_LIMITS.max).optional().describe(`Exact viewport ${what} in CSS pixels. Give with the other dimension.`);
+
+/** Device settings shared by open_tab and set_viewport. */
+const deviceFields = {
+	device: z.enum(DEVICE_MODEL_IDS).optional().describe('Device model id.'),
+	deviceSize: z.enum(DEVICE_SIZES).optional().describe('Device class; its default model.'),
+	rotation: z.enum(ROTATIONS).optional().describe('Orientation.'),
+	width: sizeField('width'),
+	height: sizeField('height'),
+	touch: z.union([z.boolean(), z.literal('auto')]).optional().describe('Touch input; "auto" = device default.'),
+	mobile: z.union([z.boolean(), z.literal('auto')]).optional().describe('Mobile viewport; "auto" = device default.'),
+	colorScheme: z.enum(['light', 'dark', 'auto']).optional().describe('prefers-color-scheme.'),
+	reducedMotion: z.enum(['reduce', 'no-preference', 'auto']).optional().describe('prefers-reduced-motion.')
+};
+
+interface DeviceArgs {
+	device?: string;
+	deviceSize?: DeviceSize;
+	rotation?: 'portrait' | 'landscape';
+	width?: number;
+	height?: number;
+	touch?: boolean | 'auto';
+	mobile?: boolean | 'auto';
+	colorScheme?: 'light' | 'dark' | 'auto';
+	reducedMotion?: 'reduce' | 'no-preference' | 'auto';
+}
+
+/** An exact size only counts when both halves of it were given. */
+function exactSize(args: DeviceArgs) {
+	if ((args.width === undefined) !== (args.height === undefined)) {
+		throw new Error('width and height go together — give both, or neither');
+	}
+	return args.width && args.height ? { width: args.width, height: args.height } : null;
+}
+
+/** The class a request names, checking a model and a class do not disagree. */
+function requestedClass(args: DeviceArgs): DeviceSize | undefined {
+	const preset = getDevicePreset(args.device);
+	if (args.device && !preset) throw new Error(`Unknown device '${args.device}' — see list_devices`);
+	if (preset && args.deviceSize && args.deviceSize !== preset.deviceSize) {
+		throw new Error(`'${args.device}' is a ${preset.deviceSize}, not a ${args.deviceSize}`);
+	}
+	return preset?.deviceSize ?? args.deviceSize;
+}
+
+/** A laptop's screen is hinged to its keyboard; it cannot stand up. */
+function checkRotation(deviceSize: DeviceSize, args: DeviceArgs) {
+	const portraitSize = args.width && args.height && args.height > args.width;
+	if (!canRotate(deviceSize) && (args.rotation === 'portrait' || portraitSize)) {
+		throw new Error(`a ${deviceSize} cannot be portrait — use a monitor (desktop), a tablet, or responsive for a tall viewport`);
+	}
+}
+
+/** "auto" hands a setting back to the device; absent leaves it alone. */
+function emulationPatch(args: DeviceArgs): EmulationPatch {
+	const auto = <T>(value: T | 'auto' | undefined): T | null | undefined => (value === 'auto' ? null : value);
+	return {
+		touch: auto(args.touch),
+		mobile: auto(args.mobile),
+		colorScheme: auto(args.colorScheme),
+		reducedMotion: auto(args.reducedMotion)
+	};
+}
+
+/** One line describing everything about a tab's device. */
+function describeDevice(tab: BrowserTab): string {
+	const model = getDevicePreset(tab.deviceModel)?.label ?? tab.deviceSize;
+	const { isMobile, hasTouch } = getDeviceEmulation(tab.deviceSize, tab.emulation);
+	const settings = [
+		hasTouch ? 'touch' : 'no touch',
+		isMobile ? 'mobile viewport' : 'desktop viewport',
+		tab.emulation.colorScheme && `color-scheme ${tab.emulation.colorScheme}`,
+		tab.emulation.reducedMotion && `reduced-motion ${tab.emulation.reducedMotion}`
+	].filter(Boolean);
+	return `${model} ${tab.rotation} ${tab.viewport.width}×${tab.viewport.height} · ${settings.join(', ')}`;
 }
 
 export const listTabs: ActionDef = {
 	type: 'list_tabs',
 	kind: 'control',
 	activity: 'Checking tabs',
-	doc: `list_tabs {} — every open tab with its id, URL, viewport and who controls it.
+	doc: `list_tabs {} — every open tab with its id, URL, device and who controls it.
   Use the id, not the position, with switch_tab/close_tab.`,
 	schema: z.object({ type: z.literal('list_tabs'), ...commonFields }),
 	needsTab: false,
@@ -49,7 +140,7 @@ export const listTabs: ActionDef = {
 			return [
 				`${index + 1}. ${tab.isActive ? '*' : ' '} ${tab.id}${control}${opener} — ${tab.title || 'Untitled'}`,
 				`     ${tab.url || '(empty)'}`,
-				`     ${tab.deviceSize}/${tab.rotation}${tab.isLoading ? ' · loading' : ''}`
+				`     ${describeDevice(tab)}${tab.isLoading ? ' · loading' : ''}`
 			].join('\n');
 		});
 
@@ -61,28 +152,31 @@ export const openTab: ActionDef = {
 	type: 'open_tab',
 	kind: 'control',
 	activity: 'Opening a tab',
-	doc: `open_tab {url?, deviceSize?, rotation?} — open a tab and make it the target.
-  deviceSize: desktop 1920×1080 · laptop 1440×900 (default) · tablet 834×1194 · mobile 402×874.
-  rotation defaults to landscape for desktop/laptop, portrait for tablet/mobile.`,
+	doc: `open_tab {url?, device?, deviceSize?, rotation?, width?, height?, touch?, mobile?, colorScheme?, reducedMotion?} — open a tab and make it the target.
+  Device settings as for set_viewport. rotation defaults to the device's natural one.`,
 	schema: z.object({
 		type: z.literal('open_tab'),
 		url: z.string().url().optional().describe('URL to load, including protocol. Omit for a blank tab.'),
-		deviceSize: z.enum(DEVICE_SIZES).optional().describe('Viewport preset (default: laptop).'),
-		rotation: z.enum(ROTATIONS).optional().describe('Orientation. Omit for the device default.'),
+		...deviceFields,
 		...commonFields
 	}),
 	needsTab: false,
 	run: async (args, ctx: TablessActionContext) => {
-		const deviceSize = args.deviceSize || 'laptop';
+		const deviceSize = requestedClass(args) ?? 'laptop';
+		checkRotation(deviceSize, args);
 		const rotation = args.rotation || defaultRotation(deviceSize);
 
-		const tab = await ctx.service.createTab(args.url || undefined, deviceSize, rotation);
+		const tab = await ctx.service.createTab(args.url || undefined, deviceSize, rotation, undefined, exactSize(args), {
+			deviceModel: args.device,
+			emulation: emulationPatch(args)
+		});
 		tab.openedBy = { kind: 'agent', chatSessionId: ctx.chatSessionId };
 		browserMcpControl.acquireControl(tab.id, ctx.chatSessionId, ctx.projectId);
 		ctx.invalidateTab();
 
-		debug.log('mcp', `📑 Opened tab ${tab.id} (${deviceSize}/${rotation})`);
-		return { summary: `${tab.id} · ${tab.url || '(blank)'} · ${deviceSize}/${rotation}` };
+		const device = describeDevice(tab);
+		debug.log('mcp', `📑 Opened tab ${tab.id} (${device})`);
+		return { summary: `${tab.id} · ${tab.url || '(blank)'} · ${device}` };
 	}
 };
 
@@ -147,27 +241,54 @@ export const closeTab: ActionDef = {
 	}
 };
 
-export const setViewport: ActionDef = {
-	type: 'set_viewport',
+export const listDevices: ActionDef = {
+	type: 'list_devices',
 	kind: 'control',
-	activity: 'Changing the viewport',
-	doc: `set_viewport {deviceSize?, rotation?} — resize the current tab.
-  Changing this re-runs the page's media queries, so it is how responsive layouts get tested.`,
-	schema: z.object({
-		type: z.literal('set_viewport'),
-		deviceSize: z.enum(DEVICE_SIZES).optional().describe('Omit to keep the current size.'),
-		rotation: z.enum(ROTATIONS).optional().describe('Omit to keep the current orientation.'),
-		...commonFields
-	}),
-	run: async (args, ctx) => {
-		const deviceSize = args.deviceSize || ctx.tab.deviceSize;
-		const rotation = args.rotation || ctx.tab.rotation;
+	activity: 'Checking devices',
+	doc: `list_devices {} — every device model with its class, system and size, and the current tab's device settings.`,
+	schema: z.object({ type: z.literal('list_devices'), ...commonFields }),
+	needsTab: false,
+	run: async (_args, ctx: TablessActionContext) => {
+		const lines = DEVICE_PRESETS.map(
+			(preset) => `${preset.id} — ${preset.label} · ${preset.deviceSize} · ${preset.os} · ${preset.width}×${preset.height}`
+		);
+		lines.push('responsive — no mockup, any size (width/height)');
 
-		const ok = await ctx.service.setViewport(ctx.tab.id, deviceSize, rotation);
-		if (!ok) throw new Error(`Could not resize tab '${ctx.tab.id}'`);
+		const active = ctx.service.getActiveTab();
+		if (active) lines.push('', `current tab ${active.id}: ${describeDevice(active)}`);
 
-		return { summary: `${deviceSize}/${rotation}` };
+		return { summary: `${DEVICE_PRESETS.length} device models`, detail: lines.join('\n') };
 	}
 };
 
-export const tabActions: ActionDef[] = [listTabs, openTab, switchTab, closeTab, setViewport];
+export const setViewport: ActionDef = {
+	type: 'set_viewport',
+	kind: 'control',
+	activity: 'Changing the device',
+	doc: `set_viewport {device?, deviceSize?, rotation?, width?, height?, touch?, mobile?, colorScheme?, reducedMotion?} — change the current tab's device; anything left out stays as it is.
+  ${DEVICE_DOC}
+  rotation alone turns the current size around; laptops stay landscape. Any of this re-runs the page's media queries, so it is how responsive layouts get tested.`,
+	schema: z.object({
+		type: z.literal('set_viewport'),
+		...deviceFields,
+		...commonFields
+	}),
+	run: async (args, ctx) => {
+		const deviceSize = requestedClass(args) ?? ctx.tab.deviceSize;
+		checkRotation(deviceSize, args);
+
+		const ok = await ctx.service.setViewport(ctx.tab.id, {
+			deviceSize,
+			rotation: args.rotation,
+			size: exactSize(args),
+			deviceModel: args.device,
+			emulation: emulationPatch(args)
+		});
+		if (!ok) throw new Error(`Could not change the device of tab '${ctx.tab.id}'`);
+
+		const tab = ctx.service.getTab(ctx.tab.id) ?? ctx.tab;
+		return { summary: describeDevice(tab) };
+	}
+};
+
+export const tabActions: ActionDef[] = [listTabs, openTab, switchTab, closeTab, listDevices, setViewport];

@@ -16,7 +16,7 @@ import { dialogActions } from './dialogs';
 
 /** Grouped for the documentation; order is the order an agent meets them. */
 export const ACTION_GROUPS: Array<{ title: string; actions: ActionDef[] }> = [
-	{ title: 'Tabs & viewport', actions: tabActions },
+	{ title: 'Tabs & device', actions: tabActions },
 	{ title: 'Navigation & waiting', actions: navigationActions },
 	{ title: 'Input (mouse, keyboard, touch)', actions: inputActions },
 	{ title: 'Dialogs & clipboard', actions: dialogActions },

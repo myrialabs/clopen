@@ -14,6 +14,7 @@ import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access'
 import { resolveFrameTarget } from '$backend/preview/browser/frame-targeting';
 import { isPasteChord, pressChord, selectAll, type Modifier } from '$backend/preview/browser/keyboard-chords';
 import { pasteText } from '$backend/preview/browser/paste';
+import { isDeviceSize } from '$shared/constants/preview';
 
 // Throttle cursor detection evaluate calls per session (100ms = ~10/sec is plenty)
 const lastCursorEvalTime = new Map<string, number>();
@@ -73,7 +74,8 @@ export const interactPreviewHandler = createRouter()
 				width: t.Optional(t.Number()),
 				height: t.Optional(t.Number()),
 				deviceSize: t.Optional(t.String()),
-				rotation: t.Optional(t.String())
+				rotation: t.Optional(t.String()),
+				deviceModel: t.Optional(t.String())
 			}),
 			/**
 			 * The tab the viewer is looking at.
@@ -523,7 +525,7 @@ export const interactPreviewHandler = createRouter()
 						break;
 
 					case 'viewport-update':
-						// Handle viewport change (device/rotation) without reconnection
+						// Handle viewport change (device/rotation/exact size) without reconnection
 						if (action.width && action.height && action.scale && action.scale > 0 && action.scale <= 1) {
 							session.scale = action.scale;
 
@@ -535,22 +537,25 @@ export const interactPreviewHandler = createRouter()
 							// the tab's metadata — which nothing told them had changed.
 							// So a phone switched to Tablet from a laptop went on
 							// drawing a laptop frame around a tablet-shaped picture.
-							if (action.deviceSize || action.rotation) {
-								await previewService.setViewport(
-									session.id,
-									(action.deviceSize as any) ?? session.deviceSize,
-									(action.rotation as any) ?? session.rotation
-								);
-							}
+							//
+							// The width and height are the tab's exact size now, not a
+							// restatement of the device class — a preset or a drag can
+							// put any size on any class. The service also rebuilds the
+							// capture around it.
+							const deviceSize = isDeviceSize(action.deviceSize) ? action.deviceSize : session.deviceSize;
+							const rotation =
+								action.rotation === 'portrait' || action.rotation === 'landscape'
+									? action.rotation
+									: session.rotation;
+
+							const updated = await previewService.setViewport(session.id, {
+								deviceSize,
+								rotation,
+								size: { width: action.width, height: action.height },
+								deviceModel: action.deviceModel
+							});
 
 							debug.log('preview', `📱 Viewport updated for tab ${tabId}: ${action.width}x${action.height}`);
-
-							// The hot-swap recomputes capture geometry from the new
-							// viewport and the viewers' own display metrics, which
-							// each of them reports separately.
-
-							// Hot-swap viewport without reconnection
-							const updated = await previewService.updateWebCodecsViewport(session.id, action.width, action.height);
 							if (!updated) {
 								debug.warn('preview', `⚠️ Viewport hot-swap failed`);
 							}

@@ -37,7 +37,8 @@ Fill a form
   [{type, selector:"#email", text:"…"}, {type, selector:"#password", text:"…"}, {click, selector:"button[type=submit]"}, {wait_for, urlContains:"/dashboard"}]
 
 Check a layout on mobile
-  [{set_viewport, deviceSize:"mobile"}, {wait_for, state:"networkIdle"}, {screenshot}]
+  [{set_viewport, device:"iphone-16"}, {wait_for, state:"networkIdle"}, {screenshot}]
+  Same page on Android in dark mode: [{set_viewport, device:"galaxy-s24", colorScheme:"dark"}, {screenshot}]
 
 Debug a page that misbehaves
   [{clear_console}, {click, selector:"#save"}, {wait, ms:500}, {console_logs, level:"error"}]`;

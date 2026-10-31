@@ -13,7 +13,7 @@
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+import type { DeviceSize, Rotation, ViewportSize } from '$frontend/utils/preview-constants';
 
 export interface BrowserSessionInfo {
 	quality: string;
@@ -51,6 +51,11 @@ export interface ExistingTabInfo {
 	isStreaming: boolean;
 	deviceSize: string;
 	rotation: string;
+	/** The tab's exact viewport. Absent from servers that predate it. */
+	width?: number;
+	height?: number;
+	/** The tab's device model; null for responsive. Absent from older servers. */
+	deviceModel?: string | null;
 	isActive: boolean;
 	canGoBack?: boolean;
 	canGoForward?: boolean;
@@ -80,7 +85,9 @@ export async function launchBrowser(
 	rotation: Rotation,
 	projectId: string,
 	mcpSessionId?: string,
-	launchId?: string
+	launchId?: string,
+	viewport?: ViewportSize | null,
+	deviceModel?: string | null
 ): Promise<LaunchResult> {
 	debug.log('preview', `🌐 launchBrowser - URL: ${url}, device: ${deviceSize}, rotation: ${rotation}, projectId: ${projectId}${mcpSessionId ? `, mcpSessionId: ${mcpSessionId}` : ''}`);
 
@@ -110,7 +117,14 @@ export async function launchBrowser(
 		// Backend will create tab automatically with projectId
 		const data = await ws.http(
 			'preview:browser-tab-open',
-			{ url, deviceSize, rotation, launchId },
+			{
+				url,
+				deviceSize,
+				rotation,
+				launchId,
+				...(viewport ? { width: viewport.width, height: viewport.height } : {}),
+				...(deviceModel ? { deviceModel } : {})
+			},
 			60000
 		);
 

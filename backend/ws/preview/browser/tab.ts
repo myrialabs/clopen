@@ -22,12 +22,22 @@ export const tabPreviewHandler = createRouter()
 				t.Literal('desktop'),
 				t.Literal('laptop'),
 				t.Literal('tablet'),
-				t.Literal('mobile')
+				t.Literal('mobile'),
+				t.Literal('responsive')
 			])),
 			rotation: t.Optional(t.Union([
 				t.Literal('portrait'),
 				t.Literal('landscape')
 			])),
+			/**
+			 * Exact viewport size, when the tab was given one (a preset that is
+			 * not its class's default, or a responsive size). The class default
+			 * when omitted.
+			 */
+			width: t.Optional(t.Number()),
+			height: t.Optional(t.Number()),
+			/** The device model; the class default when omitted. */
+			deviceModel: t.Optional(t.String()),
 			/**
 			 * Client-minted name for this launch.
 			 *
@@ -60,6 +70,9 @@ export const tabPreviewHandler = createRouter()
 			url,
 			deviceSize = 'laptop',
 			rotation = 'portrait',
+			width,
+			height,
+			deviceModel,
 			launchId
 		} = data;
 
@@ -68,9 +81,11 @@ export const tabPreviewHandler = createRouter()
 		// Create browser tab
 		const tabPromise = previewService.createTab(
 			url, // Can be undefined for blank tab
-			deviceSize as 'desktop' | 'laptop' | 'tablet' | 'mobile',
-			rotation as 'portrait' | 'landscape',
-			launchId
+			deviceSize,
+			rotation,
+			launchId,
+			width && height ? { width, height } : null,
+			{ deviceModel }
 		);
 		const timeoutPromise = new Promise((_, reject) => {
 			setTimeout(() => reject(new Error('Browser tab open timeout - took longer than 60 seconds')), OPEN_TIMEOUT);
