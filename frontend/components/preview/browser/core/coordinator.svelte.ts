@@ -4,8 +4,17 @@
  */
 
 import { debug } from '$shared/utils/logger';
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
-import { type TabManager } from './tab-manager.svelte';
+import {
+	defaultRotation,
+	canRotate,
+	planDevice,
+	resolveDevicePreset,
+	type DeviceRequest,
+	type DeviceSize,
+	type Rotation,
+	type ViewportSize
+} from '$frontend/utils/preview-constants';
+import { tabViewport, type TabManager } from './tab-manager.svelte';
 import { createStreamMessageHandler, type StreamMessageHandler } from './stream-handler.svelte';
 import { createNativeUIHandler, type NativeUIHandler } from './native-ui-handlers.svelte';
 import { createMcpHandler, type McpHandler } from './mcp-handlers.svelte';
@@ -189,7 +198,9 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 				tab.rotation,
 				projectId,
 				mcpSessionId,
-				launchId
+				launchId,
+				tab.viewport,
+				tab.deviceModel
 			);
 
 			if (result.success && result.sessionId && result.sessionInfo) {
@@ -391,56 +402,70 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 	}
 
 	/**
-	 * Handle device size change
-	 * When changing device, reset to that device's natural default rotation
+	 * Put the active tab on a device.
+	 *
+	 * The one path for every way a device gets picked — a class, a model, a
+	 * typed W×H, a drag, a rotation — completed by the same `planDevice` rule
+	 * the server applies, so the tab, the frame and the backend always agree.
 	 */
-	function changeDeviceSize(newSize: DeviceSize, scale?: number) {
-		if (!tabManager.activeTabId) return;
-
+	function setDevice(request: DeviceRequest, scale?: number) {
+		const tabId = tabManager.activeTabId;
 		const tab = tabManager.activeTab;
-		if (!tab || tab.deviceSize === newSize) return;
+		if (!tabId || !tab) return;
 
-		// Reset to device's natural default rotation:
-		// - Desktop/laptop: landscape (natural default)
-		// - Tablet/mobile: portrait (natural default)
-		const finalRotation: Rotation = (newSize === 'desktop' || newSize === 'laptop') ? 'landscape' : 'portrait';
+		const current = {
+			deviceSize: tab.deviceSize,
+			rotation: tab.rotation,
+			viewport: tabViewport(tab),
+			deviceModel: resolveDevicePreset(tab.deviceSize, tab.deviceModel)?.id ?? null
+		};
+		const next = planDevice(current, request);
 
-		// Update tab state
-		tabManager.updateTab(tabManager.activeTabId, {
-			deviceSize: newSize,
-			rotation: finalRotation
-		});
+		if (
+			next.deviceSize === current.deviceSize &&
+			next.rotation === current.rotation &&
+			next.deviceModel === current.deviceModel &&
+			next.viewport.width === current.viewport.width &&
+			next.viewport.height === current.viewport.height
+		) {
+			return;
+		}
+
+		tabManager.updateTab(tabId, next);
 
 		// Hot-swap viewport if session is active
 		if (tab.sessionId && scale) {
 			setTimeout(() => {
-				updateViewport(newSize, finalRotation, scale);
+				updateViewport(next.deviceSize, next.rotation, next.viewport, next.deviceModel, scale);
 			}, 100);
 		}
 	}
 
+	/** Switch device class, landing on that class's default model. */
+	function changeDeviceSize(newSize: DeviceSize, scale?: number) {
+		const tab = tabManager.activeTab;
+		if (!tab || tab.deviceSize === newSize) return;
+		setDevice({ deviceSize: newSize }, scale);
+	}
+
+	/** Switch to a device model, keeping the orientation within a class. */
+	function selectDeviceModel(deviceSize: DeviceSize, deviceModel: string, scale?: number) {
+		setDevice({ deviceSize, deviceModel }, scale);
+	}
+
+	/** An exact size on the current device — typed, dragged or a breakpoint. */
+	function setViewportSize(deviceSize: DeviceSize, size: ViewportSize, scale?: number) {
+		setDevice({ deviceSize, size }, scale);
+	}
+
 	/**
-	 * Toggle rotation
+	 * Turn the current size around. A custom size keeps its dimensions; only
+	 * which way they face changes.
 	 */
 	function toggleRotation(scale?: number) {
-		if (!tabManager.activeTabId) return;
-
 		const tab = tabManager.activeTab;
-		if (!tab) return;
-
-		const newRotation = tab.rotation === 'portrait' ? 'landscape' : 'portrait';
-
-		// Update tab state
-		tabManager.updateTab(tabManager.activeTabId, {
-			rotation: newRotation
-		});
-
-		// Hot-swap viewport if session is active
-		if (tab.sessionId && scale) {
-			setTimeout(() => {
-				updateViewport(tab.deviceSize, newRotation, scale);
-			}, 100);
-		}
+		if (!tab || !canRotate(tab.deviceSize)) return;
+		setDevice({ deviceSize: tab.deviceSize, rotation: tab.rotation === 'portrait' ? 'landscape' : 'portrait' }, scale);
 	}
 
 	/**
@@ -452,15 +477,15 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 			if (tab && !tab.sessionId) {
 				const finalDeviceSize = (deviceSize || 'laptop') as DeviceSize;
 				// Use device-appropriate default rotation if not specified
-				const finalRotation = rotation
-					? (rotation as Rotation)
-					: ((finalDeviceSize === 'desktop' || finalDeviceSize === 'laptop') ? 'landscape' : 'portrait');
+				const finalRotation = rotation ? (rotation as Rotation) : defaultRotation(finalDeviceSize);
 
 				// Use existing empty tab
 				tabManager.updateTab(tabManager.activeTabId, {
 					url: url,
 					deviceSize: finalDeviceSize,
-					rotation: finalRotation
+					rotation: finalRotation,
+					viewport: null,
+					deviceModel: null
 				});
 				launchBrowserForTab(tabManager.activeTabId, url, sessionId);
 			} else {
@@ -641,6 +666,8 @@ export function createBrowserCoordinator(config: BrowserCoordinatorConfig) {
 
 		// Device control
 		changeDeviceSize,
+		selectDeviceModel,
+		setViewportSize,
 		toggleRotation,
 
 		// Lifecycle

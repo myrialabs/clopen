@@ -4,7 +4,15 @@
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { debug } from '$shared/utils/logger';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+	import {
+		isPreviewZoom,
+		resolveDevicePreset,
+		resolveViewport,
+		type DeviceSize,
+		type PreviewZoom,
+		type Rotation,
+		type ViewportSize
+	} from '$frontend/utils/preview-constants';
 	import {
 		getProjectPreviewState,
 		setProjectPreviewState,
@@ -27,6 +35,12 @@
 	// Device and viewport state (exposed to parent for header controls)
 	let deviceSize = $state<DeviceSize>('laptop');
 	let rotation = $state<Rotation>('portrait');
+	/** The active tab's exact size, mirrored like the class and rotation above. */
+	let viewport = $state<ViewportSize | null>(null);
+	let deviceModel = $state<string | null>(null);
+	/** View prefs, persisted per project: they describe how this user looks, not the tab. */
+	let showFrame = $state(true);
+	let zoom = $state<PreviewZoom>('fit');
 	let previewDimensions = $state<any>({ scale: 1 });
 
 	// BrowserPreview reference
@@ -68,7 +82,9 @@
 					isOpen,
 					mode,
 					deviceSize,
-					rotation
+					rotation,
+					showFrame,
+					zoom
 				});
 				debug.log('preview', `Saved preview state for project: ${lastProjectId}`);
 			}
@@ -80,6 +96,8 @@
 				mode = savedState.mode;
 				deviceSize = savedState.deviceSize;
 				rotation = savedState.rotation;
+				showFrame = savedState.showFrame ?? true;
+				zoom = isPreviewZoom(savedState.zoom) ? savedState.zoom : 'fit';
 				debug.log('preview', `Restored preview state for project: ${projectId}`);
 			} else {
 				// Reset state for new project
@@ -87,6 +105,8 @@
 				mode = 'split';
 				deviceSize = 'laptop';
 				rotation = 'portrait';
+				showFrame = true;
+				zoom = 'fit';
 				debug.log('preview', `Reset preview state for new project: ${projectId}`);
 			}
 
@@ -97,6 +117,8 @@
 			mode = 'split';
 			deviceSize = 'laptop';
 			rotation = 'portrait';
+			showFrame = true;
+			zoom = 'fit';
 			lastProjectId = '';
 		}
 	});
@@ -104,7 +126,7 @@
 	// Expose live preview prefs to the workspace coordinator so a switch flushes
 	// the leaving project's prefs to the server accurately.
 	$effect(() => {
-		setPreviewSnapshotProvider(() => ({ isOpen, mode, deviceSize, rotation }));
+		setPreviewSnapshotProvider(() => ({ isOpen, mode, deviceSize, rotation, showFrame, zoom }));
 		return () => setPreviewSnapshotProvider(null);
 	});
 
@@ -117,6 +139,8 @@
 		void mode;
 		void deviceSize;
 		void rotation;
+		void showFrame;
+		void zoom;
 		if (!hasActiveProject || appState.isSwitching) return;
 		requestWorkspaceSave();
 	});
@@ -127,6 +151,17 @@
 		setTouchMode: (mode: 'scroll' | 'cursor') => { browserPreviewRef?.browserActions?.setTouchMode(mode); },
 		getDeviceSize: () => deviceSize,
 		getRotation: () => rotation,
+		getViewport: (): ViewportSize => resolveViewport(deviceSize, rotation, viewport),
+		/** The model shown — the class default when the tab names none. */
+		getDeviceModel: () => resolveDevicePreset(deviceSize, deviceModel)?.id ?? null,
+		getShowFrame: () => showFrame,
+		setShowFrame: (value: boolean) => {
+			showFrame = value;
+		},
+		getZoom: () => zoom,
+		setZoom: (value: PreviewZoom) => {
+			zoom = value;
+		},
 		getScale: () => previewDimensions?.scale || 1,
 		getUrl: () => url,
 		getSessionInfo: () => browserPreviewRef?.browserActions?.getSessionInfo() || null,
@@ -137,6 +172,12 @@
 			if (browserPreviewRef?.browserActions) {
 				browserPreviewRef.browserActions.changeDeviceSize(size);
 			}
+		},
+		setViewportSize: (size: DeviceSize, value: ViewportSize) => {
+			browserPreviewRef?.browserActions?.setViewportSize(size, value);
+		},
+		selectDeviceModel: (size: DeviceSize, model: string) => {
+			browserPreviewRef?.browserActions?.selectDeviceModel(size, model);
 		},
 		toggleRotation: () => {
 			if (browserPreviewRef?.browserActions) {
@@ -165,6 +206,10 @@
 				bind:mode
 				bind:deviceSize
 				bind:rotation
+				bind:viewport
+				bind:deviceModel
+				bind:showFrame
+				bind:zoom
 				bind:previewDimensions
 			/>
 		</div>

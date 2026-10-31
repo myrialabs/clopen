@@ -1,8 +1,14 @@
 import type { Browser, BrowserContext, Page } from 'puppeteer';
-import type { DeviceSize, Rotation } from '$shared/constants/preview.js';
+import type {
+	DeviceEmulationOverrides,
+	DeviceSize,
+	PageColors,
+	Rotation,
+	ViewportSize
+} from '$shared/constants/preview.js';
 
 // Re-export types from preview config
-export type { DeviceSize, Rotation };
+export type { DeviceEmulationOverrides, DeviceSize, PageColors, Rotation, ViewportSize };
 
 /**
  * A console argument rendered for display.
@@ -87,6 +93,26 @@ export interface BrowserTab {
 	// Device
 	deviceSize: DeviceSize;
 	rotation: Rotation;
+	/**
+	 * The size the page is laid out at, already facing `rotation`.
+	 *
+	 * The one source for it: a preset, a typed size and a drag all land here,
+	 * and everything that sets the browser's viewport reads it back from here
+	 * rather than recomputing it from the device class.
+	 */
+	viewport: ViewportSize;
+	/**
+	 * The device model the tab is shown on — which mockup the viewer draws.
+	 * Null for `responsive`, which has none.
+	 */
+	deviceModel: string | null;
+	/** Device settings set on top of the model; empty means the device's own. */
+	emulation: DeviceEmulationOverrides;
+	/**
+	 * The colours the page asks to be framed in, last read from its DOM.
+	 * Painted into the system bands around it by the viewer.
+	 */
+	pageColors?: PageColors;
 
 	// Console
 	consoleLogs: BrowserConsoleMessage[];
@@ -215,6 +241,10 @@ export interface BrowserTabInfo {
 	isStreaming: boolean;
 	deviceSize: DeviceSize;
 	rotation: Rotation;
+	width: number;
+	height: number;
+	deviceModel: string | null;
+	emulation: DeviceEmulationOverrides;
 	isActive: boolean;
 	canGoBack: boolean;
 	canGoForward: boolean;

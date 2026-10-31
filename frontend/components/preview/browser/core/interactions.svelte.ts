@@ -7,7 +7,7 @@
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+import type { DeviceSize, Rotation, ViewportSize } from '$frontend/utils/preview-constants';
 
 export interface InteractionAction {
 	type:
@@ -203,13 +203,13 @@ export function sendScaleUpdate(scale: number): void {
 export async function updateViewport(
 	deviceSize: DeviceSize,
 	rotation: Rotation,
+	viewport: ViewportSize,
+	deviceModel: string | null,
 	scale: number
 ): Promise<void> {
-	// Import here to avoid circular dependency
-	const { getViewportDimensions } = await import('$frontend/utils/preview-constants.js');
-
-	// Use getViewportDimensions for consistent viewport calculation
-	const { width, height } = getViewportDimensions(deviceSize, rotation);
+	// The exact size, not the class default: a preset or a drag can put any
+	// size on any class.
+	const { width, height } = viewport;
 
 	setDisplayScale(scale);
 
@@ -223,7 +223,8 @@ export async function updateViewport(
 				scale,
 				dpr: currentDpr(),
 				deviceSize,
-				rotation
+				rotation,
+				...(deviceModel ? { deviceModel } : {})
 			}
 		});
 

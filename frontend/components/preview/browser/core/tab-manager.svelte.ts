@@ -4,7 +4,7 @@
  */
 
 import { debug } from '$shared/utils/logger';
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+import { resolveViewport, type DeviceSize, type Rotation, type ViewportSize } from '$frontend/utils/preview-constants';
 import type { BrowserConsoleMessage } from '$frontend/utils/native-ui';
 
 // Tab interface
@@ -43,9 +43,35 @@ export interface PreviewTab {
 	canGoForward: boolean;
 	deviceSize: DeviceSize;
 	rotation: Rotation;
+	/**
+	 * The exact size the page is laid out at, or null for the device class's
+	 * default turned to `rotation`. Read it through `tabViewport()`, never
+	 * from the class alone — a preset or a drag can put any size on any class.
+	 */
+	viewport: ViewportSize | null;
+	/**
+	 * The device model the tab is shown on, which decides its mockup. Null
+	 * for the class default (and for responsive, which has no mockup).
+	 */
+	deviceModel: string | null;
 	consoleLogs: BrowserConsoleMessage[];
 	previewDimensions: any;
 	errorMessage: string | null;
+}
+
+/** The size a tab's page is laid out at. */
+export function tabViewport(tab: Pick<PreviewTab, 'deviceSize' | 'rotation' | 'viewport'>): ViewportSize {
+	return resolveViewport(tab.deviceSize, tab.rotation, tab.viewport);
+}
+
+/**
+ * An exact size from a backend payload, or null when it carried none — an
+ * older server, or a tab it never gave a size.
+ */
+export function viewportFrom(data: { width?: unknown; height?: unknown } | null | undefined): ViewportSize | null {
+	const width = Number(data?.width);
+	const height = Number(data?.height);
+	return width > 0 && height > 0 ? { width, height } : null;
 }
 
 /**
@@ -100,6 +126,8 @@ export function createTabManager() {
 			canGoForward: false,
 			deviceSize,
 			rotation,
+			viewport: null,
+			deviceModel: null,
 			consoleLogs: [],
 			previewDimensions: { scale: 1 },
 			errorMessage: null

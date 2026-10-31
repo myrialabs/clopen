@@ -13,7 +13,8 @@ import { WorkspaceClipboard, type ClipboardSource } from './browser-clipboard.js
 import { browserMcpControl } from './browser-mcp-control.js';
 import { browserPool } from './browser-pool.js';
 import { ws } from '$backend/utils/ws';
-import { getViewportDimensions } from '$shared/constants/preview.js';
+import { defaultRotation, type DeviceRequest } from '$shared/constants/preview.js';
+import { applyViewport, type EmulationPatch } from './viewport';
 import { debug } from '$shared/utils/logger';
 import { sleep } from '$shared/utils/async';
 import { scopeProjectId } from '$shared/utils/workspace-scope';
@@ -25,6 +26,8 @@ import type {
 	BrowserAutonomousAction,
 	DeviceSize,
 	Rotation,
+	ViewportSize,
+	PageColors,
 	BrowserDialogResponse,
 	BrowserSelectResponse,
 	BrowserContextMenuResponse,
@@ -35,6 +38,14 @@ import type {
 	ClientDisplayMetrics,
 	ClientStreamFeedback
 } from './types';
+
+/**
+ * How often a watched phone or tablet tab has its colours re-read. A page can
+ * change them without navigating — a theme toggle, an agent's colorScheme —
+ * and the bands around it would otherwise keep the old ones until the next
+ * load. One small evaluate per watched tab; most rounds emit nothing.
+ */
+const PAGE_COLORS_POLL_MS = 1500;
 
 /** Time a window needs after leaving fullscreen before an override sticks. */
 const WINDOW_SETTLE_MS = 150;
@@ -117,7 +128,12 @@ export class BrowserPreviewService extends EventEmitter {
 
 		// Forward events from handlers to main service
 		this.setupEventForwarding();
+
+		this.pageColorsTimer = setInterval(() => void this.pollPageColors(), PAGE_COLORS_POLL_MS);
 	}
+
+	/** Re-reads the page colours of streaming handheld tabs; see `pollPageColors`. */
+	private pageColorsTimer: ReturnType<typeof setInterval> | null = null;
 
 	/**
 	 * Tabs that must keep running even though nobody is watching them.
@@ -383,10 +399,12 @@ export class BrowserPreviewService extends EventEmitter {
 		url?: string,
 		deviceSize: DeviceSize = 'laptop',
 		rotation?: Rotation,
-		launchId?: string
+		launchId?: string,
+		viewport?: ViewportSize | null,
+		device?: { deviceModel?: string | null; emulation?: EmulationPatch | null }
 	): Promise<BrowserTab> {
 		// Use device-appropriate default rotation if not specified
-		const actualRotation = rotation || ((deviceSize === 'desktop' || deviceSize === 'laptop') ? 'landscape' : 'portrait');
+		const actualRotation = rotation || defaultRotation(deviceSize);
 
 		// Dialog interception and the capability shims both have to be in place
 		// before the first navigation: a page can call alert() or getUserMedia()
@@ -401,7 +419,10 @@ export class BrowserPreviewService extends EventEmitter {
 		const tab = await this.tabManager.createTab(url, deviceSize, actualRotation, {
 			setActive: true,
 			preNavigationSetup,
-			launchId
+			launchId,
+			viewport,
+			deviceModel: device?.deviceModel,
+			emulation: device?.emulation
 		});
 
 		// Setup console, navigation tracking, and pre-inject streaming scripts in parallel
@@ -642,8 +663,86 @@ export class BrowserPreviewService extends EventEmitter {
 			};
 
 			this.emit('preview:browser-tab-meta', meta);
+			await this.refreshPageColors(tabId);
 		} catch (error) {
 			debug.warn('preview', `⚠️ Failed to refresh tab meta for ${tabId}:`, error);
+		}
+	}
+
+	/**
+	 * Read the colours a page asks to be framed in, as a mobile browser does:
+	 * the status bar takes the page's `theme-color` (honouring its `media`),
+	 * and everything else the root background, falling through to the body
+	 * and then to the canvas default for the page's colour scheme.
+	 *
+	 * Read from the DOM, never sampled from pixels — a sampled edge picks up
+	 * whatever header, image or button happens to touch it, which is how three
+	 * sides of one page came out three different colours.
+	 */
+	private async readPageColors(page: Page): Promise<PageColors | null> {
+		const read = page.evaluate(() => {
+			const probe = document.createElement('canvas').getContext('2d');
+			const normalise = (colour: string | null | undefined): string | null => {
+				if (!colour || !probe) return null;
+				probe.fillStyle = '#000001';
+				probe.fillStyle = colour;
+				const value = String(probe.fillStyle);
+				return value === '#000001' && colour.trim().toLowerCase() !== '#000001' ? null : value;
+			};
+			const opaque = (colour: string | null): string | null => {
+				if (!colour) return null;
+				const alpha = /rgba?\([^)]*,\s*([\d.]+)\s*\)/.exec(colour);
+				return alpha && Number(alpha[1]) === 0 ? null : colour;
+			};
+
+			let theme: string | null = null;
+			for (const meta of Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'))) {
+				const media = meta.getAttribute('media');
+				if (!media || matchMedia(media).matches) {
+					theme = opaque(normalise(meta.content));
+					if (theme) break;
+				}
+			}
+
+			const root = opaque(normalise(getComputedStyle(document.documentElement).backgroundColor));
+			const body = document.body ? opaque(normalise(getComputedStyle(document.body).backgroundColor)) : null;
+			const darkCanvas =
+				getComputedStyle(document.documentElement).colorScheme.includes('dark') &&
+				matchMedia('(prefers-color-scheme: dark)').matches;
+			const background = root ?? body ?? (darkCanvas ? '#121212' : '#ffffff');
+
+			return { statusBar: theme ?? background, background };
+		});
+		// A page mid-navigation can reject after the timeout has already won;
+		// caught here so that late rejection is not left unhandled.
+		const settled = read.catch(() => null);
+		const timeout = new Promise<null>((resolve) => setTimeout(() => resolve(null), 1000));
+		return await Promise.race([settled, timeout]);
+	}
+
+	/** Re-read a tab's page colours and tell viewers when they changed. */
+	private async refreshPageColors(tabId: string): Promise<void> {
+		const tab = this.getTab(tabId);
+		if (!tab || tab.page.isClosed()) return;
+
+		const colors = await this.readPageColors(tab.page);
+		if (!colors) return;
+		if (tab.pageColors?.statusBar === colors.statusBar && tab.pageColors?.background === colors.background) return;
+
+		tab.pageColors = colors;
+		this.emit('preview:browser-page-colors', { tabId, ...colors, timestamp: Date.now() });
+	}
+
+	/**
+	 * Only phones and tablets have bands to paint, and only a tab someone is
+	 * watching needs them current. Sleeping tabs are left alone — running
+	 * script in a frozen page would wake it.
+	 */
+	private async pollPageColors(): Promise<void> {
+		for (const tab of this.tabManager.getAllTabs()) {
+			if (tab.deviceSize !== 'mobile' && tab.deviceSize !== 'tablet') continue;
+			if (!this.videoCapture.isStreaming(tab.id) || this.lifecycle.isFrozen(tab.id)) continue;
+			await this.refreshPageColors(tab.id);
 		}
 	}
 
@@ -759,11 +858,29 @@ export class BrowserPreviewService extends EventEmitter {
 	}
 
 	/**
-	 * Change viewport settings (device size and rotation) for an existing tab
+	 * Change the device class, orientation or exact size of an existing tab,
+	 * and rebuild the capture around it.
+	 *
+	 * One call for every caller — the viewer's device menu, a drag, an agent's
+	 * `set_viewport`. The agent's path used to stop at the page's viewport,
+	 * leaving the capture sized for the old shape until something else
+	 * happened to restart it.
 	 */
-	async setViewport(tabId: string, deviceSize: DeviceSize, rotation: Rotation): Promise<boolean> {
+	async setViewport(
+		tabId: string,
+		request: DeviceRequest & { emulation?: EmulationPatch | null }
+	): Promise<boolean> {
 		await this.ensureTabAwake(tabId);
-		return await this.tabManager.setViewport(tabId, deviceSize, rotation);
+		const ok = await this.tabManager.setViewport(tabId, request);
+		if (!ok) return false;
+
+		const tab = this.getTab(tabId);
+		// False only means nothing is streaming yet; the stream that starts
+		// later is sized from the viewport just set.
+		if (tab) await this.videoCapture.updateViewport(tabId, tab);
+		// A colour-scheme change recolours the page without a navigation.
+		void this.refreshPageColors(tabId);
+		return true;
 	}
 
 	/**
@@ -992,7 +1109,7 @@ export class BrowserPreviewService extends EventEmitter {
 		try {
 			const tab = this.getTab(tabId);
 			if (tab) {
-				const { width, height } = getViewportDimensions(tab.deviceSize, tab.rotation);
+				const { width, height } = tab.viewport;
 
 				// A fullscreen that never exited leaves the window itself in
 				// `fullscreen` state, and no viewport override survives that — the
@@ -1002,8 +1119,8 @@ export class BrowserPreviewService extends EventEmitter {
 				// The capture path re-sends the override and recomputes the screencast
 				// geometry with it. With no stream running there is no geometry to
 				// recompute and the override is all that is needed.
-				const restored = await this.videoCapture.updateViewport(tabId, tab, width, height);
-				if (!restored) await tab.page.setViewport({ width, height });
+				const restored = await this.videoCapture.updateViewport(tabId, tab);
+				if (!restored) await applyViewport(tab.page, tab);
 
 				debug.log('preview', `🖥️ Restored emulated viewport for tab ${tabId}: ${width}x${height}`);
 			}
@@ -1103,21 +1220,13 @@ export class BrowserPreviewService extends EventEmitter {
 		this.fullscreenTabs.delete(tabId);
 		this.emit('preview:browser-fullscreen-state', { tabId, active: false });
 
-		const { width, height } = getViewportDimensions(tab.deviceSize, tab.rotation);
-		const restored = await this.videoCapture.updateViewport(tabId, tab, width, height);
-		if (!restored) await tab.page.setViewport({ width, height }).catch(() => {});
+		const restored = await this.videoCapture.updateViewport(tabId, tab);
+		if (!restored) await applyViewport(tab.page, tab).catch(() => {});
 
 		debug.log('preview', `🖥️ Forced tab ${tabId} out of full screen`);
 		return true;
 	}
 
-	async updateWebCodecsViewport(tabId: string, width: number, height: number): Promise<boolean> {
-		const tab = this.getTab(tabId);
-		if (!tab) {
-			return false;
-		}
-		return await this.videoCapture.updateViewport(tabId, tab, width, height);
-	}
 
 	async getWebCodecsOffer(tabId: string, viewerId: string): Promise<RTCSessionDescriptionInit | null> {
 		const tab = this.getTab(tabId);
@@ -1483,6 +1592,10 @@ export class BrowserPreviewService extends EventEmitter {
 	// Cleanup Methods
 	// ============================================================================
 	async cleanup() {
+		if (this.pageColorsTimer) {
+			clearInterval(this.pageColorsTimer);
+			this.pageColorsTimer = null;
+		}
 		// Clear all cursor tracking
 		this.interactionHandler.clearAllSessionCursors();
 		// Release host-bridge scratch dirs and unblock any parked page promises
@@ -1649,6 +1762,10 @@ class BrowserPreviewServiceManager {
 		});
 
 		// Forward live tab metadata (title, favicon, back/forward availability)
+		service.on('preview:browser-page-colors', (data) => {
+			ws.emit.project(roomId, 'preview:browser-page-colors', { ...data, projectId });
+		});
+
 		service.on('preview:browser-tab-meta', (data) => {
 			ws.emit.project(roomId, 'preview:browser-tab-meta', { ...data, projectId });
 		});

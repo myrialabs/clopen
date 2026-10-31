@@ -11,7 +11,7 @@ import { debug } from '$shared/utils/logger';
 
 export interface MCPLaunchRequest {
 	url: string;
-	deviceSize: 'desktop' | 'laptop' | 'tablet' | 'mobile';
+	deviceSize: 'desktop' | 'laptop' | 'tablet' | 'mobile' | 'responsive';
 	rotation: 'portrait' | 'landscape';
 }
 

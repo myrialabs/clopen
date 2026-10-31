@@ -466,11 +466,19 @@ export class BrowserInteractionHandler extends EventEmitter {
 	 */
 	private async withTouch<T>(page: Page, fn: (client: CDPSession) => Promise<T>): Promise<T> {
 		const client = await page.createCDPSession();
+		// A phone or tablet tab has touch on for good — its page was built
+		// around it. Switching it off after the gesture would leave that page
+		// believing it had lost its touchscreen.
+		const touchIsPermanent = page.viewport()?.hasTouch === true;
 		try {
-			await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+			if (!touchIsPermanent) {
+				await client.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 2 });
+			}
 			return await fn(client);
 		} finally {
-			await client.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
+			if (!touchIsPermanent) {
+				await client.send('Emulation.setTouchEmulationEnabled', { enabled: false }).catch(() => {});
+			}
 			await client.detach().catch(() => {});
 		}
 	}

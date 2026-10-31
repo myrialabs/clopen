@@ -7,10 +7,16 @@
 	import { cubicOut } from 'svelte/easing';
 	import { onDestroy } from 'svelte';
 	import {
-		getViewportDimensions,
-		getFrameMetrics,
+		VIEWPORT_LIMITS,
+		clampViewport,
+		cornersToCss,
+		getFrameLayout,
 		type DeviceSize,
-		type Rotation
+		type PageColors,
+		type PreviewZoom,
+		type Rect,
+		type Rotation,
+		type ViewportSize
 	} from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { sendScaleUpdate, setDisplayScale } from '../core/interactions.svelte';
@@ -24,6 +30,17 @@
 		isReconnecting = $bindable(false), // True during fast reconnect after navigation
 		deviceSize = $bindable<DeviceSize>('laptop'),
 		rotation = $bindable<Rotation>('portrait'),
+		/** The page's exact size — the tab's, resolved by the parent. */
+		viewport = { width: 1440, height: 900 } as ViewportSize,
+		/** The device model whose mockup is drawn; the class default when null. */
+		deviceModel = null as string | null,
+		/** The colours the page asks to be framed in, read from its DOM. */
+		pageColors = null as PageColors | null,
+		/** Draw the device mockup. Off, or in responsive mode, the page stands alone. */
+		showFrame = true,
+		zoom = 'fit' as PreviewZoom,
+		/** A size picked here — typed, dragged, or a breakpoint — for the parent to apply. */
+		onResizeViewport = ((_size: ViewportSize) => {}) as (size: ViewportSize) => void,
 		sessionId = $bindable<string | null>(null),
 		sessionInfo = $bindable<any>(null),
 		isConnected = $bindable(false),
@@ -209,9 +226,15 @@
 	 * Same derivation as the canvas uses; the backend dispatches page points in
 	 * these units.
 	 */
-	const pageSize = $derived(
-		getViewportDimensions(deviceSize as DeviceSize, rotation as Rotation)
-	);
+	const pageSize = $derived(viewport);
+
+	/**
+	 * Where everything in the mockup sits, unscaled. The same layout the frame
+	 * draws from, so overlays and glow land exactly on the device.
+	 */
+	const layout = $derived(getFrameLayout(deviceSize as DeviceSize, viewport, showFrame, deviceModel));
+	const isResponsive = $derived(deviceSize === 'responsive');
+
 
 	/**
 	 * Re-measure where the frame is painted.
@@ -222,7 +245,17 @@
 	 */
 	function measureFrame(): void {
 		const rect = canvasAPI?.getPaintedRect?.();
-		const container = previewContainer?.getBoundingClientRect();
+		const box = previewContainer?.getBoundingClientRect();
+		// The origin of the container's *content*, which is what an absolutely
+		// placed overlay is positioned against. When zoomed past the panel the
+		// container scrolls, and its box and its content part ways by exactly
+		// the scroll offset.
+		const container = box
+			? {
+					left: box.left - (previewContainer?.scrollLeft ?? 0),
+					top: box.top - (previewContainer?.scrollTop ?? 0)
+				}
+			: null;
 
 		if (container) {
 			const origin = containerOrigin;
@@ -288,6 +321,7 @@
 		void sessionId;
 		void deviceSize;
 		void rotation;
+		void layout;
 		void previewDimensions;
 		void isStreamReady;
 		void hasPaintedContent;
@@ -408,77 +442,178 @@
 
 	// Use imported device viewports from config
 
+	/** Room left around the device for its glow and the desktop's shadow. */
+	const FIT_PADDING = 40;
+
 	// Calculate and update preview dimensions
 	function calculatePreviewDimensions() {
-		if (!previewContainer) {
-			previewDimensions = {
-				width: '100%',
-				height: '100%',
-				scale: 1,
-				canvasWidth: 1440,
-				canvasHeight: 900,
-				bodyWidth: '1440px',
-				bodyHeight: '900px',
-				screenOffsetLeft: '0px',
-				screenOffsetTop: '0px',
-				screenWidth: '1440px',
-				screenHeight: '900px',
-				screenRadius: '0px'
-			};
-			return;
+		const frame = layout;
+		const { footprint, screen } = frame;
+
+		let scale = 1;
+		if (previewContainer) {
+			const containerRect = previewContainer.getBoundingClientRect();
+			const availableWidth = Math.max(0, containerRect.width - FIT_PADDING);
+			const availableHeight = Math.max(0, containerRect.height - FIT_PADDING);
+
+			if (zoom === 'fit') {
+				// Scale to fit, the whole mockup included. Never past 100%.
+				const scaleX = availableWidth > 0 ? Math.min(1, availableWidth / footprint.width) : 1;
+				const scaleY = availableHeight > 0 ? Math.min(1, availableHeight / footprint.height) : 1;
+				scale = Math.min(scaleX, scaleY);
+			} else {
+				scale = zoom;
+			}
 		}
-
-		const containerRect = previewContainer.getBoundingClientRect();
-		// Small breathing room so the frame (and desktop stand) doesn't touch edges.
-		const padding = 16;
-		const availableWidth = Math.max(0, containerRect.width - padding);
-		const availableHeight = Math.max(0, containerRect.height - padding);
-
-		// Use getViewportDimensions for consistent viewport calculation
-		// This ensures portrait = height > width, landscape = width > height
-		const { width: canvasWidth, height: canvasHeight } = getViewportDimensions(
-			deviceSize as DeviceSize,
-			rotation as Rotation
-		);
-
-		// Include device bezel (and accessories) in the fit calculation so the whole
-		// mockup stays inside the dock container regardless of root font-size.
-		const frame = getFrameMetrics(deviceSize as DeviceSize, rotation as Rotation);
-		const standReserve = frame.stand ? 42 : 0; // desktop stand extends below body
-		const bodyWidth = canvasWidth + frame.left + frame.right;
-		const bodyHeight = canvasHeight + frame.top + frame.bottom + frame.statusBarHeight;
-		const totalWidth = bodyWidth;
-		const totalHeight = bodyHeight + standReserve;
-
-		// Scale to fit. Never scale up beyond original size (scale max = 1).
-		const scaleX = availableWidth > 0 ? Math.min(1, availableWidth / totalWidth) : 1;
-		const scaleY = availableHeight > 0 ? Math.min(1, availableHeight / totalHeight) : 1;
-		const scale = Math.min(scaleX, scaleY);
 
 		// Publish immediately — the streaming handshake reads this to pick a
 		// capture resolution, and it runs before any scale-change event fires.
 		setDisplayScale(scale);
 
 		previewDimensions = {
-			// Outer wrapper = full scaled footprint (body + stand accessory)
-			width: `${totalWidth * scale}px`,
-			height: `${totalHeight * scale}px`,
+			// Outer wrapper = full scaled footprint (body + accessories)
+			width: `${footprint.width * scale}px`,
+			height: `${footprint.height * scale}px`,
 			scale,
-			// Unscaled canvas (native viewport) — used inside DeviceFrame
-			canvasWidth,
-			canvasHeight,
-			// Unscaled body (canvas + bezel) — used as the scaled transform target
-			bodyWidth: `${bodyWidth}px`,
-			bodyHeight: `${bodyHeight}px`,
-			// Screen rect in scaled (display) pixels — used to position overlays
-			// precisely over the canvas area, not the decorative bezel.
-			screenOffsetLeft: `${frame.left * scale}px`,
-			screenOffsetTop: `${(frame.top + frame.statusBarHeight) * scale}px`,
-			screenWidth: `${canvasWidth * scale}px`,
-			screenHeight: `${canvasHeight * scale}px`,
-			screenRadius: `${frame.screenRadius * scale}px`
+			// Unscaled page viewport
+			canvasWidth: viewport.width,
+			canvasHeight: viewport.height,
+			// Unscaled footprint — the scaled transform target
+			bodyWidth: `${footprint.width}px`,
+			bodyHeight: `${footprint.height}px`,
+			// Page rect in scaled (display) pixels — used to position overlays
+			// precisely over the page, not the decorative frame.
+			screenOffsetLeft: `${screen.x * scale}px`,
+			screenOffsetTop: `${screen.y * scale}px`,
+			screenWidth: `${screen.width * scale}px`,
+			screenHeight: `${screen.height * scale}px`
 		};
 	}
+
+	/** A rect from the layout, scaled and placed as an absolute overlay. */
+	function scaledBox(rect: Rect, scale: number): string {
+		return `left: ${rect.x * scale}px; top: ${rect.y * scale}px; width: ${rect.width * scale}px; height: ${rect.height * scale}px;`;
+	}
+
+	const currentScale = $derived(previewDimensions?.scale && previewDimensions.scale > 0 ? previewDimensions.scale : 1);
+	const zoomPercent = $derived(Math.round(currentScale * 100));
+
+	// ------------------------------------------------------------------
+	// Responsive mode: typed size, breakpoints and drag handles
+	// ------------------------------------------------------------------
+
+	/** Common layout breakpoints, one click each. */
+	const BREAKPOINTS = [
+		{ label: '360', width: 360 },
+		{ label: '768', width: 768 },
+		{ label: '1024', width: 1024 },
+		{ label: '1280', width: 1280 },
+		{ label: '1440', width: 1440 }
+	];
+
+	let widthInput = $state('');
+	let heightInput = $state('');
+	$effect(() => {
+		widthInput = String(viewport.width);
+		heightInput = String(viewport.height);
+	});
+
+	const canResize = $derived(isResponsive && !isMcpControlled);
+
+	function commitTypedSize() {
+		const width = Number(widthInput);
+		const height = Number(heightInput);
+		if (!(width > 0) || !(height > 0)) {
+			widthInput = String(viewport.width);
+			heightInput = String(viewport.height);
+			return;
+		}
+		const next = clampViewport({ width, height });
+		widthInput = String(next.width);
+		heightInput = String(next.height);
+		if (next.width !== viewport.width || next.height !== viewport.height) onResizeViewport(next);
+	}
+
+	function handleSizeKeydown(event: KeyboardEvent) {
+		if (event.key === 'Enter') {
+			event.preventDefault();
+			(event.currentTarget as HTMLInputElement).blur();
+		} else if (event.key === 'Escape') {
+			widthInput = String(viewport.width);
+			heightInput = String(viewport.height);
+			(event.currentTarget as HTMLInputElement).blur();
+		}
+	}
+
+	/**
+	 * A drag in progress, and the size it would land on.
+	 *
+	 * Nothing is sent while dragging: every size change restarts the capture,
+	 * so streaming one per pointer move would stall the picture for the whole
+	 * drag. An outline shows where the edge is going and the size is applied
+	 * once, on release.
+	 */
+	let dragResize = $state<{
+		axis: 'x' | 'y' | 'xy';
+		startX: number;
+		startY: number;
+		start: ViewportSize;
+		next: ViewportSize;
+	} | null>(null);
+
+	function startResize(event: PointerEvent, axis: 'x' | 'y' | 'xy') {
+		if (!canResize || event.button !== 0) return;
+		event.preventDefault();
+		event.stopPropagation();
+		(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+		dragResize = {
+			axis,
+			startX: event.clientX,
+			startY: event.clientY,
+			start: { ...viewport },
+			next: { ...viewport }
+		};
+	}
+
+	function moveResize(event: PointerEvent) {
+		const drag = dragResize;
+		if (!drag) return;
+		// The page stays centred, so an edge moves half as far as the size
+		// grows: double the pointer's travel to keep the edge under it.
+		const dx = ((event.clientX - drag.startX) * 2) / currentScale;
+		const dy = ((event.clientY - drag.startY) * 2) / currentScale;
+		dragResize = {
+			...drag,
+			next: clampViewport({
+				width: drag.axis === 'y' ? drag.start.width : drag.start.width + dx,
+				height: drag.axis === 'x' ? drag.start.height : drag.start.height + dy
+			})
+		};
+	}
+
+	function endResize(event: PointerEvent) {
+		const drag = dragResize;
+		if (!drag) return;
+		(event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+		dragResize = null;
+		if (drag.next.width !== drag.start.width || drag.next.height !== drag.start.height) {
+			onResizeViewport(drag.next);
+		}
+	}
+
+	/** The outline of a drag in progress, centred on the page like the page itself. */
+	const dragOutline = $derived.by(() => {
+		if (!dragResize) return null;
+		const { screen } = layout;
+		const width = dragResize.next.width * currentScale;
+		const height = dragResize.next.height * currentScale;
+		return {
+			left: (screen.x + screen.width / 2) * currentScale - width / 2,
+			top: (screen.y + screen.height / 2) * currentScale - height / 2,
+			width,
+			height
+		};
+	});
 
 	// Handle canvas interactions
 	function handleCanvasInteraction(action: any) {
@@ -537,6 +672,8 @@
 			// Trigger reactive recalculation by accessing reactive values
 			void deviceSize;
 			void rotation;
+			void layout;
+			void zoom;
 			debug.log(
 				'preview',
 				`📐 PreviewContainer: Recalculating dimensions for ${deviceSize}/${rotation}`
@@ -659,18 +796,69 @@
 	});
 </script>
 
+<div class="flex min-h-0 min-w-0 flex-1 flex-col">
+	<!--
+		Responsive mode: the size is the user's to set, so the controls for it
+		sit right above the page rather than in a menu.
+	-->
+	{#if url && isResponsive}
+		<div
+			class="flex shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 px-3 py-1.5 text-xs text-slate-600 dark:text-slate-300"
+		>
+			<div class="flex items-center gap-1">
+				<input
+					type="number"
+					inputmode="numeric"
+					min={VIEWPORT_LIMITS.min}
+					max={VIEWPORT_LIMITS.max}
+					bind:value={widthInput}
+					onblur={commitTypedSize}
+					onkeydown={handleSizeKeydown}
+					disabled={!canResize}
+					aria-label="Viewport width"
+					class="size-input w-16 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-center tabular-nums outline-none focus:border-violet-500 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800"
+				/>
+				<span class="text-slate-400">×</span>
+				<input
+					type="number"
+					inputmode="numeric"
+					min={VIEWPORT_LIMITS.min}
+					max={VIEWPORT_LIMITS.max}
+					bind:value={heightInput}
+					onblur={commitTypedSize}
+					onkeydown={handleSizeKeydown}
+					disabled={!canResize}
+					aria-label="Viewport height"
+					class="size-input w-16 rounded-md border border-slate-200 bg-white px-1.5 py-0.5 text-center tabular-nums outline-none focus:border-violet-500 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800"
+				/>
+				<span class="ml-1 tabular-nums text-slate-400">{zoomPercent}%</span>
+			</div>
+			<div class="flex items-center gap-0.5">
+				{#each BREAKPOINTS as breakpoint (breakpoint.width)}
+					<button
+						type="button"
+						disabled={!canResize}
+						onclick={() => onResizeViewport(clampViewport({ width: breakpoint.width, height: viewport.height }))}
+						class="rounded px-1.5 py-0.5 tabular-nums transition-colors hover:bg-violet-500/10 hover:text-violet-600 disabled:pointer-events-none disabled:opacity-50 {viewport.width === breakpoint.width ? 'bg-violet-500/10 text-violet-600 dark:text-violet-400' : ''}"
+						title="Width {breakpoint.width}px"
+					>
+						{breakpoint.label}
+					</button>
+				{/each}
+			</div>
+		</div>
+	{/if}
+
 <!-- Preview Container with scaling -->
 <div
 	bind:this={previewContainer}
-	class="flex-1 relative overflow-hidden p-0.5 flex items-center justify-center min-h-0"
+	class="flex-1 relative p-0.5 flex min-h-0 min-w-0 {zoom === 'fit' ? 'overflow-hidden' : 'overflow-auto'}"
+	style="justify-content: safe center; align-items: safe center;"
 >
 	{#if url}
 		<!-- Scaled container for proper viewport simulation -->
 		<div
-			class="relative flex-shrink-0 {isMcpControlled
-				? `ring-2 ring-offset-2 ring-offset-slate-900 rounded-xl ${isMcpFocused ? 'ring-amber-500' : 'ring-amber-500/40'}`
-				: ''}"
-			class:mcp-control-border={isMcpControlled && isMcpFocused}
+			class="relative flex-shrink-0"
 			style="width: {previewDimensions.width}; height: {previewDimensions.height};"
 			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
 			out:scale={{ duration: 200, easing: cubicOut, start: 0.95 }}
@@ -686,9 +874,10 @@
 						transition: none;
 					"
 				>
-					<DeviceFrame deviceSize={deviceSize as DeviceSize} rotation={rotation as Rotation}>
+					<DeviceFrame deviceSize={deviceSize as DeviceSize} {viewport} {deviceModel} {showFrame} {pageColors}>
 						<Canvas
 							projectId={projectId}
+							{viewport}
 							bind:sessionId
 							bind:sessionInfo
 							bind:deviceSize
@@ -720,7 +909,7 @@
 						top: {previewDimensions.screenOffsetTop};
 						width: {previewDimensions.screenWidth};
 						height: {previewDimensions.screenHeight};
-						border-radius: 0 0 {previewDimensions.screenRadius} {previewDimensions.screenRadius};
+						border-radius: {cornersToCss(layout.screenRadius, currentScale)};
 					"
 				>
 					<div class="flex flex-col items-center gap-2">
@@ -742,7 +931,7 @@
 						top: {previewDimensions.screenOffsetTop};
 						width: {previewDimensions.screenWidth};
 						height: {previewDimensions.screenHeight};
-						border-radius: 0 0 {previewDimensions.screenRadius} {previewDimensions.screenRadius};
+						border-radius: {cornersToCss(layout.screenRadius, currentScale)};
 					"
 				>
 					<div class="flex flex-col items-center gap-2">
@@ -786,6 +975,69 @@
 						<span>Exit full screen</span>
 					</button>
 				</div>
+			{/if}
+
+			<!--
+				Agent control: the edge of the screen glows, inside the device and
+				along the display's own rounded corners — the mockup itself stays
+				as it is. Held but not being worked on, it rests dim; while the
+				agent acts it breathes. Only opacity animates: a pulsing
+				box-shadow would repaint every frame right next to a video.
+			-->
+			{#if isMcpControlled && sessionInfo}
+				<div
+					class="mcp-edge pointer-events-none absolute z-[15]"
+					class:mcp-edge-active={isMcpFocused}
+					style="{scaledBox(layout.display, currentScale)} border-radius: {cornersToCss(layout.displayRadius, currentScale)};"
+				></div>
+			{/if}
+
+			<!-- Responsive resize: an outline of where a drag will land, then handles. -->
+			{#if dragOutline && dragResize}
+				<div
+					class="pointer-events-none absolute z-30 rounded-sm border-2 border-dashed border-violet-500 bg-violet-500/5"
+					style="left: {dragOutline.left}px; top: {dragOutline.top}px; width: {dragOutline.width}px; height: {dragOutline.height}px;"
+				>
+					<span
+						class="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-md bg-slate-900/85 px-2 py-1 text-xs font-medium tabular-nums text-white"
+					>
+						{dragResize.next.width} × {dragResize.next.height}
+					</span>
+				</div>
+			{/if}
+			{#if canResize && sessionInfo}
+				<div
+					class="resize-handle resize-handle-x absolute z-30"
+					style="left: {(layout.screen.x + layout.screen.width) * currentScale}px; top: {(layout.screen.y + layout.screen.height / 2) * currentScale}px;"
+					role="separator"
+					aria-orientation="vertical"
+					aria-label="Drag to change the viewport width"
+					onpointerdown={(e) => startResize(e, 'x')}
+					onpointermove={moveResize}
+					onpointerup={endResize}
+					onpointercancel={endResize}
+				></div>
+				<div
+					class="resize-handle resize-handle-y absolute z-30"
+					style="left: {(layout.screen.x + layout.screen.width / 2) * currentScale}px; top: {(layout.screen.y + layout.screen.height) * currentScale}px;"
+					role="separator"
+					aria-orientation="horizontal"
+					aria-label="Drag to change the viewport height"
+					onpointerdown={(e) => startResize(e, 'y')}
+					onpointermove={moveResize}
+					onpointerup={endResize}
+					onpointercancel={endResize}
+				></div>
+				<div
+					class="resize-handle resize-handle-xy absolute z-30"
+					style="left: {(layout.screen.x + layout.screen.width) * currentScale}px; top: {(layout.screen.y + layout.screen.height) * currentScale}px;"
+					role="separator"
+					aria-label="Drag to change the viewport size"
+					onpointerdown={(e) => startResize(e, 'xy')}
+					onpointermove={moveResize}
+					onpointerup={endResize}
+					onpointercancel={endResize}
+				></div>
 			{/if}
 
 			<!-- MCP Control Overlay - blocks user interaction (screen only) -->
@@ -920,23 +1172,89 @@
 		</div>
 	{/if}
 </div>
+</div>
 
 <style>
-	/* MCP Control Border Animation.
-	   The resting glow is declared on the class so "the agent is driving this
-	   browser" stays visible when the pulse is dropped (reduced motion) — the
-	   keyframes only add the breathing on top of it. */
-	.mcp-control-border {
-		box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.5), 0 0 20px rgba(245, 158, 11, 0.3);
-		animation: mcp-border-pulse 2s ease-in-out infinite;
+	/*
+	 * Agent control glow, inside the screen. The resting glow is declared on
+	 * the class so "the agent is driving this browser" stays visible when the
+	 * pulse is dropped (reduced motion) — the keyframes only breathe its
+	 * opacity.
+	 */
+	.mcp-edge {
+		box-shadow:
+			inset 0 0 0 1.5px rgba(245, 158, 11, 0.8),
+			inset 0 0 24px 2px rgba(245, 158, 11, 0.35);
+		opacity: 0.45;
+		will-change: opacity;
 	}
 
-	@keyframes mcp-border-pulse {
-		0%, 100% {
-			box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.5), 0 0 20px rgba(245, 158, 11, 0.3);
+	.mcp-edge-active {
+		opacity: 1;
+		animation: mcp-breathe 2s ease-in-out infinite;
+	}
+
+	@keyframes mcp-breathe {
+		0%,
+		100% {
+			opacity: 0.55;
 		}
 		50% {
-			box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.8), 0 0 30px rgba(245, 158, 11, 0.5);
+			opacity: 1;
 		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.mcp-edge-active {
+			animation: none;
+			opacity: 1;
+		}
+	}
+
+	/* Responsive resize handles: a grip pill on each draggable edge. */
+	.resize-handle {
+		touch-action: none;
+		border-radius: 999px;
+		background: rgb(148 163 184 / 0.7);
+		transition: background-color 150ms;
+	}
+
+	.resize-handle:hover,
+	.resize-handle:active {
+		background: rgb(139 92 246);
+	}
+
+	.resize-handle-x {
+		width: 6px;
+		height: 44px;
+		transform: translate(4px, -50%);
+		cursor: ew-resize;
+	}
+
+	.resize-handle-y {
+		width: 44px;
+		height: 6px;
+		transform: translate(-50%, 4px);
+		cursor: ns-resize;
+	}
+
+	.resize-handle-xy {
+		width: 12px;
+		height: 12px;
+		transform: translate(3px, 3px);
+		border-radius: 3px;
+		cursor: nwse-resize;
+	}
+
+	/* Plain digits in the size fields, no spinner arrows. */
+	.size-input::-webkit-outer-spin-button,
+	.size-input::-webkit-inner-spin-button {
+		-webkit-appearance: none;
+		margin: 0;
+	}
+
+	.size-input {
+		-moz-appearance: textfield;
+		appearance: textfield;
 	}
 </style>

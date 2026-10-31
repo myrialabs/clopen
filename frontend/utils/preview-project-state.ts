@@ -1,4 +1,4 @@
-import type { DeviceSize, Rotation } from '$frontend/utils/preview-constants';
+import type { DeviceSize, PreviewZoom, Rotation } from '$frontend/utils/preview-constants';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
 import {
 	registerDock,
@@ -11,6 +11,10 @@ export interface ProjectPreviewState {
 	mode: 'split' | 'tab';
 	deviceSize: DeviceSize;
 	rotation: Rotation;
+	/** Draw the device mockup around the page. Absent in older saves: on. */
+	showFrame?: boolean;
+	/** Absent in older saves: fit. */
+	zoom?: PreviewZoom;
 }
 
 const projectPreviewState = new Map<string, ProjectPreviewState>();
