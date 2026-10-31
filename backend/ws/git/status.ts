@@ -6,6 +6,7 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findNestedRepoPaths } from '../../git/nested-repos';
+import { gitRepoContext, withRepoLock } from './repo-context';
 import { requireProjectWorkspace } from '../access';
 import { relative as pathRelative } from 'path';
 
@@ -126,8 +127,10 @@ export const statusHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		await gitService.init(root, data.defaultBranch);
+		const ctx = gitRepoContext(conn, data.projectId);
+		await withRepoLock(ctx, { category: 'configure', label: 'Initialize repository' }, () =>
+			gitService.init(ctx.root, data.defaultBranch)
+		);
 		return { ok: true };
 	})
 

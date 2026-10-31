@@ -3,28 +3,18 @@
  */
 
 import { t } from 'elysia';
-import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { requireProjectWorkspace } from '../access';
 import { identityEnvFor, identityEnvForRemote } from './identity-context';
-import { debug } from '$shared/utils/logger';
+import { gitRepoContext, resolveRepoCwd, withRepoLock } from './repo-context';
 
-/**
- * Resolve the working directory for a git operation. Defaults to the project
- * root; when `repoPath` is provided it must already be inside the project.
- */
-function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string {
-	if (!repoPath) return projectPath;
-	const resolved = path.resolve(repoPath);
-	const projectRoot = path.resolve(projectPath);
-	const sep = path.sep;
-	if (resolved !== projectRoot && !resolved.startsWith(projectRoot + sep)) {
-		debug.warn('git', `Rejected nested repoPath outside project: ${resolved}`);
-		return projectPath;
-	}
-	return resolved;
-}
+const PUSH_LABELS = {
+	'with-tags': 'Push with tags',
+	'all-tags': 'Push all tags',
+	'force-lease': 'Force push (lease)',
+	force: 'Force push'
+} as const;
 
 export const remoteHandler = createRouter()
 	.http('git:remotes', {
@@ -53,14 +43,16 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		const message = await gitService.fetch(
-			cwd,
-			data.remote,
-			await identityEnvForRemote(data.projectId, cwd, data.remote)
-		);
-		return { message };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'fetch', label: 'Fetch', target: data.remote }, async () => {
+			const message = await gitService.fetch(
+				cwd,
+				data.remote,
+				await identityEnvForRemote(data.projectId, cwd, data.remote)
+			);
+			return { message };
+		});
 	})
 
 	.http('git:pull', {
@@ -68,22 +60,91 @@ export const remoteHandler = createRouter()
 			projectId: t.String(),
 			remote: t.Optional(t.String()),
 			branch: t.Optional(t.String()),
+			/** Legacy flag, same as `mode: 'rebase'`. */
 			rebase: t.Optional(t.Boolean()),
+			mode: t.Optional(t.Union([
+				t.Literal('default'),
+				t.Literal('merge'),
+				t.Literal('rebase'),
+				t.Literal('ff-only')
+			])),
+			/** Stash local changes around the pull. */
+			autostash: t.Optional(t.Boolean()),
 			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({
 			success: t.Boolean(),
-			message: t.String()
+			message: t.String(),
+			reason: t.Optional(t.Union([t.Literal('diverged'), t.Literal('conflict'), t.Literal('local-changes')])),
+			ahead: t.Optional(t.Number()),
+			behind: t.Optional(t.Number()),
+			pulledCount: t.Optional(t.Number())
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.pull(
-			cwd,
-			data.remote,
-			data.branch,
-			data.rebase,
-			await identityEnvForRemote(data.projectId, cwd, data.remote)
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const mode = data.mode ?? (data.rebase ? 'rebase' : 'default');
+		const label = mode === 'rebase' ? 'Pull (rebase)' : mode === 'ff-only' ? 'Pull (fast-forward)' : mode === 'merge' ? 'Pull (merge)' : 'Pull';
+		return withRepoLock(ctx, { category: 'pull', label, target: data.branch }, async () =>
+			gitService.pull(
+				ctx.cwd,
+				data.remote,
+				data.branch,
+				mode,
+				data.autostash ?? false,
+				await identityEnvForRemote(data.projectId, ctx.cwd, data.remote)
+			)
+		);
+	})
+
+	// What a force pull would throw away — fetched fresh, for the confirmation.
+	.http('git:force-pull-preview', {
+		data: t.Object({
+			projectId: t.String(),
+			remote: t.Optional(t.String()),
+			branch: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({
+			target: t.String(),
+			localCommits: t.Number(),
+			incomingCommits: t.Number(),
+			changedFiles: t.Number(),
+			collidingUntracked: t.Array(t.String())
+		})
+	}, async ({ data, conn }) => {
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		return withRepoLock(ctx, { category: 'fetch', label: 'Fetch', target: data.branch }, async () =>
+			gitService.forcePullPreview(
+				ctx.cwd,
+				data.remote,
+				data.branch,
+				await identityEnvForRemote(data.projectId, ctx.cwd, data.remote)
+			)
+		);
+	})
+
+	.http('git:force-pull', {
+		data: t.Object({
+			projectId: t.String(),
+			remote: t.Optional(t.String()),
+			branch: t.Optional(t.String()),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({
+			previousHead: t.String(),
+			newHead: t.String(),
+			discardedCommits: t.Number(),
+			stashMessage: t.Optional(t.String())
+		})
+	}, async ({ data, conn }) => {
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		return withRepoLock(ctx, { category: 'pull', label: 'Force pull', target: data.branch }, async () =>
+			gitService.forcePull(
+				ctx.cwd,
+				data.remote,
+				data.branch,
+				await identityEnvForRemote(data.projectId, ctx.cwd, data.remote)
+			)
 		);
 	})
 
@@ -105,15 +166,17 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.pushAdvanced(
-			cwd,
-			data.mode,
-			data.remote,
-			data.branch,
-			await identityEnvForRemote(data.projectId, cwd, data.remote)
-		);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'push', label: PUSH_LABELS[data.mode], target: data.branch }, async () => {
+			return await gitService.pushAdvanced(
+				cwd,
+				data.mode,
+				data.remote,
+				data.branch,
+				await identityEnvForRemote(data.projectId, cwd, data.remote)
+			);
+		});
 	})
 
 	.http('git:fetch-all', {
@@ -125,13 +188,15 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		const message = await gitService.fetchAll(
-			cwd,
-			await identityEnvForRemote(data.projectId, cwd)
-		);
-		return { message };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'fetch', label: 'Fetch all' }, async () => {
+			const message = await gitService.fetchAll(
+				cwd,
+				await identityEnvForRemote(data.projectId, cwd)
+			);
+			return { message };
+		});
 	})
 
 	.http('git:push', {
@@ -152,16 +217,18 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.push(
-			cwd,
-			data.remote,
-			data.branch,
-			data.force,
-			{ useUpstream: data.useUpstream ?? true },
-			await identityEnvForRemote(data.projectId, cwd, data.remote)
-		);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'push', label: data.force ? 'Force push (lease)' : 'Push', target: data.branch }, async () => {
+			return await gitService.push(
+				cwd,
+				data.remote,
+				data.branch,
+				data.force,
+				{ useUpstream: data.useUpstream ?? true },
+				await identityEnvForRemote(data.projectId, cwd, data.remote)
+			);
+		});
 	})
 
 	/** Where a push would actually land — drives the Push button's label. */
@@ -194,10 +261,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.setUpstream(cwd, data.branch, data.remote, data.remoteBranch);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Set upstream', target: data.branch }, async () => {
+			await gitService.setUpstream(cwd, data.branch, data.remote, data.remoteBranch);
+			return { ok: true };
+		});
 	})
 
 	.http('git:unset-upstream', {
@@ -208,10 +277,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.unsetUpstream(cwd, data.branch);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Clear upstream', target: data.branch }, async () => {
+			await gitService.unsetUpstream(cwd, data.branch);
+			return { ok: true };
+		});
 	})
 
 	.http('git:add-remote', {
@@ -223,10 +294,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.addRemote(cwd, data.name, data.url);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Add remote', target: data.name }, async () => {
+			await gitService.addRemote(cwd, data.name, data.url);
+			return { ok: true };
+		});
 	})
 
 	.http('git:set-remote-url', {
@@ -238,10 +311,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.setRemoteUrl(cwd, data.name, data.url);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Edit remote', target: data.name }, async () => {
+			await gitService.setRemoteUrl(cwd, data.name, data.url);
+			return { ok: true };
+		});
 	})
 
 	.http('git:rename-remote', {
@@ -253,10 +328,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.renameRemote(cwd, data.oldName, data.newName);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Rename remote', target: data.oldName }, async () => {
+			await gitService.renameRemote(cwd, data.oldName, data.newName);
+			return { ok: true };
+		});
 	})
 
 	.http('git:edit-remote', {
@@ -269,13 +346,15 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		if (data.oldName !== data.newName) {
-			await gitService.renameRemote(cwd, data.oldName, data.newName);
-		}
-		await gitService.setRemoteUrl(cwd, data.newName, data.newUrl);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Edit remote', target: data.oldName }, async () => {
+			if (data.oldName !== data.newName) {
+				await gitService.renameRemote(cwd, data.oldName, data.newName);
+			}
+			await gitService.setRemoteUrl(cwd, data.newName, data.newUrl);
+			return { ok: true };
+		});
 	})
 
 	.http('git:remove-remote', {
@@ -286,10 +365,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.removeRemote(cwd, data.name);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'configure', label: 'Remove remote', target: data.name }, async () => {
+			await gitService.removeRemote(cwd, data.name);
+			return { ok: true };
+		});
 	})
 
 	.http('git:delete-remote-branch', {
@@ -301,15 +382,17 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.deleteRemoteBranch(
-			cwd,
-			data.remote,
-			data.branch,
-			await identityEnvForRemote(data.projectId, cwd, data.remote)
-		);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'branch', cls: 'network', label: 'Delete remote branch', target: `${data.remote}/${data.branch}` }, async () => {
+			await gitService.deleteRemoteBranch(
+				cwd,
+				data.remote,
+				data.branch,
+				await identityEnvForRemote(data.projectId, cwd, data.remote)
+			);
+			return { ok: true };
+		});
 	})
 
 	.http('git:stash-list', {
@@ -333,19 +416,24 @@ export const remoteHandler = createRouter()
 			projectId: t.String(),
 			message: t.Optional(t.String()),
 			staged: t.Optional(t.Boolean()),
+			/** Stash untracked files too (`--include-untracked`). */
+			includeUntracked: t.Optional(t.Boolean()),
 			repoPath: t.Optional(t.String())
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.stashSave(
-			cwd,
-			data.message,
-			data.staged,
-			identityEnvFor(data.projectId)
-		);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'stash', label: 'Stash' }, async () => {
+			await gitService.stashSave(
+				cwd,
+				data.message,
+				data.staged,
+				identityEnvFor(data.projectId),
+				data.includeUntracked
+			);
+			return { ok: true };
+		});
 	})
 
 	.http('git:stash-pop', {
@@ -360,9 +448,11 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.stashPop(cwd, data.index);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'stash', label: 'Pop stash' }, async () => {
+			return await gitService.stashPop(cwd, data.index);
+		});
 	})
 
 	.http('git:stash-apply', {
@@ -377,9 +467,11 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.stashApply(cwd, data.index);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'stash', label: 'Apply stash' }, async () => {
+			return await gitService.stashApply(cwd, data.index);
+		});
 	})
 
 	.http('git:stash-drop', {
@@ -390,10 +482,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.stashDrop(cwd, data.index);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'stash', label: 'Drop stash' }, async () => {
+			await gitService.stashDrop(cwd, data.index);
+			return { ok: true };
+		});
 	})
 
 	.http('git:stash-diff', {
@@ -455,16 +549,18 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.createTag(
-			cwd,
-			data.name,
-			data.message,
-			data.commitHash,
-			identityEnvFor(data.projectId)
-		);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'tag', label: 'Create tag', target: data.name }, async () => {
+			await gitService.createTag(
+				cwd,
+				data.name,
+				data.message,
+				data.commitHash,
+				identityEnvFor(data.projectId)
+			);
+			return { ok: true };
+		});
 	})
 
 	.http('git:delete-tag', {
@@ -475,10 +571,12 @@ export const remoteHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		await gitService.deleteTag(cwd, data.name);
-		return { ok: true };
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'tag', label: 'Delete tag', target: data.name }, async () => {
+			await gitService.deleteTag(cwd, data.name);
+			return { ok: true };
+		});
 	})
 
 	.http('git:push-tag', {
@@ -493,12 +591,14 @@ export const remoteHandler = createRouter()
 			message: t.String()
 		})
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath);
-		return await gitService.pushTag(
-			cwd,
-			data.name,
-			data.remote,
-			await identityEnvForRemote(data.projectId, cwd, data.remote)
-		);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		const { cwd } = ctx;
+		return withRepoLock(ctx, { category: 'tag', label: 'Push tag', target: data.name }, async () => {
+			return await gitService.pushTag(
+				cwd,
+				data.name,
+				data.remote,
+				await identityEnvForRemote(data.projectId, cwd, data.remote)
+			);
+		});
 	});

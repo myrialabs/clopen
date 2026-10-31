@@ -33,7 +33,12 @@ import type {
 	GitConflictKind,
 	GitConflictResolution,
 	GitOperationState,
-	GitReflogEntry
+	GitReflogEntry,
+	GitPullMode,
+	GitPullResult,
+	GitForcePullPreview,
+	GitForcePullResult,
+	GitPruneCandidate
 } from '$shared/types/git';
 import { naturalCompare } from '$shared/utils/compare';
 import { debug } from '$shared/utils/logger';
@@ -47,6 +52,14 @@ import {
 } from './git-spawn-validation';
 import { findNestedRepoPaths, findSubmodulePaths } from './nested-repos';
 import path from 'node:path';
+import { existsSync } from 'node:fs';
+
+/**
+ * Ceiling for anything that talks to a remote. A large fetch over a slow link
+ * routinely needs more than a minute, and the old 60s cut-off killed it midway
+ * with an empty error.
+ */
+export const NETWORK_TIMEOUT_MS = 5 * 60 * 1000;
 
 export class GitService {
 	/**
@@ -384,11 +397,12 @@ export class GitService {
 			// Try to get the initial branch name from HEAD
 			const headResult = await execGit(['symbolic-ref', '--short', 'HEAD'], cwd);
 			const initialBranch = headResult.exitCode === 0 ? headResult.stdout.trim() : 'main';
-			return { current: initialBranch, local: [], remote: [], ahead: 0, behind: 0 };
+			return { current: initialBranch, local: [], remote: [], ahead: 0, behind: 0, ...this.repoCapabilities(cwd) };
 		}
 
 		const branchInfo = parseBranches(localResult.stdout, remoteResult.stdout);
 		branchInfo.operation = await this.detectGitOperation(cwd);
+		Object.assign(branchInfo, this.repoCapabilities(cwd));
 
 		// Resolve the current branch authoritatively instead of trusting the parsed
 		// `git branch -v` text: while HEAD is detached (rebase, bisect, or a detached
@@ -548,7 +562,7 @@ export class GitService {
 	async deleteRemoteBranch(cwd: string, remote: string, branch: string, identityEnv: GitIdentityEnv = {}): Promise<void> {
 		assertSafeGitRevish(remote, 'remote name');
 		assertSafeGitRevish(branch, 'branch name');
-		const result = await execGit(['push', remote, '--delete', branch], cwd, { env: identityEnv });
+		const result = await execGit(['push', remote, '--delete', branch], cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git push --delete failed: ${result.stderr}`);
 		}
@@ -633,6 +647,17 @@ export class GitService {
 	// Remote Operations
 	// ============================================
 
+	/**
+	 * What the repo root offers beyond git itself. The More menu only lists
+	 * `npm version` and submodule updates where they can actually run.
+	 */
+	private repoCapabilities(cwd: string): { hasSubmodules: boolean; hasPackageJson: boolean } {
+		return {
+			hasSubmodules: existsSync(path.join(cwd, '.gitmodules')),
+			hasPackageJson: existsSync(path.join(cwd, 'package.json'))
+		};
+	}
+
 	async getRemotes(cwd: string): Promise<GitRemote[]> {
 		const result = await execGit(['remote', '-v'], cwd);
 		return parseRemotes(result.stdout);
@@ -641,7 +666,7 @@ export class GitService {
 	async fetch(cwd: string, remote = 'origin', identityEnv: GitIdentityEnv = {}): Promise<string> {
 		assertSafeGitRemoteName(remote);
 		// Use explicit refspec to ensure all branches are fetched regardless of clone config
-		const result = await execGit(['fetch', remote, `+refs/heads/*:refs/remotes/${remote}/*`, '--prune'], cwd, { timeout: 60000, env: identityEnv });
+		const result = await execGit(['fetch', remote, `+refs/heads/*:refs/remotes/${remote}/*`, '--prune'], cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git fetch failed: ${result.stderr}`);
 		}
@@ -656,9 +681,23 @@ export class GitService {
 	 * differently-named branch, which is the normal state of a fork PR under
 	 * review. A tracked branch pulls from its own upstream.
 	 */
-	async pull(cwd: string, remote = 'origin', branch?: string, rebase = false, identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
+	async pull(
+		cwd: string,
+		remote = 'origin',
+		branch?: string,
+		mode: GitPullMode = 'default',
+		autostash = false,
+		identityEnv: GitIdentityEnv = {}
+	): Promise<GitPullResult> {
 		const args = ['pull'];
-		if (rebase) args.push('--rebase');
+		// `default` leaves the strategy to the user's own git config — the panel
+		// only names one when the user picked it.
+		if (mode === 'merge') args.push('--no-rebase');
+		else if (mode === 'rebase') args.push('--rebase');
+		else if (mode === 'ff-only') args.push('--ff-only');
+		// Rebase refuses a dirty tree outright, so it always carries its own
+		// stash, the same as Rebase onto Branch does.
+		if (autostash || mode === 'rebase') args.push('--autostash');
 
 		const target = await this.getPushTarget(cwd, branch);
 		if (!target.hasUpstream) {
@@ -670,13 +709,346 @@ export class GitService {
 			}
 		}
 
+		const before = await this.headHash(cwd);
 		// A pull can create a merge commit, so it needs both halves of the
 		// identity: the credential to fetch, the name to author the merge.
-		const result = await execGit(args, cwd, { timeout: 60000, env: identityEnv });
+		const result = await execGit(args, cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv });
+		if (result.exitCode === 0) {
+			const after = await this.headHash(cwd);
+			const pulledCount =
+				before && after && before !== after ? await this.countCommits(cwd, `${before}..${after}`) : 0;
+			return { success: true, message: result.stdout || result.stderr, pulledCount };
+		}
+
+		const message = (result.stderr || result.stdout).trim();
+		const output = `${result.stderr}\n${result.stdout}`;
+		// Decide from the repository, not the wording: a merge or rebase that
+		// stopped on conflicts leaves unmerged paths behind.
+		if ((await this.getUnmergedPaths(cwd)).length > 0) {
+			return { success: false, message, reason: 'conflict' };
+		}
+		if (/divergent branches|Not possible to fast-forward/i.test(output)) {
+			const counts = await this.aheadBehindUpstream(cwd);
+			return { success: false, message, reason: 'diverged', ...counts };
+		}
+		if (/would be overwritten by|commit or stash them|You have unstaged changes|Your index contains uncommitted changes/i.test(output)) {
+			return { success: false, message, reason: 'local-changes' };
+		}
+		return { success: false, message };
+	}
+
+	/** Full hash of HEAD, or null on an unborn branch. */
+	private async headHash(cwd: string): Promise<string | null> {
+		const result = await execGit(['rev-parse', '--verify', '--quiet', 'HEAD'], cwd, { okExitCodes: [1] });
+		return result.exitCode === 0 ? result.stdout.trim() || null : null;
+	}
+
+	private async countCommits(cwd: string, range: string): Promise<number> {
+		const result = await execGit(['rev-list', '--count', range], cwd);
+		return result.exitCode === 0 ? Number.parseInt(result.stdout.trim(), 10) || 0 : 0;
+	}
+
+	/**
+	 * Ahead/behind of HEAD against what the last fetch brought in. `@{upstream}`
+	 * when it resolves; `FETCH_HEAD` covers the URL-tracked branch that has no
+	 * remote-tracking ref.
+	 */
+	private async aheadBehindUpstream(cwd: string): Promise<{ ahead: number; behind: number }> {
+		const other = (await this.hasRef(cwd, '@{upstream}')) ? '@{upstream}' : 'FETCH_HEAD';
+		const result = await execGit(['rev-list', '--left-right', '--count', `HEAD...${other}`], cwd);
+		return result.exitCode === 0 ? parseAheadBehind(result.stdout) : { ahead: 0, behind: 0 };
+	}
+
+	// ============================================
+	// Force pull
+	// ============================================
+
+	/**
+	 * Where a force pull resets to: the branch's own upstream when it tracks one
+	 * (a remote name or the URL `gh pr checkout` records), otherwise the
+	 * same-named branch on `remote`.
+	 */
+	private async resolvePullSource(
+		cwd: string,
+		remote: string,
+		branch?: string
+	): Promise<{ from: string; ref: string; label: string; branch: string }> {
+		const current = branch ?? (await execGit(['branch', '--show-current'], cwd)).stdout.trim();
+		if (!current) {
+			throw new Error('HEAD is detached — check out a branch before force pulling.');
+		}
+		assertSafeGitRevish(current, 'branch name');
+		const tracking = await this.readBranchTracking(cwd, current);
+		if (tracking) {
+			if (tracking.remote !== '.') {
+				if (await this.isConfiguredRemote(cwd, tracking.remote)) assertSafeGitRemoteName(tracking.remote);
+				else assertSafeGitRemoteUrl(tracking.remote);
+			}
+			assertSafeGitRevish(tracking.remoteBranch, 'upstream branch');
+			return {
+				from: tracking.remote,
+				ref: tracking.remoteBranch,
+				label: `${tracking.remote}/${tracking.remoteBranch}`,
+				branch: current
+			};
+		}
+		assertSafeGitRemoteName(remote);
+		return { from: remote, ref: current, label: `${remote}/${current}`, branch: current };
+	}
+
+	/** Fetch the force-pull source and return the exact commit it points at. */
+	private async fetchPullSource(
+		cwd: string,
+		source: { from: string; ref: string; label: string },
+		identityEnv: GitIdentityEnv
+	): Promise<string> {
+		const result = await execGit(['fetch', source.from, `refs/heads/${source.ref}`], cwd, {
+			timeout: NETWORK_TIMEOUT_MS,
+			env: identityEnv
+		});
+		if (result.exitCode !== 0) {
+			if (/couldn't find remote ref/i.test(result.stderr)) {
+				throw new Error(`${source.label} does not exist on the remote, so there is nothing to pull.`);
+			}
+			throw new Error(`git fetch failed: ${result.stderr.trim()}`);
+		}
+		// Pin the commit now: FETCH_HEAD is rewritten by the next fetch anyone runs.
+		const hash = await execGit(['rev-parse', '--verify', 'FETCH_HEAD^{commit}'], cwd);
+		if (hash.exitCode !== 0) throw new Error('Could not read the fetched commit.');
+		return hash.stdout.trim();
+	}
+
+	/** Refuse to force pull mid-operation: resetting under a rebase strands it. */
+	private async assertNoOperation(cwd: string, action: string): Promise<void> {
+		const operation = await this.detectGitOperation(cwd);
+		if (operation) {
+			throw new Error(`A ${operation} is in progress — finish or abort it before you ${action}.`);
+		}
+	}
+
+	/**
+	 * Untracked files the target tree contains. `reset --hard` overwrites them
+	 * without a word, so a force pull stashes them along with tracked changes.
+	 */
+	private async collidingUntracked(cwd: string, target: string): Promise<string[]> {
+		const [untracked, tree] = await Promise.all([
+			execGit(['ls-files', '--others', '--exclude-standard', '-z'], cwd),
+			execGit(['ls-tree', '-r', '--name-only', '-z', target], cwd)
+		]);
+		if (untracked.exitCode !== 0 || tree.exitCode !== 0) return [];
+		const incoming = new Set(tree.stdout.split('\0').filter(Boolean));
+		return untracked.stdout.split('\0').filter(file => file && incoming.has(file));
+	}
+
+	/** Tracked paths that differ from HEAD (staged or not), renames split in two. */
+	private async changedTrackedPaths(cwd: string): Promise<string[]> {
+		const result = await execGit(['diff', '--name-only', '--no-renames', '-z', 'HEAD'], cwd);
+		if (result.exitCode !== 0) return [];
+		return result.stdout.split('\0').filter(Boolean);
+	}
+
+	async forcePullPreview(
+		cwd: string,
+		remote = 'origin',
+		branch?: string,
+		identityEnv: GitIdentityEnv = {}
+	): Promise<GitForcePullPreview> {
+		await this.assertNoOperation(cwd, 'force pull');
+		const source = await this.resolvePullSource(cwd, remote, branch);
+		const target = await this.fetchPullSource(cwd, source, identityEnv);
+		const head = await this.headHash(cwd);
+		const [localCommits, incomingCommits, changed, colliding] = await Promise.all([
+			head ? this.countCommits(cwd, `${target}..HEAD`) : Promise.resolve(0),
+			head ? this.countCommits(cwd, `HEAD..${target}`) : this.countCommits(cwd, target),
+			head ? this.changedTrackedPaths(cwd) : Promise.resolve([]),
+			this.collidingUntracked(cwd, target)
+		]);
 		return {
-			success: result.exitCode === 0,
-			message: result.exitCode === 0 ? result.stdout : result.stderr
+			target: source.label,
+			localCommits,
+			incomingCommits,
+			changedFiles: changed.length,
+			collidingUntracked: colliding
 		};
+	}
+
+	/**
+	 * Make the current branch exactly match its remote: fetch, stash what the
+	 * reset would destroy, `reset --hard`.
+	 *
+	 * Local commits are left to the reflog (the result names the old HEAD).
+	 * Uncommitted work has no reflog, so it goes into a stash first — tracked
+	 * changes plus only those untracked files the remote tree would overwrite;
+	 * every other untracked file stays where it is.
+	 */
+	async forcePull(
+		cwd: string,
+		remote = 'origin',
+		branch?: string,
+		identityEnv: GitIdentityEnv = {}
+	): Promise<GitForcePullResult> {
+		await this.assertNoOperation(cwd, 'force pull');
+		const source = await this.resolvePullSource(cwd, remote, branch);
+		const target = await this.fetchPullSource(cwd, source, identityEnv);
+		const head = await this.headHash(cwd);
+
+		let stashMessage: string | undefined;
+		if (head) {
+			const [changed, colliding] = await Promise.all([
+				this.changedTrackedPaths(cwd),
+				this.collidingUntracked(cwd, target)
+			]);
+			if (changed.length > 0 || colliding.length > 0) {
+				stashMessage = `clopen: before force pull of ${source.branch} (${new Date().toISOString()})`;
+				const args = ['stash', 'push', '-m', stashMessage];
+				let stdin: string | undefined;
+				if (colliding.length > 0) {
+					// A pathspec limits BOTH halves of the stash, so it has to name every
+					// tracked change as well, or those would be left to the reset.
+					args.push('--include-untracked', '--pathspec-from-file=-', '--pathspec-file-nul');
+					stdin = [...changed, ...colliding].join('\0');
+				}
+				const stash = await execGit(args, cwd, { stdin, env: identityEnv });
+				if (stash.exitCode !== 0) {
+					throw new Error(`Could not stash local changes, nothing was reset: ${stash.stderr.trim()}`);
+				}
+			}
+		} else {
+			const status = await execGit(['status', '--porcelain'], cwd);
+			if (status.stdout.trim()) {
+				throw new Error('This branch has no commits yet, so local changes cannot be stashed. Commit or remove them first.');
+			}
+		}
+
+		const discardedCommits = head ? await this.countCommits(cwd, `${target}..${head}`) : 0;
+		const reset = await execGit(['reset', '--hard', target], cwd);
+		if (reset.exitCode !== 0) {
+			throw new Error(
+				`git reset --hard failed: ${reset.stderr.trim()}${stashMessage ? ' — your changes are safe in the stash.' : ''}`
+			);
+		}
+		return {
+			previousHead: head ? head.slice(0, 7) : '',
+			newHead: target.slice(0, 7),
+			discardedCommits,
+			...(stashMessage && { stashMessage })
+		};
+	}
+
+	// ============================================
+	// Branch pruning
+	// ============================================
+
+	/** The branch a repo integrates into: `<remote>/HEAD`, else main/master. */
+	async getDefaultBranch(cwd: string, remote = 'origin'): Promise<string | null> {
+		assertSafeGitRemoteName(remote);
+		const symbolic = await execGit(['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`], cwd, {
+			okExitCodes: [1, 128]
+		});
+		if (symbolic.exitCode === 0) {
+			const name = symbolic.stdout.trim().replace(new RegExp(`^${remote}/`), '');
+			if (name) return name;
+		}
+		for (const candidate of ['main', 'master', 'trunk', 'develop']) {
+			if ((await this.hasRef(cwd, `refs/heads/${candidate}`)) || (await this.hasRef(cwd, `refs/remotes/${remote}/${candidate}`))) {
+				return candidate;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Local branches that can go.
+	 *
+	 * `merged` — fully merged into the default branch. Squash merges are not
+	 * detectable this way (the commits differ), which is what `gone` is for.
+	 * `gone` — the upstream was deleted on the remote, the usual trace of a
+	 * merged pull request once a fetch has pruned it.
+	 *
+	 * Never offers the current branch or the default branch.
+	 */
+	async getPruneCandidates(
+		cwd: string,
+		mode: 'merged' | 'gone',
+		remote = 'origin'
+	): Promise<{ defaultBranch: string | null; candidates: GitPruneCandidate[] }> {
+		const defaultBranch = await this.getDefaultBranch(cwd, remote);
+		if (mode === 'merged' && !defaultBranch) {
+			throw new Error('Could not tell which branch is the default one, so merged branches cannot be determined.');
+		}
+		// Prefer the remote's copy of the default branch: a stale local `main` would
+		// hide branches that were merged on the remote.
+		const mergedBase = defaultBranch
+			? (await this.hasRef(cwd, `refs/remotes/${remote}/${defaultBranch}`))
+				? `${remote}/${defaultBranch}`
+				: (await this.hasRef(cwd, `refs/heads/${defaultBranch}`))
+					? defaultBranch
+					: null
+			: null;
+
+		const [refs, current, merged] = await Promise.all([
+			execGit(['for-each-ref', '--format=%(refname:short)%09%(upstream:track)', 'refs/heads/'], cwd),
+			execGit(['branch', '--show-current'], cwd),
+			mergedBase
+				? execGit(['branch', '--merged', mergedBase, '--format=%(refname:short)'], cwd)
+				: Promise.resolve(null)
+		]);
+		const currentName = current.stdout.trim();
+		const mergedSet = new Set(
+			(merged?.exitCode === 0 ? merged.stdout : '').split('\n').map(l => l.trim()).filter(Boolean)
+		);
+
+		const candidates: GitPruneCandidate[] = [];
+		for (const line of refs.stdout.split('\n')) {
+			if (!line.trim()) continue;
+			const [name, track = ''] = line.split('\t');
+			if (!name || name === currentName || name === defaultBranch) continue;
+			const isMerged = mergedSet.has(name);
+			if (mode === 'merged' ? isMerged : track.trim() === '[gone]') {
+				candidates.push({ name, merged: isMerged });
+			}
+		}
+		candidates.sort((a, b) => naturalCompare(a.name, b.name));
+		return { defaultBranch, candidates };
+	}
+
+	/** Delete local branches one by one, reporting each outcome. */
+	async deleteBranches(
+		cwd: string,
+		names: string[]
+	): Promise<{ deleted: string[]; failed: { name: string; message: string }[] }> {
+		const deleted: string[] = [];
+		const failed: { name: string; message: string }[] = [];
+		const current = (await execGit(['branch', '--show-current'], cwd)).stdout.trim();
+		for (const name of names) {
+			try {
+				assertSafeGitRevish(name, 'branch name');
+				if (name === current) throw new Error('This is the checked-out branch.');
+				// `-D`: the list was confirmed with each branch's merge state shown, and
+				// `-d` judges "merged" against HEAD rather than the default branch.
+				const result = await execGit(['branch', '-D', name], cwd);
+				if (result.exitCode !== 0) throw new Error(result.stderr.trim());
+				deleted.push(name);
+			} catch (err) {
+				failed.push({ name, message: err instanceof Error ? err.message : String(err) });
+			}
+		}
+		return { deleted, failed };
+	}
+
+	// ============================================
+	// Submodules
+	// ============================================
+
+	async updateSubmodules(cwd: string, identityEnv: GitIdentityEnv = {}): Promise<string> {
+		const result = await execGit(['submodule', 'update', '--init', '--recursive'], cwd, {
+			timeout: NETWORK_TIMEOUT_MS,
+			env: identityEnv
+		});
+		if (result.exitCode !== 0) {
+			throw new Error(`git submodule update failed: ${result.stderr.trim()}`);
+		}
+		return (result.stdout || result.stderr).trim() || 'Submodules are up to date.';
 	}
 
 	/**
@@ -816,7 +1188,7 @@ export class GitService {
 		if (useUpstream && target.hasUpstream) {
 			const args = ['push'];
 			if (force) args.push('--force-with-lease');
-			return this.describePushResult(cwd, await execGit(args, cwd, { timeout: 60000, env: identityEnv }));
+			return this.describePushResult(cwd, await execGit(args, cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv }));
 		}
 
 		assertSafeGitRemoteName(remote);
@@ -829,7 +1201,7 @@ export class GitService {
 		// Only safe here: the branch tracks nothing, so there is no upstream to
 		// overwrite and recording one is the point of a first push.
 		args.push('-u');
-		return this.describePushResult(cwd, await execGit(args, cwd, { timeout: 60000, env: identityEnv }));
+		return this.describePushResult(cwd, await execGit(args, cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv }));
 	}
 
 	/** Point a branch at a different upstream — the way back from a wrong push. */
@@ -880,7 +1252,7 @@ export class GitService {
 			assertSafeGitRemoteName(remote);
 			return this.describePushResult(
 				cwd,
-				await execGit(['push', remote, '--tags'], cwd, { timeout: 60000, env: identityEnv })
+				await execGit(['push', remote, '--tags'], cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv })
 			);
 		}
 
@@ -894,7 +1266,7 @@ export class GitService {
 		// Same rule as `push`: a tracked branch goes where git says it goes.
 		const target = await this.getPushTarget(cwd, branch);
 		if (target.hasUpstream) {
-			return this.describePushResult(cwd, await execGit(['push', flag], cwd, { timeout: 60000, env: identityEnv }));
+			return this.describePushResult(cwd, await execGit(['push', flag], cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv }));
 		}
 
 		assertSafeGitRemoteName(remote);
@@ -904,12 +1276,12 @@ export class GitService {
 			args.push(branch);
 		}
 		args.push(flag, '-u');
-		return this.describePushResult(cwd, await execGit(args, cwd, { timeout: 60000, env: identityEnv }));
+		return this.describePushResult(cwd, await execGit(args, cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv }));
 	}
 
 	/** Fetch every configured remote and prune deleted remote-tracking refs. */
 	async fetchAll(cwd: string, identityEnv: GitIdentityEnv = {}): Promise<string> {
-		const result = await execGit(['fetch', '--all', '--prune', '--tags'], cwd, { timeout: 60000, env: identityEnv });
+		const result = await execGit(['fetch', '--all', '--prune', '--tags'], cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv });
 		if (result.exitCode !== 0) {
 			throw new Error(`git fetch --all failed: ${result.stderr}`);
 		}
@@ -965,11 +1337,21 @@ export class GitService {
 		return parseStashList(result.stdout);
 	}
 
-	async stashSave(cwd: string, message?: string, stagedOnly = false, identityEnv: GitIdentityEnv = {}): Promise<void> {
+	async stashSave(
+		cwd: string,
+		message?: string,
+		stagedOnly = false,
+		identityEnv: GitIdentityEnv = {},
+		includeUntracked = false
+	): Promise<void> {
+		if (stagedOnly && includeUntracked) {
+			throw new Error('A stash can hold staged changes only, or everything including untracked files — not both.');
+		}
 		const args = ['stash', 'push'];
 		// `--staged` stashes exactly the index (works at hunk level, so partially
 		// staged files are handled precisely). Requires Git >= 2.35.
 		if (stagedOnly) args.push('--staged');
+		if (includeUntracked) args.push('--include-untracked');
 		if (message) {
 			assertSafeGitCommitMessage(message);
 			args.push('-m', message);
@@ -1118,7 +1500,7 @@ export class GitService {
 	async pushTag(cwd: string, name: string, remote = 'origin', identityEnv: GitIdentityEnv = {}): Promise<{ success: boolean; message: string }> {
 		assertSafeGitRemoteName(remote);
 		assertSafeGitRevish(name, 'tag name');
-		const result = await execGit(['push', remote, name], cwd, { timeout: 60000, env: identityEnv });
+		const result = await execGit(['push', remote, name], cwd, { timeout: NETWORK_TIMEOUT_MS, env: identityEnv });
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? (result.stderr || result.stdout) : result.stderr
@@ -1667,6 +2049,13 @@ export class GitService {
 			// Unborn HEAD — git only reports `bad revision 'HEAD'`.
 			return { success: false, message: 'This repository has no commits yet, so there is nothing to revert.' };
 		}
+		if (result.exitCode !== 0 && /is a merge but no -m option/i.test(result.stderr)) {
+			return {
+				success: false,
+				message:
+					'This commit is a merge. Reverting a merge means choosing which parent to keep, and re-merging that branch later will not bring the changes back — run `git revert -m 1 <commit>` in the terminal if that is what you want, or use Undo instead if it is not pushed yet.'
+			};
+		}
 		return {
 			success: result.exitCode === 0,
 			message: result.exitCode === 0 ? (result.stdout || result.stderr) : result.stderr
@@ -1693,8 +2082,20 @@ export class GitService {
 	// ============================================
 
 	/** Remove untracked files and directories (`git clean -fd`). */
-	async cleanUntracked(cwd: string): Promise<string> {
-		const result = await execGit(['clean', '-fd'], cwd);
+	/** What `cleanUntracked` would delete, without deleting it. */
+	async cleanPreview(cwd: string, includeIgnored = false): Promise<string[]> {
+		const result = await execGit(['clean', '-n', '-d', ...(includeIgnored ? ['-x'] : [])], cwd);
+		if (result.exitCode !== 0) {
+			throw new Error(`git clean failed: ${result.stderr}`);
+		}
+		return result.stdout
+			.split('\n')
+			.map(line => line.replace(/^Would remove /, '').trim())
+			.filter(Boolean);
+	}
+
+	async cleanUntracked(cwd: string, includeIgnored = false): Promise<string> {
+		const result = await execGit(['clean', '-fd', ...(includeIgnored ? ['-x'] : [])], cwd);
 		if (result.exitCode !== 0) {
 			throw new Error(`git clean failed: ${result.stderr}`);
 		}

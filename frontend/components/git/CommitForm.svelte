@@ -16,7 +16,9 @@
 		setCommitDraft,
 		applyGeneratedCommitMessage,
 		getGitOps,
-		setGitOp
+		getGitBusyReason,
+		setGitOp,
+		type GitOpFlags
 	} from '$frontend/stores/features/git-workspace.svelte';
 	import ws from '$frontend/utils/ws';
 	import { resolveGenerationModel, GENERATION_TIMEOUT_MS } from '$frontend/utils/model-override';
@@ -25,7 +27,8 @@
 	interface Props {
 		stagedCount: number;
 		isCommitting: boolean;
-		onCommit: (message: string) => void;
+		/** Resolves to whether the commit landed; the message is only cleared then. */
+		onCommit: (message: string) => boolean | Promise<boolean>;
 		hasRemotes?: boolean;
 		selectedRemote?: string;
 		currentBranch?: string;
@@ -49,7 +52,12 @@
 		onCreateBranch?: (name: string) => boolean | Promise<boolean>;
 		onPush?: () => void;
 		onPull?: () => void;
-		onMoreAction?: (action: GitMoreAction) => void;
+		onMoreAction?: (action: GitMoreAction, options?: { message?: string }) => void;
+		/** Repository facts the More menu needs to decide what it can offer. */
+		repoOperation?: string | null;
+		repoDetached?: boolean;
+		hasPackageJson?: boolean;
+		hasSubmodules?: boolean;
 		/** External control for branch name draft (survives remounts). */
 		branchDraft?: string;
 		showBranchDraft?: boolean;
@@ -77,6 +85,10 @@
 		onPush,
 		onPull,
 		onMoreAction,
+		repoOperation = null,
+		repoDetached = false,
+		hasPackageJson = false,
+		hasSubmodules = false,
 		branchDraft: externalBranchDraft,
 		showBranchDraft: externalShowBranchDraft,
 		onBranchDraftChange,
@@ -86,11 +98,6 @@
 	const isControlled = $derived(externalBranchDraft !== undefined);
 
 	const showSyncActions = $derived(Boolean(onPush || onPull));
-
-	// Push, pull and the More menu all move refs in the same repo, so running two
-	// at once is how you get `index.lock` errors and half-applied state. One in
-	// flight disables the others — the same reason each disables itself.
-	const syncBusy = $derived(isPushing || isPulling || isMoreBusy);
 
 	// Branch operand shown in the sync-button tooltips (omitted when unknown).
 
@@ -127,8 +134,19 @@
 	const ops = $derived(getGitOps(opScope, repoPath));
 	const isGenerating = $derived(ops.isGenerating);
 
+	// Why each action cannot start right now — its own operation or a conflicting
+	// one, from any tab or device (the shared operation lock). Push, pull and the
+	// More menu all move refs in the same repo, so running two at once is how you
+	// get `index.lock` errors and half-applied state.
+	const busyReasonFor = (flag: keyof GitOpFlags): string | null => getGitBusyReason(opScope, flag, repoPath);
+	const pushBlocked = $derived(busyReasonFor('isPushing'));
+	const pullBlocked = $derived(busyReasonFor('isPulling'));
+	const commitBlocked = $derived(busyReasonFor('isCommitting'));
+
+
 	// Local commit message for nested repos so each submodule keeps its own draft.
 	let localCommitMessage = $state('');
+	const currentMessage = $derived(repoPath ? localCommitMessage : gitDraft.commitMessage);
 	const isGeneratingBranch = $derived(ops.isGeneratingBranch);
 	const isCreatingBranch = $derived(ops.isCreatingBranch);
 
@@ -177,14 +195,19 @@
 		generateBranchName();
 	}
 
-	function handleCommit() {
+	async function handleCommit() {
 		const message = repoPath ? localCommitMessage : gitDraft.commitMessage;
-		if (!message.trim() || stagedCount === 0) return;
-		onCommit(message.trim());
+		if (!message.trim() || stagedCount === 0 || commitBlocked) return;
+		const projectId = activeProjectId;
+		// Cleared only once the commit lands: a failed or refused commit used to
+		// take the message with it.
+		const committed = await onCommit(message.trim());
+		if (!committed) return;
+		// Leave it alone if the user started a new message while this one committed.
 		if (repoPath) {
-			localCommitMessage = '';
-		} else {
-			setCommitDraft(activeProjectId, '');
+			if (localCommitMessage === message) localCommitMessage = '';
+		} else if (projectId === activeProjectId && gitDraft.commitMessage === message) {
+			setCommitDraft(projectId, '');
 			markGitUiDirty();
 		}
 		autoResize();
@@ -419,11 +442,12 @@
 			<button
 				type="button"
 				class="flex items-center justify-center gap-1.5 flex-1 h-7 px-3 border rounded-md text-xs font-medium transition-all duration-150
-						{stagedCount > 0 && (repoPath ? localCommitMessage : gitDraft.commitMessage).trim() && !isCommitting
+						{stagedCount > 0 && currentMessage.trim() && !isCommitting && !commitBlocked
 						? 'bg-violet-600 border-violet-700 text-white hover:bg-violet-700 cursor-pointer'
 						: 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400 dark:text-slate-600 cursor-not-allowed'}"
 				onclick={handleCommit}
-					disabled={stagedCount === 0 || !(repoPath ? localCommitMessage : gitDraft.commitMessage).trim() || isCommitting}
+				disabled={stagedCount === 0 || !currentMessage.trim() || isCommitting || Boolean(commitBlocked)}
+				title={commitBlocked ?? undefined}
 			>
 				{#if isCommitting}
 					<div class="w-3.5 h-3.5 border-2 border-slate-400/40 border-t-slate-600 dark:border-slate-500/40 dark:border-t-slate-200 rounded-full animate-spin"></div>
@@ -502,11 +526,11 @@
 					type="button"
 					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500 flex-shrink-0"
 					onclick={onPush}
-					disabled={syncBusy || !hasRemotes || !onPush || repoBusy}
+					disabled={Boolean(pushBlocked) || !hasRemotes || !onPush || repoBusy}
 					title={isPushing
 						? 'Pushing…'
-						: syncBusy
-							? 'Another git action is running…'
+						: pushBlocked
+							? pushBlocked
 							: repoBusy
 								? repoBusyReason
 								: hasRemotes
@@ -528,11 +552,11 @@
 					type="button"
 					class="relative flex items-center justify-center w-8 h-7 bg-white dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-md text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-white dark:disabled:hover:bg-slate-800/80 disabled:hover:text-slate-500 flex-shrink-0"
 					onclick={onPull}
-					disabled={syncBusy || !hasRemotes || !onPull || repoBusy}
+					disabled={Boolean(pullBlocked) || !hasRemotes || !onPull || repoBusy}
 					title={isPulling
 						? 'Pulling…'
-						: syncBusy
-							? 'Another git action is running…'
+						: pullBlocked
+							? pullBlocked
 							: repoBusy
 								? repoBusyReason
 								: hasRemotes
@@ -555,11 +579,19 @@
 				<!-- More git actions -->
 				<GitMoreMenu
 					isBusy={isMoreBusy}
-					disabled={isPushing || isPulling}
 					{hasRemotes}
 					{selectedRemote}
 					{currentBranch}
-					onAction={onMoreAction}
+					{busyReasonFor}
+					operation={repoOperation}
+					detached={repoDetached}
+					{hasPackageJson}
+					{hasSubmodules}
+					isNested={Boolean(repoPath)}
+					{stagedCount}
+					hasCommitMessage={Boolean(currentMessage.trim())}
+					onAction={(action) =>
+						onMoreAction?.(action, action === 'amend-message' ? { message: currentMessage.trim() } : undefined)}
 				/>
 			{/if}
 		</div>

@@ -78,6 +78,10 @@ export interface GitBranchInfo {
 	operation?: GitOperation | null;
 	/** Nested git repos / submodules under this project */
 	nested?: GitNestedRepoInfo[];
+	/** The repo declares submodules (`.gitmodules` exists). */
+	hasSubmodules?: boolean;
+	/** The repo root has a `package.json`, so `npm version` can run. */
+	hasPackageJson?: boolean;
 }
 
 /**
@@ -351,4 +355,116 @@ export interface GeneratedCommitMessage {
 /** Structured branch-name output from AI */
 export interface GeneratedBranchName {
 	description: string;
+}
+
+// ============================================
+// Operation lock / sync types
+// ============================================
+
+/**
+ * What a running git operation is doing, in the terms the panel's buttons use.
+ * Each category drives one busy flag on the client, so a pull started anywhere
+ * — another tab, another device — spins every Pull button that can see it.
+ */
+export type GitOpCategory =
+	| 'commit'
+	| 'staging'
+	| 'push'
+	| 'pull'
+	| 'fetch'
+	| 'more'
+	| 'stash'
+	| 'tag'
+	| 'branch'
+	| 'resolve'
+	| 'configure';
+
+/**
+ * Which operations may overlap in one repository.
+ *
+ * - `exclusive` moves HEAD, the index or the working tree; it runs alone.
+ * - `network` talks to a remote and only writes remote-tracking refs, so the
+ *   index stays free for staging while a long push or fetch runs.
+ * - `index` writes the index only (stage, unstage, discard).
+ *
+ * Two operations conflict when either is exclusive or both share a class.
+ */
+export type GitOpClass = 'exclusive' | 'network' | 'index';
+
+export interface GitActiveOp {
+	id: string;
+	category: GitOpCategory;
+	cls: GitOpClass;
+	/** Human label, e.g. "Pull" or "Force push". */
+	label: string;
+	/** Branch, remote or tag the operation is aimed at, when it has one. */
+	target?: string;
+	startedAt: number;
+}
+
+/** Every operation running in one repository of one workspace. */
+export interface GitRepoOpState {
+	/** Workspace scope key (project, or project + worktree). */
+	scope: string;
+	/** Absolute path of a nested repo; absent for the workspace's own repo. */
+	repoPath?: string;
+	ops: GitActiveOp[];
+}
+
+/** How a pull reconciles local and remote history. */
+export type GitPullMode = 'default' | 'merge' | 'rebase' | 'ff-only';
+
+export interface GitPullResult {
+	success: boolean;
+	message: string;
+	/**
+	 * Why a pull did not complete, when git said something the panel can act on:
+	 * `diverged` — both sides have commits and no reconcile strategy is set;
+	 * `conflict` — the merge or rebase stopped on conflicts;
+	 * `local-changes` — uncommitted work would be overwritten.
+	 */
+	reason?: 'diverged' | 'conflict' | 'local-changes';
+	/** Local commits the remote does not have (set with `diverged`). */
+	ahead?: number;
+	/** Remote commits the local branch does not have (set with `diverged`). */
+	behind?: number;
+	/** Commits HEAD actually moved forward by, measured before and after. */
+	pulledCount?: number;
+}
+
+export interface GitForcePullPreview {
+	/** `<remote>/<branch>` or the URL-tracked equivalent the reset will land on. */
+	target: string;
+	/** Local commits that will no longer be on the branch. */
+	localCommits: number;
+	/** Remote commits that will arrive. */
+	incomingCommits: number;
+	/** Tracked files with uncommitted changes (they will be stashed). */
+	changedFiles: number;
+	/** Untracked files the remote tree would overwrite (they will be stashed). */
+	collidingUntracked: string[];
+}
+
+export interface GitForcePullResult {
+	previousHead: string;
+	newHead: string;
+	discardedCommits: number;
+	/** Message of the safety stash, when one was created. */
+	stashMessage?: string;
+}
+
+export interface GitPruneCandidate {
+	name: string;
+	/** Whether the branch is fully merged into the default branch. */
+	merged: boolean;
+}
+
+export interface GitLockStatus {
+	exists: boolean;
+	/** Milliseconds since the lock file was last written. */
+	ageMs: number;
+	/** A git operation started by Clopen is still running in this project. */
+	clopenOpRunning: boolean;
+	/** Safe to offer removal: old enough and nothing of ours holds it. */
+	removable: boolean;
 }

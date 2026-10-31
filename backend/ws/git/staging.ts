@@ -3,24 +3,17 @@
  */
 
 import { t } from 'elysia';
-import path from 'node:path';
 import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { findRepoForFile } from '../../git/nested-repos';
 import { requireProjectWorkspace } from '../access';
-import { debug } from '$shared/utils/logger';
+import { gitRepoContext, withRepoLock } from './repo-context';
 
-function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string | null {
-	if (!repoPath) return null;
-	const resolved = path.resolve(repoPath);
-	const projectRoot = path.resolve(projectPath);
-	const sep = path.sep;
-	if (resolved !== projectRoot && !resolved.startsWith(projectRoot + sep)) {
-		debug.warn('git', `Rejected nested repoPath outside project: ${resolved}`);
-		return projectRoot;
-	}
-	return resolved;
-}
+// Index writes queue behind each other rather than refusing: three files staged
+// in quick succession are three requests the user meant.
+const STAGE = { category: 'staging', label: 'Staging', queue: true } as const;
+const UNSTAGE = { category: 'staging', label: 'Unstaging', queue: true } as const;
+const DISCARD = { category: 'staging', label: 'Discarding changes', queue: true } as const;
 
 export const stagingHandler = createRouter()
 	.http('git:stage', {
@@ -32,9 +25,9 @@ export const stagingHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const repo = await findRepoForFile(root, data.filePath);
-		const cwd = repo?.repoPath ?? root;
+		const ctx = gitRepoContext(conn, data.projectId, undefined, repo?.repoPath ?? root);
 		const filePath = repo?.relativeFilePath ?? data.filePath;
-		await gitService.stageFile(cwd, filePath);
+		await withRepoLock(ctx, STAGE, () => gitService.stageFile(ctx.cwd, filePath));
 		return { ok: true };
 	})
 
@@ -45,9 +38,8 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = data.repoPath ? (resolveRepoCwd(root, data.repoPath) ?? root) : root;
-		await gitService.stageAll(cwd);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		await withRepoLock(ctx, STAGE, () => gitService.stageAll(ctx.cwd));
 		return { ok: true };
 	})
 
@@ -60,9 +52,9 @@ export const stagingHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const repo = await findRepoForFile(root, data.filePath);
-		const cwd = repo?.repoPath ?? root;
+		const ctx = gitRepoContext(conn, data.projectId, undefined, repo?.repoPath ?? root);
 		const filePath = repo?.relativeFilePath ?? data.filePath;
-		await gitService.unstageFile(cwd, filePath);
+		await withRepoLock(ctx, UNSTAGE, () => gitService.unstageFile(ctx.cwd, filePath));
 		return { ok: true };
 	})
 
@@ -73,9 +65,8 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = data.repoPath ? (resolveRepoCwd(root, data.repoPath) ?? root) : root;
-		await gitService.unstageAll(cwd);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		await withRepoLock(ctx, UNSTAGE, () => gitService.unstageAll(ctx.cwd));
 		return { ok: true };
 	})
 
@@ -88,9 +79,9 @@ export const stagingHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const repo = await findRepoForFile(root, data.filePath);
-		const cwd = repo?.repoPath ?? root;
+		const ctx = gitRepoContext(conn, data.projectId, undefined, repo?.repoPath ?? root);
 		const filePath = repo?.relativeFilePath ?? data.filePath;
-		await gitService.discardFile(cwd, filePath);
+		await withRepoLock(ctx, DISCARD, () => gitService.discardFile(ctx.cwd, filePath));
 		return { ok: true };
 	})
 
@@ -101,8 +92,7 @@ export const stagingHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = data.repoPath ? (resolveRepoCwd(root, data.repoPath) ?? root) : root;
-		await gitService.discardAll(cwd);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		await withRepoLock(ctx, DISCARD, () => gitService.discardAll(ctx.cwd));
 		return { ok: true };
 	});
