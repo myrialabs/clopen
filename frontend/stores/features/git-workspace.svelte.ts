@@ -25,6 +25,10 @@ import {
 } from '$frontend/stores/ui/project-workspace.svelte';
 import { registerProjectCleanup } from '$frontend/utils/project-state-cleanup';
 import { isScopeOfProject } from '$shared/utils/workspace-scope';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
+import { showError } from '$frontend/stores/ui/notification.svelte';
+import { debug } from '$shared/utils/logger';
+import type { GitActiveOp, GitOpCategory, GitOpClass, GitRepoOpState } from '$shared/types/git';
 
 export type GitView = 'changes' | 'log' | 'branches' | 'more';
 
@@ -165,20 +169,151 @@ const NO_OPS: GitOpFlags = Object.freeze({
 	isConfiguring: false
 });
 
+type GitOpFlag = keyof GitOpFlags;
+
+/** The flag each server-side operation category lights up. */
+const CATEGORY_FLAG: Record<GitOpCategory, GitOpFlag> = {
+	commit: 'isCommitting',
+	staging: 'isStaging',
+	push: 'isPushing',
+	pull: 'isPulling',
+	fetch: 'isFetching',
+	more: 'isMoreBusy',
+	stash: 'isStashing',
+	tag: 'isTagging',
+	branch: 'isBranching',
+	resolve: 'isResolving',
+	configure: 'isConfiguring'
+};
+
+/**
+ * The lock class of each flag, mirroring the server's defaults
+ * (`backend/git/op-lock.ts`). Flags without one — AI generation, UI wrappers —
+ * never touch the repository themselves and never block anything.
+ */
+const FLAG_CLASS: Partial<Record<GitOpFlag, GitOpClass>> = {
+	isCommitting: 'exclusive',
+	isStaging: 'index',
+	isPushing: 'network',
+	isPulling: 'exclusive',
+	isFetching: 'network',
+	isMoreBusy: 'exclusive',
+	isStashing: 'exclusive',
+	isTagging: 'network',
+	isBranching: 'exclusive',
+	isResolving: 'exclusive',
+	isConfiguring: 'exclusive'
+	// `isCreatingBranch` has no class on purpose: it only wraps the form while
+	// `createBranch` runs, and that holds `isBranching` itself — giving the
+	// wrapper a class would make the branch creation refuse its own wrapper.
+};
+
+const FLAG_LABEL: Record<GitOpFlag, string> = {
+	isCommitting: 'Commit',
+	isStaging: 'Staging',
+	isPushing: 'Push',
+	isPulling: 'Pull',
+	isFetching: 'Fetch',
+	isMoreBusy: 'A git action',
+	isGenerating: 'Message generation',
+	isGeneratingBranch: 'Branch name generation',
+	isCreatingBranch: 'Create branch',
+	isStashing: 'Stash',
+	isTagging: 'Tag',
+	isBranching: 'A branch change',
+	isResolving: 'Conflict resolution',
+	isConfiguring: 'Repository setup'
+};
+
+/**
+ * Two operations conflict when either is exclusive or both share a class —
+ * except index writes, which the server queues behind each other instead of
+ * refusing, so the client must not refuse them either.
+ */
+function classesConflict(a: GitOpClass, b: GitOpClass): boolean {
+	if (a === 'index' && b === 'index') return false;
+	return a === 'exclusive' || b === 'exclusive' || a === b;
+}
+
+// What THIS tab has in flight — set the moment a button is clicked, before the
+// server has answered, so the spinner never waits on a round trip.
 const gitOps = $state<Record<string, GitOpFlags>>({});
+const localTargets = $state<Record<string, Partial<Record<GitOpFlag, string>>>>({});
+
+// What the repository's lock says, from every client. This is the shared truth:
+// a pull started on another device, or in this tab before a remount, shows here.
+interface ServerOpEntry {
+	scope: string;
+	ops: GitActiveOp[];
+}
+const serverOps = $state<Record<string, ServerOpEntry>>({});
 
 function getOpKey(projectId: string, repoPath?: string): string {
 	return repoPath ? `${projectId}::${repoPath}` : projectId;
 }
 
-/** Read a project's operation flags (all-false sentinel when none). */
+/** Read a repo's operation flags: this tab's own plus every client's, via the server. */
 export function getGitOps(projectId: string, repoPath?: string): GitOpFlags {
 	const key = getOpKey(projectId, repoPath);
-	return gitOps[key] ?? NO_OPS;
+	const local = gitOps[key] ?? NO_OPS;
+	const remote = serverOps[key]?.ops;
+	if (!remote || remote.length === 0) return local;
+	const merged: GitOpFlags = { ...local };
+	for (const op of remote) merged[CATEGORY_FLAG[op.category]] = true;
+	return merged;
+}
+
+/**
+ * What a running operation of `flag` is aimed at — the branch being pushed,
+ * the remote being fetched. Rows use it to spin only the item that is busy.
+ * `null` when the flag is idle; `undefined` target when it has none (fetch all).
+ */
+export function getGitOpTarget(
+	projectId: string,
+	flag: GitOpFlag,
+	repoPath?: string
+): { target?: string } | null {
+	const key = getOpKey(projectId, repoPath);
+	const remote = serverOps[key]?.ops.find(op => CATEGORY_FLAG[op.category] === flag);
+	if (remote) return { target: remote.target };
+	if (gitOps[key]?.[flag]) return { target: localTargets[key]?.[flag] };
+	return null;
+}
+
+/**
+ * Why `flag` cannot start right now, or null when it can. Covers its own
+ * operation already running and any conflicting one, from this tab or another
+ * client. Buttons render this as their disabled state and tooltip, so a click
+ * that would be refused is never a click that silently does nothing.
+ */
+export function getGitBusyReason(projectId: string, flag: GitOpFlag, repoPath?: string): string | null {
+	if (!projectId) return null;
+	const key = getOpKey(projectId, repoPath);
+	const cls = FLAG_CLASS[flag];
+	const local = gitOps[key];
+	if (local?.[flag]) return `${FLAG_LABEL[flag]} is running…`;
+	const remote = serverOps[key]?.ops ?? [];
+	const own = remote.find(op => CATEGORY_FLAG[op.category] === flag);
+	if (own) return `${own.label}${own.target ? ` (${own.target})` : ''} is running…`;
+	if (!cls) return null;
+	for (const op of remote) {
+		if (classesConflict(op.cls, cls)) {
+			return `Waiting for ${op.label}${op.target ? ` (${op.target})` : ''} to finish`;
+		}
+	}
+	if (local) {
+		for (const other of Object.keys(local) as GitOpFlag[]) {
+			const otherCls = FLAG_CLASS[other];
+			if (local[other] && otherCls && classesConflict(otherCls, cls)) {
+				return `Waiting for ${FLAG_LABEL[other]} to finish`;
+			}
+		}
+	}
+	return null;
 }
 
 /** Set a single operation flag for a project. */
-export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolean, repoPath?: string): void {
+export function setGitOp(projectId: string, key: GitOpFlag, value: boolean, repoPath?: string): void {
 	if (!projectId) return;
 	const opKey = getOpKey(projectId, repoPath);
 	const current = gitOps[opKey] ?? NO_OPS;
@@ -187,7 +322,8 @@ export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolea
 
 /**
  * Run one git action while its flag is held, and skip it entirely if that flag
- * is already set. Returns whether the action ran.
+ * is already set or a conflicting operation is running. Returns whether the
+ * action ran.
  *
  * Every mutating git action in the panel goes through this. Hand-rolling the
  * check-set-try-finally at each call site is how they drifted apart: of the
@@ -196,6 +332,12 @@ export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolea
  * something idempotent like `git add`, and destructive for anything addressed
  * by position — `git stash pop stash@{0}` twice pops two different stashes,
  * because the list re-indexes under the second call.
+ *
+ * Only checking the action's own flag was the other half of the problem: a
+ * pull from the Branches tab started while a push from the Changes tab still
+ * ran. Conflicts are now judged by lock class, against this tab's operations
+ * and every other client's (the server enforces the same rule; this check
+ * only saves the round trip and explains the refusal).
  *
  * The flag is per (projectId, repoPath), so a nested sub-repo runs
  * independently of its parent and an action started in one project clears the
@@ -207,19 +349,69 @@ export function setGitOp(projectId: string, key: keyof GitOpFlags, value: boolea
  */
 export async function runGitOp(
 	projectId: string | null | undefined,
-	key: keyof GitOpFlags,
+	key: GitOpFlag,
 	action: () => Promise<void>,
-	repoPath?: string
+	repoPath?: string,
+	target?: string
 ): Promise<boolean> {
 	if (!projectId) return false;
-	if (getGitOps(projectId, repoPath)[key]) return false;
+	const opKey = getOpKey(projectId, repoPath);
+	if (gitOps[opKey]?.[key]) return false;
+	const reason = getGitBusyReason(projectId, key, repoPath);
+	if (reason) {
+		showError('Git is busy', `${reason}. Try again when it is done.`);
+		return false;
+	}
 	setGitOp(projectId, key, true, repoPath);
+	localTargets[opKey] = { ...localTargets[opKey], [key]: target };
 	try {
 		await action();
 		return true;
 	} finally {
 		setGitOp(projectId, key, false, repoPath);
+		const targets = { ...localTargets[opKey] };
+		delete targets[key];
+		localTargets[opKey] = targets;
 	}
+}
+
+/** Apply one repository's lock state as broadcast by the server. */
+function applyGitOpState(state: GitRepoOpState): void {
+	const key = getOpKey(state.scope, state.repoPath);
+	if (state.ops.length === 0) delete serverOps[key];
+	else serverOps[key] = { scope: state.scope, ops: state.ops };
+}
+
+/**
+ * Replace a workspace's server lock state with a fresh snapshot. Events sent
+ * while the socket was down, or while no Git panel listened, are gone — the
+ * snapshot is what makes a spinner that missed its "done" event stop.
+ */
+export async function syncGitOpStates(projectId: string, scope: string): Promise<void> {
+	if (!projectId || !scope) return;
+	try {
+		const states = await ws.http('git:op-states', { projectId });
+		for (const key of Object.keys(serverOps)) {
+			if (serverOps[key].scope === scope) delete serverOps[key];
+		}
+		for (const state of states) applyGitOpState(state);
+	} catch (err) {
+		debug.warn('git', 'Could not read git operation state:', err);
+	}
+}
+
+let opSyncStarted = false;
+
+/**
+ * Listen for lock changes from the server. Idempotent; the listener lives for
+ * the session so a Git panel that remounts finds the state already current.
+ */
+export function initGitOpSync(resync: () => void): () => void {
+	if (!opSyncStarted) {
+		opSyncStarted = true;
+		ws.on('git:op-state', (state) => applyGitOpState(state));
+	}
+	return onWsReconnect(resync);
 }
 
 let snapshotProvider: (() => GitUiState) | null = null;
@@ -297,5 +489,8 @@ registerProjectCleanup((projectId) => {
 	}
 	for (const key of Object.keys(gitOps)) {
 		if (isScopeOfProject(key, projectId)) delete gitOps[key];
+	}
+	for (const key of Object.keys(serverOps)) {
+		if (isScopeOfProject(serverOps[key].scope, projectId)) delete serverOps[key];
 	}
 });

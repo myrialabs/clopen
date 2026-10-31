@@ -5,7 +5,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
-	import { showError, showInfo } from '$frontend/stores/ui/notification.svelte';
+	import { showError as notifyError, showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
@@ -18,7 +18,6 @@
 	import { getGitStatusLabel, getGitStatusColor } from '$frontend/utils/git-status';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { showPanel } from '$frontend/stores/ui/workspace.svelte';
-	import { openWorkDialog } from '$frontend/stores/ui/quick-panels.svelte';
 	import {
 		gitDraft,
 		setGitSnapshotProvider,
@@ -29,8 +28,12 @@
 		setCommitDraft,
 		hasCommitDraft,
 		getGitOps,
+		getGitOpTarget,
+		getGitBusyReason,
 		runGitOp,
-		setGitOp,
+		initGitOpSync,
+		syncGitOpStates,
+		type GitOpFlags,
 		type GitUiState,
 		type GitActiveDiff
 	} from '$frontend/stores/features/git-workspace.svelte';
@@ -52,7 +55,12 @@
 		GitStashEntry,
 		GitTag,
 		GitRemote,
-		GitNestedRepoInfo
+		GitNestedRepoInfo,
+		GitPullMode,
+		GitPullResult,
+		GitForcePullPreview,
+		GitPruneCandidate,
+		GitLockStatus
 	} from '$shared/types/git';
 
 	// Sub-components
@@ -113,6 +121,80 @@
 		return true;
 	}
 
+	/**
+	 * Why `flag` cannot start on a repo right now — its own operation or a
+	 * conflicting one, from this tab or any other client — or null. Every
+	 * action button renders this as its disabled state and tooltip.
+	 */
+	function busyReason(flag: keyof GitOpFlags, repoPath?: string): string | null {
+		return getGitBusyReason(watchScope, flag, repoPath);
+	}
+
+	/**
+	 * True while `flag` runs against `target`. An operation without a target
+	 * (fetch all) counts for every row, since it covers all of them.
+	 */
+	function isOpOn(flag: keyof GitOpFlags, target: string, repoPath?: string): boolean {
+		const op = getGitOpTarget(watchScope, flag, repoPath);
+		return op !== null && (op.target === undefined || op.target === target);
+	}
+
+	/**
+	 * Every git error in the panel is reported through here. A lock file left
+	 * behind by a git process that died makes every later command fail with
+	 * "index.lock: File exists" until someone deletes it by hand — so instead of
+	 * repeating that verbatim, work out whether it is stale and offer to remove
+	 * it when, and only when, that is safe.
+	 */
+	function showError(title: string, message: string) {
+		const lockPath = message.match(/Unable to create '([^']+\.lock)'/)?.[1];
+		if (!lockPath || !projectId) {
+			notifyError(title, message);
+			return;
+		}
+		void explainLock(title, message, lockPath);
+	}
+
+	async function explainLock(title: string, message: string, lockPath: string) {
+		const pid = projectId;
+		let status: GitLockStatus;
+		try {
+			status = await ws.http('git:lock-status', { projectId: pid, lockPath });
+		} catch {
+			notifyError(title, message);
+			return;
+		}
+		if (!status.exists) {
+			notifyError(title, 'Another git process held the repository lock and has since released it. Try again.');
+			return;
+		}
+		if (!status.removable) {
+			notifyError(
+				title,
+				status.clopenOpRunning
+					? 'Another git operation is still running in this project. Try again when it finishes.'
+					: 'Another git process — a terminal, an agent or your editor — is using this repository right now. Try again in a moment.'
+			);
+			return;
+		}
+		const seconds = Math.round(status.ageMs / 1000);
+		const age = seconds >= 120 ? `${Math.round(seconds / 60)} minutes` : `${seconds} seconds`;
+		requestConfirm({
+			title: 'Repository Is Locked',
+			message: `${title}: git found a lock file that has not changed for ${age}:\n${lockPath}\nNo git operation from Clopen is running. If no terminal, agent or editor is running git in this project either, the lock was left by a process that crashed and is safe to remove.`,
+			type: 'warning',
+			confirmText: 'Remove Lock',
+			onConfirm: async () => {
+				try {
+					await ws.http('git:remove-stale-lock', { projectId: pid, lockPath });
+					showInfo('Lock Removed', 'The repository is unlocked — run the action again.');
+				} catch (err) {
+					notifyError('Could Not Remove Lock', err instanceof Error ? err.message : 'Unknown error');
+				}
+			}
+		});
+	}
+
 	// Remote state
 	let remotes = $state<GitRemote[]>([]);
 	let selectedRemote = $state('origin');
@@ -130,7 +212,6 @@
 			localStorage.setItem(`clopen:selectedRemote:${projectId}`, selectedRemote);
 		} catch { /* ignore */ }
 	}
-	let deletingRemoteBranch = $state<string | null>(null);
 
 	$effect(() => {
 		if (!editingRemote) return;
@@ -148,8 +229,6 @@
 	$effect(() => {
 		if (projectId && selectedRemote) saveSelectedRemote();
 	});
-	let pushingBranch = $state<string | null>(null);
-	let fetchingRemote = $state<string | null>(null);
 	let branchesLoadToken = 0;
 	let isLoadingBranches = $state(false);
 	let showAddRemoteForm = $state(false);
@@ -200,17 +279,15 @@
 			confirmText: 'Delete',
 			onConfirm: async () => {
 				await runGitOp(watchScope, 'isBranching', async () => {
-					const key = nestedRemoteBranchKey(remote, branch, repoPath);
-					deletingRemoteBranch = key;
 					try {
 						await ws.http('git:delete-remote-branch', { projectId, remote, branch, repoPath });
 						await loadBranches();
+						showInfo('Remote Branch Deleted', `Deleted ${remote}/${branch}.`);
 					} catch (err) {
 						debug.error('git', 'Failed to delete remote branch:', err);
-					} finally {
-						deletingRemoteBranch = null;
+						showError('Delete Failed', err instanceof Error ? err.message : 'Unknown error');
 					}
-				}, repoPath);
+				}, repoPath, `${remote}/${branch}`);
 			}
 		});
 	}
@@ -285,9 +362,9 @@
 	let isStashLoading = $state(false);
 	let showStashSaveForm = $state(false);
 	let stashMessage = $state('');
-	// When true, the create-stash form stashes only the index (`git stash push
-	// --staged`); otherwise it stashes all changes.
-	let stashStagedOnly = $state(false);
+	// What a new stash takes: tracked changes, tracked plus untracked files, or
+	// only what is staged. git cannot combine the last two.
+	let stashScope = $state<'all' | 'untracked' | 'staged'>('all');
 	let stashRepoPath = $state<string | undefined>(undefined);
 	// Inline expanded stash entries → their file list (lazy-loaded), like the
 	// per-commit file list under a branch.
@@ -359,7 +436,6 @@
 	let nestedEditRemoteNames = $state<Record<string, string>>({});
 	let nestedEditRemoteUrls = $state<Record<string, string>>({});
 	let nestedSavingRemote = $state<Record<string, boolean>>({});
-	let nestedFetchingRemote = $state<Record<string, string | null>>({});
 	let nestedActiveRemotes = $state<Record<string, string>>({});
 	let nestedRemotesList = $state<Record<string, GitRemote[]>>({});
 	const MIN_NESTED_REPO_HEIGHT = 250;
@@ -703,10 +779,6 @@
 		nestedNewBranchNames = { ...nestedNewBranchNames, [relPath]: value };
 	}
 
-	function nestedRemoteBranchKey(remote: string, branch: string, repoPath?: string): string {
-		return repoPath ? `${repoPath}::${remote}/${branch}` : `${remote}/${branch}`;
-	}
-
 	const filteredLocalBranches = $derived(
 		branchInfo?.local.filter(b =>
 			branchesSubTab !== 'local' || !branchesSearchQuery || b.name.toLowerCase().includes(branchesSearchQuery.toLowerCase())
@@ -907,18 +979,15 @@
 	async function handleNestedFetchRemote(remote: string, relPath: string) {
 		const nestedPath = branchInfo?.nested?.find(entry => entry.relPath === relPath)?.path;
 		await runGitOp(watchScope, 'isFetching', async () => {
-		nestedFetchingRemote = { ...nestedFetchingRemote, [relPath]: remote };
 		try {
-			const nested = branchInfo?.nested?.find(n => n.relPath === relPath);
-			const result = await ws.http('git:fetch', { projectId, remote, repoPath: nested?.path }) as { message: string };
-			showInfo('Fetched', result.message);
+			const result = await ws.http('git:fetch', { projectId, remote, repoPath: nestedPath });
+			showInfo('Fetched', result.message.trim() || `${remote} is up to date.`);
 			await loadBranches();
 		} catch (err) {
 			debug.error('git', 'Failed to fetch remote:', err);
-		} finally {
-			nestedFetchingRemote = { ...nestedFetchingRemote, [relPath]: null };
+			showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
-		}, nestedPath);
+		}, nestedPath, remote);
 	}
 
 	interface BranchCommitState {
@@ -1229,7 +1298,6 @@
 	 */
 	let operationState = $state<GitOperationState | null>(null);
 	let nestedOperations = $state<Record<string, GitOperationState>>({});
-	let isOperationBusy = $state(false);
 
 	/**
 	 * Operation state for the repo the resolver is focused on. A conflict inside a
@@ -1885,8 +1953,8 @@
 		action: 'continue' | 'skip' | 'abort',
 		repoPath?: string
 	) {
-		if (!projectId || isOperationBusy) return;
-		isOperationBusy = true;
+		if (!projectId) return;
+		await runGitOp(watchScope, 'isResolving', async () => {
 		try {
 			if (action === 'abort') {
 				await ws.http('git:abort-operation', { projectId, ...(repoPath && { repoPath }) });
@@ -1913,9 +1981,8 @@
 				`Could Not ${action === 'continue' ? 'Continue' : action === 'skip' ? 'Skip' : 'Abort'}`,
 				err instanceof Error ? err.message : 'The git operation failed.'
 			);
-		} finally {
-			isOperationBusy = false;
 		}
+		}, repoPath);
 	}
 
 	function confirmAbortOperation(state: GitOperationState, repoPath?: string) {
@@ -2015,6 +2082,7 @@
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to stage file:', err);
+			showError('Stage Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
 			stagingFiles.delete(path);
 		}
@@ -2072,17 +2140,15 @@
 
 	async function handleFetchRemote(remote: string) {
 		await runGitOp(watchScope, 'isFetching', async () => {
-		fetchingRemote = remote;
 		try {
-			const result = await ws.http('git:fetch', { projectId, remote }) as { message: string };
-			showInfo('Fetched', result.message);
+			const result = await ws.http('git:fetch', { projectId, remote });
+			showInfo('Fetched', result.message.trim() || `${remote} is up to date.`);
 			await loadBranches();
 		} catch (err) {
 			debug.error('git', 'Failed to fetch remote:', err);
-		} finally {
-			fetchingRemote = null;
+			showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
-		});
+		}, undefined, remote);
 	}
 
 	async function handleAddRemote() {
@@ -2107,17 +2173,19 @@
 
 	async function handlePushBranch(branch: string, repoPath?: string) {
 		await runGitOp(watchScope, 'isPushing', async () => {
-		pushingBranch = branch;
 		try {
-			const result = await ws.http('git:push', { projectId, branch, repoPath }) as { success: boolean; message: string };
-			showInfo(result.success ? 'Pushed' : 'Push failed', result.message);
-			await loadBranches();
+			const result = await ws.http('git:push', { projectId, branch, remote: remoteFor(repoPath), repoPath });
+			if (result.success) {
+				showInfo('Pushed', result.message.trim() || `Pushed ${branch}.`);
+			} else {
+				showError('Push Failed', result.message);
+			}
+			await Promise.all([loadBranches(), loadPushTarget()]);
 		} catch (err) {
 			debug.error('git', 'Failed to push branch:', err);
-		} finally {
-			pushingBranch = null;
+			showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
 		}
-		}, repoPath);
+		}, repoPath, branch);
 	}
 
 	// Push the current branch from the branch list. If the branch has
@@ -2148,30 +2216,29 @@
 	}
 
 	async function handlePushBranchForce(branch: string, repoPath?: string) {
+		// A nested repo pushes to its own selected remote, never the outer one's.
+		const remote = remoteFor(repoPath);
 		await runGitOp(watchScope, 'isPushing', async () => {
-		pushingBranch = branch;
 		try {
 			const result = await ws.http('git:push-advanced', {
 				projectId,
 				mode: 'force-lease',
-				remote: selectedRemote,
+				remote,
 				branch,
 				repoPath
-			}) as { success: boolean; message: string };
+			});
 			if (result.success) {
 				await loadBranches();
 				await loadTags();
-				showInfo('Force Pushed', `Force-pushed ${branch} to ${selectedRemote}.`);
+				showInfo('Force Pushed', `Force-pushed ${branch} to ${remote}.`);
 			} else {
 				showError('Force Push Failed', result.message);
 			}
 		} catch (err) {
 			debug.error('git', 'Force push from branch list failed:', err);
 			showError('Force Push Failed', err instanceof Error ? err.message : 'Unknown error');
-		} finally {
-			pushingBranch = null;
 		}
-		}, repoPath);
+		}, repoPath, branch);
 	}
 
 	// Load all per-file diffs for a commit and open them as tabs so the
@@ -2238,20 +2305,18 @@
 	// fired a second push.
 	async function stageAll(repoPath?: string) {
 		const pid = projectId;
-		const scope = watchScope;
-		if (!pid || getGitOps(scope, repoPath).isStaging) return;
-		setGitOp(scope, 'isStaging', true, repoPath);
-		try {
-			await ws.http('git:stage-all', { projectId: pid, repoPath });
-			await loadStatus();
-			if (activeTab && activeTab.section !== 'commit') {
-				await migrateActiveTabAfterStatusChange(activeTab.filePath);
+		await runGitOp(watchScope, 'isStaging', async () => {
+			try {
+				await ws.http('git:stage-all', { projectId: pid, repoPath });
+				await loadStatus();
+				if (activeTab && activeTab.section !== 'commit') {
+					await migrateActiveTabAfterStatusChange(activeTab.filePath);
+				}
+			} catch (err) {
+				debug.error('git', 'Failed to stage all:', err);
+				showError('Stage Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
-		} catch (err) {
-			debug.error('git', 'Failed to stage all:', err);
-		} finally {
-			setGitOp(scope, 'isStaging', false, repoPath);
-		}
+		}, repoPath);
 	}
 
 	async function unstageFile(path: string) {
@@ -2263,6 +2328,7 @@
 			await migrateActiveTabAfterStatusChange(path);
 		} catch (err) {
 			debug.error('git', 'Failed to unstage file:', err);
+			showError('Unstage Failed', err instanceof Error ? err.message : 'Unknown error');
 		} finally {
 			stagingFiles.delete(path);
 		}
@@ -2270,20 +2336,18 @@
 
 	async function unstageAll(repoPath?: string) {
 		const pid = projectId;
-		const scope = watchScope;
-		if (!pid || getGitOps(scope, repoPath).isStaging) return;
-		setGitOp(scope, 'isStaging', true, repoPath);
-		try {
-			await ws.http('git:unstage-all', { projectId: pid, repoPath });
-			await loadStatus();
-			if (activeTab && activeTab.section !== 'commit') {
-				await migrateActiveTabAfterStatusChange(activeTab.filePath);
+		await runGitOp(watchScope, 'isStaging', async () => {
+			try {
+				await ws.http('git:unstage-all', { projectId: pid, repoPath });
+				await loadStatus();
+				if (activeTab && activeTab.section !== 'commit') {
+					await migrateActiveTabAfterStatusChange(activeTab.filePath);
+				}
+			} catch (err) {
+				debug.error('git', 'Failed to unstage all:', err);
+				showError('Unstage Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
-		} catch (err) {
-			debug.error('git', 'Failed to unstage all:', err);
-		} finally {
-			setGitOp(scope, 'isStaging', false, repoPath);
-		}
+		}, repoPath);
 	}
 
 	async function discardFile(path: string) {
@@ -2301,6 +2365,7 @@
 						await migrateActiveTabAfterStatusChange(path);
 					} catch (err) {
 						debug.error('git', 'Failed to discard file:', err);
+						showError('Discard Failed', err instanceof Error ? err.message : 'Unknown error');
 					}
 				});
 			}
@@ -2315,20 +2380,18 @@
 			confirmText: 'Discard All',
 			onConfirm: async () => {
 				const pid = projectId;
-				const scope = watchScope;
-				if (!pid || getGitOps(scope, repoPath).isStaging) return;
-				setGitOp(scope, 'isStaging', true, repoPath);
-				try {
-					await ws.http('git:discard-all', { projectId: pid, repoPath });
-					await loadStatus();
-					if (activeTab && activeTab.section !== 'commit') {
-						await migrateActiveTabAfterStatusChange(activeTab.filePath);
+				await runGitOp(watchScope, 'isStaging', async () => {
+					try {
+						await ws.http('git:discard-all', { projectId: pid, repoPath });
+						await loadStatus();
+						if (activeTab && activeTab.section !== 'commit') {
+							await migrateActiveTabAfterStatusChange(activeTab.filePath);
+						}
+					} catch (err) {
+						debug.error('git', 'Failed to discard all:', err);
+						showError('Discard Failed', err instanceof Error ? err.message : 'Unknown error');
 					}
-				} catch (err) {
-					debug.error('git', 'Failed to discard all:', err);
-				} finally {
-					setGitOp(scope, 'isStaging', false, repoPath);
-				}
+				}, repoPath);
 			}
 		});
 	}
@@ -2337,21 +2400,23 @@
 	// Commit
 	// ============================
 
-	async function handleCommit(message: string, repoPath?: string) {
+	/** Returns whether the commit landed, so the form only clears the message then. */
+	async function handleCommit(message: string, repoPath?: string): Promise<boolean> {
 		const pid = projectId;
-		const scope = watchScope;
-		if (!pid || getGitOps(scope, repoPath).isCommitting) return;
-		setGitOp(scope, 'isCommitting', true, repoPath);
-		try {
-			await ws.http('git:commit', { projectId: pid, message, repoPath });
-			await loadAll();
-			await refreshLogIfVisible();
-		} catch (err) {
-			debug.error('git', 'Commit failed:', err);
-			showError('Commit Failed', err instanceof Error ? err.message : 'Unknown error');
-		} finally {
-			setGitOp(scope, 'isCommitting', false, repoPath);
-		}
+		if (!pid) return false;
+		let committed = false;
+		await runGitOp(watchScope, 'isCommitting', async () => {
+			try {
+				await ws.http('git:commit', { projectId: pid, message, repoPath });
+				committed = true;
+				await loadAll();
+				await refreshLogIfVisible();
+			} catch (err) {
+				debug.error('git', 'Commit failed:', err);
+				showError('Commit Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath);
+		return committed;
 	}
 
 	// ============================
@@ -3212,10 +3277,7 @@
 	) {
 		if (!projectId || !name) return;
 		const activeRepoPath = repoPath ?? mergeRepoPath ?? undefined;
-		const isNested = Boolean(activeRepoPath);
-		const isBusy = getGitOps(watchScope, activeRepoPath).isMoreBusy;
-		if (isBusy) return;
-		if (!isNested && blockedWhileBusy('merge')) return;
+		if (blockedFor('merge', activeRepoPath)) return;
 
 		await runMore(async () => {
 			try {
@@ -3269,7 +3331,8 @@
 	function mergeNestedBranch(name: string, repoPath: string) {
 		const nested = branchInfo?.nested?.find(n => n.path === repoPath);
 		if (!nested) return;
-		if (blockedWhileBusy('merge')) return;
+		// The sub-repo's own state decides, not the outer repo's.
+		if (blockedFor('merge', repoPath)) return;
 		requestConfirm({
 			title: 'Merge Branch',
 			message: `Merge "${name}" into "${nested.info.current}"?`,
@@ -3287,8 +3350,7 @@
 	async function runRebaseOnto(name: string, repoPath?: string) {
 		if (!projectId || !name) return;
 		const activeRepoPath = repoPath ?? mergeRepoPath ?? undefined;
-		if (!activeRepoPath && blockedWhileBusy('rebase')) return;
-		if (getGitOps(watchScope, activeRepoPath).isMoreBusy) return;
+		if (blockedFor('rebase', activeRepoPath)) return;
 
 		await runMore(async () => {
 			try {
@@ -3342,135 +3404,225 @@
 	const isPushing = $derived(ops.isPushing);
 	const isMoreBusy = $derived(ops.isMoreBusy);
 
+	/** Branch info of a repo: the workspace's own, or a nested one by path. */
+	function infoFor(repoPath?: string): GitBranchInfo | null | undefined {
+		return repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
+	}
+
+	/** The remote an action targets: the repo's selected one — nested repos keep their own. */
+	function remoteFor(repoPath?: string): string {
+		if (!repoPath) return selectedRemote;
+		const nested = branchInfo?.nested?.find(n => n.path === repoPath);
+		return nested ? getNestedSelectedRemote(nested) : 'origin';
+	}
+
+	/**
+	 * Why branch-targeted actions cannot run in a repo — an operation in progress
+	 * or a detached HEAD — or '' when they can. Per repo: a sub-repo can be
+	 * mid-rebase while the outer tree is clean, and the other way round.
+	 */
+	function repoBusyReasonFor(repoPath?: string): string {
+		if (!repoPath) return repoBusyReason;
+		const info = infoFor(repoPath);
+		if (info?.operation) return `A ${info.operation} is in progress — use Continue or Abort in the banner above.`;
+		if (info?.detached) return 'HEAD is detached (no branch checked out).';
+		return '';
+	}
+
+	function blockedFor(action: string, repoPath?: string): boolean {
+		const reason = repoBusyReasonFor(repoPath);
+		if (!reason) return false;
+		showError(`Cannot ${action}`, reason);
+		return true;
+	}
+
+	/** Staged files belonging to a repo (the status list is project-wide). */
+	function stagedCountFor(repoPath?: string): number {
+		if (!repoPath) return mainStagedFiles.length;
+		const nested = branchInfo?.nested?.find(n => n.path === repoPath);
+		if (!nested) return 0;
+		return gitStatus.staged.filter(f => f.path.startsWith(nested.relPath + '/')).length;
+	}
+
+	/** Whether the HEAD commit of a repo's current branch is already on its remote. */
+	function headIsPushed(repoPath?: string): boolean {
+		const info = infoFor(repoPath);
+		if (!info?.current) return false;
+		return pushedBranchNamesFromInfo(info).has(info.current) && (info.ahead ?? 0) === 0;
+	}
+
 	async function handleFetch(repoPath?: string, remote?: string) {
 		const pid = projectId;
-		const scope = watchScope;
-		if (!pid || getGitOps(scope, repoPath).isFetching) return;
-		if (!repoPath && blockedWhileBusy('fetch')) return;
-		setGitOp(scope, 'isFetching', true, repoPath);
-		try {
-			const info = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
-			const prevAhead = info?.ahead ?? 0;
-			const prevBehind = info?.behind ?? 0;
-			let useRemote = remote;
-			if (!useRemote) {
-				if (repoPath && branchInfo?.nested) {
-					const nested = branchInfo.nested.find(n => n.path === repoPath);
-					useRemote = nested ? getNestedSelectedRemote(nested) : 'origin';
+		const useRemote = remote ?? remoteFor(repoPath);
+		await runGitOp(watchScope, 'isFetching', async () => {
+			try {
+				const info = infoFor(repoPath);
+				const prevAhead = info?.ahead ?? 0;
+				const prevBehind = info?.behind ?? 0;
+				await ws.http('git:fetch', { projectId: pid, remote: useRemote, repoPath });
+				await loadBranches();
+				const updatedInfo = infoFor(repoPath);
+				const newAhead = updatedInfo?.ahead ?? 0;
+				const newBehind = updatedInfo?.behind ?? 0;
+				const parts: string[] = [];
+				if (newAhead > 0) parts.push(`${newAhead} ahead`);
+				if (newBehind > 0) parts.push(`${newBehind} behind`);
+				if (parts.length > 0) {
+					showInfo('Fetch Complete', `Your branch is ${parts.join(', ')} ${useRemote}.`);
+				} else if (prevBehind > 0 || prevAhead > 0) {
+					showInfo('Fetch Complete', `In sync with ${useRemote}.`);
 				} else {
-					useRemote = selectedRemote;
+					showInfo('Fetch Complete', `Already up to date with ${useRemote}.`);
 				}
+			} catch (err) {
+				debug.error('git', 'Fetch failed:', err);
+				showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
-			await ws.http('git:fetch', { projectId: pid, remote: useRemote, repoPath });
-			await loadBranches();
-			const updatedInfo = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
-			const newAhead = updatedInfo?.ahead ?? 0;
-			const newBehind = updatedInfo?.behind ?? 0;
-			const parts: string[] = [];
-			if (newAhead > 0) parts.push(`${newAhead} ahead`);
-			if (newBehind > 0) parts.push(`${newBehind} behind`);
-			if (parts.length > 0) {
-				showInfo('Fetch Complete', `Your branch is ${parts.join(', ')} ${useRemote}.`);
-			} else if (prevBehind > 0 || prevAhead > 0) {
-				showInfo('Fetch Complete', `In sync with ${useRemote}.`);
-			} else {
-				showInfo('Fetch Complete', `Already up to date with ${useRemote}.`);
+		}, repoPath, useRemote);
+	}
+
+	interface PullRequest {
+		repoPath?: string;
+		remote?: string;
+		mode?: GitPullMode;
+		autostash?: boolean;
+		/** Push once the pull lands — the Sync action. */
+		thenPush?: boolean;
+	}
+
+	/**
+	 * Strategy chooser for a pull git refused because both sides have commits.
+	 * Asked per occurrence instead of read from a setting: it is rare, the right
+	 * answer depends on the branch, and the user's git config (`pull.rebase`,
+	 * `pull.ff`) already decides it silently whenever it is set.
+	 */
+	let divergedPull = $state<(PullRequest & { branch: string; remoteLabel: string; ahead: number; behind: number }) | null>(null);
+
+	/** Pull a repo's current branch. Resolves to whether HEAD ended up updated. */
+	async function runPull(request: PullRequest = {}): Promise<boolean> {
+		const { repoPath, mode = 'default', autostash = false } = request;
+		if (blockedFor('pull', repoPath)) return false;
+		const pid = projectId;
+		const useRemote = request.remote ?? remoteFor(repoPath);
+		const branch = infoFor(repoPath)?.current;
+		let pulled = false;
+		await runGitOp(watchScope, 'isPulling', async () => {
+			try {
+				const result = await ws.http('git:pull', {
+					projectId: pid,
+					remote: useRemote,
+					branch,
+					mode,
+					autostash,
+					repoPath
+				});
+				pulled = await handlePullResult(result, { ...request, remote: useRemote, branch: branch ?? '' });
+			} catch (err) {
+				debug.error('git', 'Pull failed:', err);
+				showError('Pull Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
-		} catch (err) {
-			debug.error('git', 'Fetch failed:', err);
-			showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
-		} finally {
-			setGitOp(scope, 'isFetching', false, repoPath);
+		}, repoPath, branch);
+		if (pulled && request.thenPush) await handlePush(repoPath, useRemote);
+		return pulled;
+	}
+
+	async function handlePullResult(
+		result: GitPullResult,
+		request: PullRequest & { remote: string; branch: string }
+	): Promise<boolean> {
+		if (result.success) {
+			await loadAll();
+			await refreshLogIfVisible();
+			// Counted from HEAD before and after: the old `behind` figure was read
+			// before the pull's own fetch, so new commits were reported as none.
+			const count = result.pulledCount ?? 0;
+			showInfo(
+				'Pull Complete',
+				count > 0
+					? `Pulled ${count} commit${count > 1 ? 's' : ''} from ${request.remote}.`
+					: `Already up to date with ${request.remote}.`
+			);
+			return true;
 		}
+		switch (result.reason) {
+			case 'conflict':
+				await loadAll();
+				await loadConflicts();
+				conflictInitialPath = conflictFiles[0]?.path ?? null;
+				showConflictResolver = true;
+				return false;
+			case 'diverged':
+				divergedPull = {
+					...request,
+					remoteLabel: request.remote,
+					ahead: result.ahead ?? 0,
+					behind: result.behind ?? 0
+				};
+				return false;
+			case 'local-changes':
+				requestConfirm({
+					title: 'Local Changes In The Way',
+					message: `"${request.branch}" has uncommitted changes that the pull would overwrite.\nStash them, pull, and put them back afterwards? If they clash with what arrives, the stash is kept so nothing is lost.`,
+					type: 'warning',
+					confirmText: 'Stash & Pull',
+					onConfirm: () => void runPull({ ...request, autostash: true })
+				});
+				return false;
+			default:
+				showError('Pull Failed', result.message || 'git refused the pull.');
+				return false;
+		}
+	}
+
+	function chooseDivergedStrategy(choice: 'merge' | 'rebase' | 'force') {
+		const request = divergedPull;
+		divergedPull = null;
+		if (!request) return;
+		if (choice === 'force') {
+			void forcePull(request.repoPath);
+			return;
+		}
+		void runPull({ ...request, mode: choice });
 	}
 
 	async function handlePull(repoPath?: string, remote?: string) {
-		const pid = projectId;
-		const scope = watchScope;
-		if (!pid || getGitOps(scope, repoPath).isPulling) return;
-		if (!repoPath && blockedWhileBusy('pull')) return;
-		setGitOp(scope, 'isPulling', true, repoPath);
-		try {
-			const info = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
-			const prevBehind = info?.behind ?? 0;
-			let useRemote = remote;
-			if (!useRemote) {
-				if (repoPath && branchInfo?.nested) {
-					const nested = branchInfo.nested.find(n => n.path === repoPath);
-					useRemote = nested ? getNestedSelectedRemote(nested) : 'origin';
-				} else {
-					useRemote = selectedRemote;
-				}
-			}
-			const result = await ws.http('git:pull', { projectId: pid, remote: useRemote, branch: info?.current, repoPath });
-			if (!result.success) {
-				if (result.message.includes('conflict')) {
-					await loadAll();
-					await loadConflicts();
-					showConflictResolver = true;
-				} else {
-					showError('Pull Failed', result.message);
-				}
-			} else {
-				await loadAll();
-				if (prevBehind > 0) {
-					showInfo('Pull Complete', `Pulled ${prevBehind} commit${prevBehind > 1 ? 's' : ''} from ${useRemote}.`);
-				} else {
-					showInfo('Pull Complete', `Already up to date with ${useRemote}.`);
-				}
-			}
-		} catch (err) {
-			debug.error('git', 'Pull failed:', err);
-			showError('Pull Failed', err instanceof Error ? err.message : 'Unknown error');
-		} finally {
-			setGitOp(scope, 'isPulling', false, repoPath);
-		}
+		await runPull({ repoPath, remote });
 	}
 
 	async function handlePush(repoPath?: string, remote?: string) {
+		if (blockedFor('push', repoPath)) return;
 		const pid = projectId;
-		const scope = watchScope;
-		if (!pid || getGitOps(scope, repoPath).isPushing) return;
-		if (!repoPath && blockedWhileBusy('push')) return;
-		setGitOp(scope, 'isPushing', true, repoPath);
-		try {
-			const info = repoPath ? branchInfo?.nested?.find(n => n.path === repoPath)?.info : branchInfo;
-			const prevAhead = info?.ahead ?? 0;
-			let useRemote = remote;
-			if (!useRemote) {
-				if (repoPath && branchInfo?.nested) {
-					const nested = branchInfo.nested.find(n => n.path === repoPath);
-					useRemote = nested ? getNestedSelectedRemote(nested) : 'origin';
+		const info = infoFor(repoPath);
+		const branch = info?.current;
+		const useRemote = remote ?? remoteFor(repoPath);
+		await runGitOp(watchScope, 'isPushing', async () => {
+			try {
+				const prevAhead = infoFor(repoPath)?.ahead ?? 0;
+				// `useUpstream` (the backend default) means a tracked branch goes where
+				// git says it goes; `useRemote` is only the fallback for a branch that
+				// tracks nothing. Reporting `useRemote` unconditionally would name the
+				// wrong destination for every fork PR under review.
+				const result = await ws.http('git:push', { projectId: pid, remote: useRemote, branch, repoPath });
+				if (!result.success) {
+					showError('Push Failed', result.message);
 				} else {
-					useRemote = selectedRemote;
+					await Promise.all([loadBranches(), loadPushTarget()]);
+					const destination = repoPath
+						? useRemote
+						: pushTarget?.hasUpstream
+							? describePushTarget(pushTarget)
+							: useRemote;
+					if (prevAhead > 0) {
+						showInfo('Push Complete', `Pushed ${prevAhead} commit${prevAhead > 1 ? 's' : ''} to ${destination}.`);
+					} else {
+						showInfo('Push Complete', `Branch pushed to ${destination}.`);
+					}
 				}
+			} catch (err) {
+				debug.error('git', 'Push failed:', err);
+				showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
-			// `useUpstream` (the backend default) means a tracked branch goes where
-			// git says it goes; `useRemote` is only the fallback for a branch that
-			// tracks nothing. Reporting `useRemote` unconditionally would name the
-			// wrong destination for every fork PR under review.
-			const result = await ws.http('git:push', { projectId: pid, remote: useRemote, branch: info?.current, repoPath });
-			if (!result.success) {
-				showError('Push Failed', result.message);
-			} else {
-				await Promise.all([loadBranches(), loadPushTarget()]);
-				const destination = repoPath
-					? useRemote
-					: pushTarget?.hasUpstream
-						? describePushTarget(pushTarget)
-						: useRemote;
-				if (prevAhead > 0) {
-					showInfo('Push Complete', `Pushed ${prevAhead} commit${prevAhead > 1 ? 's' : ''} to ${destination}.`);
-				} else {
-					showInfo('Push Complete', `Branch pushed to ${destination}.`);
-				}
-			}
-		} catch (err) {
-			debug.error('git', 'Push failed:', err);
-			showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
-		} finally {
-			setGitOp(scope, 'isPushing', false, repoPath);
-		}
+		}, repoPath, branch);
 	}
 
 	// ============================
@@ -3482,30 +3634,23 @@
 		await runGitOp(watchScope, 'isMoreBusy', fn, repoPath);
 	}
 
-	async function pushVariant(mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force', label: string, repoPath?: string, branch?: string, remote?: string) {
-		if (!repoPath && blockedWhileBusy('push')) return;
-		await runMore(async () => {
+	async function pushVariant(mode: 'with-tags' | 'all-tags' | 'force-lease' | 'force', label: string, repoPath?: string) {
+		if (mode !== 'all-tags' && blockedFor('push', repoPath)) return;
+		const useRemote = remoteFor(repoPath);
+		const branch = infoFor(repoPath)?.current;
+		await runGitOp(watchScope, 'isPushing', async () => {
 			try {
-				let useRemote = remote;
-				if (!useRemote) {
-					if (repoPath && branchInfo?.nested) {
-						const nested = branchInfo.nested.find(n => n.path === repoPath);
-						useRemote = nested ? getNestedSelectedRemote(nested) : 'origin';
-					} else {
-						useRemote = selectedRemote;
-					}
-				}
 				const result = await ws.http('git:push-advanced', {
 					projectId,
 					mode,
 					remote: useRemote,
-					branch: branch ?? branchInfo?.current,
+					branch,
 					repoPath
 				});
 				if (!result.success) {
 					showError('Push Failed', result.message);
 				} else {
-					await loadBranches();
+					await Promise.all([loadBranches(), loadPushTarget()]);
 					await loadTags();
 					showInfo('Push Complete', `${label} to ${useRemote}.`);
 				}
@@ -3513,50 +3658,11 @@
 				debug.error('git', 'Push variant failed:', err);
 				showError('Push Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
-		}, repoPath);
-	}
-
-	async function pullRebase(repoPath?: string, branch?: string, remote?: string) {
-		if (!repoPath && blockedWhileBusy('pull with rebase')) return;
-		await runMore(async () => {
-			try {
-				let useRemote = remote;
-				if (!useRemote) {
-					if (repoPath && branchInfo?.nested) {
-						const nested = branchInfo.nested.find(n => n.path === repoPath);
-						useRemote = nested ? getNestedSelectedRemote(nested) : 'origin';
-					} else {
-						useRemote = selectedRemote;
-					}
-				}
-				const result = await ws.http('git:pull', {
-					projectId,
-					remote: useRemote,
-					branch: branch ?? branchInfo?.current,
-					rebase: true,
-					repoPath
-				});
-				if (!result.success) {
-					if (result.message.includes('conflict')) {
-						await loadAll();
-						await loadConflicts();
-						showConflictResolver = true;
-					} else {
-						showError('Pull Failed', result.message);
-					}
-				} else {
-					await loadAll();
-					showInfo('Pull Complete', `Rebased onto ${useRemote}.`);
-				}
-			} catch (err) {
-				debug.error('git', 'Pull (rebase) failed:', err);
-				showError('Pull Failed', err instanceof Error ? err.message : 'Unknown error');
-			}
-		}, repoPath);
+		}, repoPath, branch);
 	}
 
 	async function fetchAll(repoPath?: string) {
-		await runMore(async () => {
+		await runGitOp(watchScope, 'isFetching', async () => {
 			try {
 				await ws.http('git:fetch-all', { projectId, repoPath });
 				await loadBranches();
@@ -3565,6 +3671,194 @@
 			} catch (err) {
 				debug.error('git', 'Fetch all failed:', err);
 				showError('Fetch Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath);
+	}
+
+	/**
+	 * Make the current branch exactly match its remote. Previewed first, from a
+	 * fresh fetch, so the confirmation names what will actually be lost rather
+	 * than a generic warning.
+	 */
+	async function forcePull(repoPath?: string) {
+		if (blockedFor('force pull', repoPath)) return;
+		const pid = projectId;
+		const remote = remoteFor(repoPath);
+		const branch = infoFor(repoPath)?.current ?? '';
+		let preview: GitForcePullPreview | null = null;
+		await runGitOp(watchScope, 'isFetching', async () => {
+			try {
+				preview = await ws.http('git:force-pull-preview', { projectId: pid, remote, branch, repoPath });
+			} catch (err) {
+				debug.error('git', 'Force pull preview failed:', err);
+				showError('Force Pull Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath, remote);
+		const p = preview as GitForcePullPreview | null;
+		if (!p) return;
+
+		const lines: string[] = [];
+		if (p.localCommits > 0) {
+			lines.push(`• ${p.localCommits} local commit${p.localCommits > 1 ? 's' : ''} not on the remote will leave the branch (the previous tip stays in the reflog).`);
+		}
+		if (p.changedFiles > 0) {
+			lines.push(`• ${p.changedFiles} file${p.changedFiles > 1 ? 's' : ''} with uncommitted changes will be stashed first.`);
+		}
+		if (p.collidingUntracked.length > 0) {
+			const sample = p.collidingUntracked.slice(0, 3).join(', ');
+			const more = p.collidingUntracked.length > 3 ? ` and ${p.collidingUntracked.length - 3} more` : '';
+			lines.push(`• Untracked files the remote also has will be stashed too: ${sample}${more}.`);
+		}
+		if (p.incomingCommits > 0) {
+			lines.push(`• ${p.incomingCommits} commit${p.incomingCommits > 1 ? 's' : ''} will arrive from ${p.target}.`);
+		}
+		if (p.localCommits === 0 && p.changedFiles === 0 && p.collidingUntracked.length === 0) {
+			if (p.incomingCommits === 0) {
+				showInfo('Already In Sync', `"${branch}" already matches ${p.target}.`);
+				return;
+			}
+		}
+		requestConfirm({
+			title: 'Force Pull',
+			message: `Reset "${branch}" to exactly match ${p.target}?\n${lines.join('\n')}`,
+			type: p.localCommits > 0 ? 'error' : 'warning',
+			confirmText: 'Force Pull',
+			onConfirm: () => void runForcePull(repoPath, remote, branch, p.target)
+		});
+	}
+
+	async function runForcePull(repoPath: string | undefined, remote: string, branch: string, target: string) {
+		const pid = projectId;
+		await runGitOp(watchScope, 'isPulling', async () => {
+			try {
+				const result = await ws.http('git:force-pull', { projectId: pid, remote, branch, repoPath });
+				await loadAll();
+				await loadStash();
+				await refreshLogIfVisible();
+				const parts = [`"${branch}" now matches ${target} (${result.newHead}).`];
+				if (result.discardedCommits > 0) {
+					parts.push(
+						`${result.discardedCommits} local commit${result.discardedCommits > 1 ? 's were' : ' was'} dropped — the previous tip was ${result.previousHead}; Browse reflog in the More menu recovers it.`
+					);
+				}
+				if (result.stashMessage) parts.push('Your uncommitted changes are saved in the stash.');
+				showInfo('Force Pull Complete', parts.join(' '));
+			} catch (err) {
+				debug.error('git', 'Force pull failed:', err);
+				showError('Force Pull Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath, branch);
+	}
+
+	/**
+	 * Amend the last commit. `keep` folds the staged changes in under the same
+	 * message; `message` rewrites the message from the commit box.
+	 */
+	function requestAmend(mode: 'keep' | 'message', repoPath?: string, message?: string) {
+		if (blockedFor('amend', repoPath)) return;
+		if (mode === 'keep' && stagedCountFor(repoPath) === 0) {
+			showError('Nothing To Amend', 'Stage the changes you want to add to the last commit first.');
+			return;
+		}
+		const newMessage = message?.trim();
+		if (mode === 'message' && !newMessage) {
+			showError('No Message', 'Type the new commit message in the message box first.');
+			return;
+		}
+		const branch = infoFor(repoPath)?.current ?? '';
+		const run = () => void runAmend(mode, repoPath, newMessage);
+		if (headIsPushed(repoPath)) {
+			requestConfirm({
+				title: 'Amend Pushed Commit',
+				message: `The last commit on "${branch}" is already on the remote. Amending rewrites it, so the branch will need a force push afterwards. Continue?`,
+				type: 'warning',
+				confirmText: 'Amend',
+				onConfirm: run
+			});
+		} else {
+			run();
+		}
+	}
+
+	async function runAmend(mode: 'keep' | 'message', repoPath?: string, message?: string) {
+		const pid = projectId;
+		await runGitOp(watchScope, 'isCommitting', async () => {
+			try {
+				const { hash } = await ws.http('git:amend', {
+					projectId: pid,
+					...(mode === 'message' && message && { message }),
+					repoPath
+				});
+				if (mode === 'message' && !repoPath && gitDraft.commitMessage.trim() === message) {
+					setCommitDraft(pid, '');
+					markGitUiDirty();
+				}
+				await loadAll();
+				await refreshLogIfVisible();
+				showInfo('Commit Amended', `The last commit is now ${hash.slice(0, 7)}.`);
+			} catch (err) {
+				debug.error('git', 'Amend failed:', err);
+				showError('Amend Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath);
+	}
+
+	/** Delete local branches that are merged, or whose upstream was deleted. */
+	async function pruneBranches(mode: 'merged' | 'gone', repoPath?: string) {
+		const pid = projectId;
+		let result: { defaultBranch: string | null; candidates: GitPruneCandidate[] };
+		try {
+			result = await ws.http('git:prune-candidates', { projectId: pid, mode, remote: remoteFor(repoPath), repoPath });
+		} catch (err) {
+			showError('Prune Failed', err instanceof Error ? err.message : 'Unknown error');
+			return;
+		}
+		const { defaultBranch, candidates } = result;
+		if (candidates.length === 0) {
+			showInfo(
+				'Nothing To Prune',
+				mode === 'merged'
+					? `No local branch is fully merged into ${defaultBranch ?? 'the default branch'}.`
+					: 'No local branch tracks a deleted remote branch. Run Fetch all & prune first to pick up branches deleted on the remote.'
+			);
+			return;
+		}
+		const MAX_LISTED = 15;
+		const lines = candidates.slice(0, MAX_LISTED).map(c =>
+			`• ${c.name}${c.merged ? '' : ' — not merged'}`
+		);
+		if (candidates.length > MAX_LISTED) lines.push(`…and ${candidates.length - MAX_LISTED} more`);
+		const unmerged = candidates.filter(c => !c.merged).length;
+		const warning = unmerged > 0
+			? `\n${unmerged} of them ${unmerged > 1 ? 'are' : 'is'} not merged into ${defaultBranch ?? 'the default branch'} (often a squash merge) — their commits stay reachable only through the reflog.`
+			: '';
+		requestConfirm({
+			title: mode === 'merged' ? 'Prune Merged Branches' : 'Prune Gone Branches',
+			message: `Delete ${candidates.length} local branch${candidates.length > 1 ? 'es' : ''}?\n${lines.join('\n')}${warning}`,
+			type: unmerged > 0 ? 'error' : 'warning',
+			confirmText: 'Delete Branches',
+			onConfirm: () => void runPrune(candidates.map(c => c.name), repoPath)
+		});
+	}
+
+	async function runPrune(names: string[], repoPath?: string) {
+		const pid = projectId;
+		await runGitOp(watchScope, 'isBranching', async () => {
+			try {
+				const result = await ws.http('git:delete-branches', { projectId: pid, names, repoPath });
+				await loadBranches();
+				if (result.failed.length > 0) {
+					showError(
+						'Some Branches Were Kept',
+						result.failed.map(f => `${f.name}: ${f.message}`).join('\n')
+					);
+				}
+				if (result.deleted.length > 0) {
+					showInfo('Branches Pruned', `Deleted ${result.deleted.length} branch${result.deleted.length > 1 ? 'es' : ''}.`);
+				}
+			} catch (err) {
+				debug.error('git', 'Prune failed:', err);
+				showError('Prune Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
 		}, repoPath);
 	}
@@ -3587,6 +3881,38 @@
 				showError('Undo Failed', err instanceof Error ? err.message : 'Unknown error');
 			}
 		}, repoPath);
+	}
+
+	/**
+	 * Undo from the More menu. Like the branch list's undo, a commit that is
+	 * already on the remote gets a warning first: undoing it diverges the branch
+	 * and the next push has to be a force push.
+	 */
+	function requestUndo(mode: 'soft' | 'mixed' | 'hard', repoPath?: string) {
+		if (blockedFor('undo the last commit', repoPath)) return;
+		const branch = infoFor(repoPath)?.current ?? '';
+		const pushedNote = headIsPushed(repoPath)
+			? `\nThe commit is already on the remote, so "${branch}" will diverge from it and need a force push later.`
+			: '';
+		if (mode === 'hard') {
+			requestConfirm({
+				title: 'Undo Last Commit (discard)',
+				message: `Undo the last commit and discard all its changes? This cannot be undone.${pushedNote}`,
+				type: 'error',
+				confirmText: 'Discard',
+				onConfirm: () => void undoCommit('hard', repoPath)
+			});
+		} else if (pushedNote) {
+			requestConfirm({
+				title: 'Undo Pushed Commit',
+				message: `Undo the last commit and keep its changes ${mode === 'soft' ? 'staged' : 'in the working tree'}?${pushedNote}`,
+				type: 'warning',
+				confirmText: 'Undo',
+				onConfirm: () => void undoCommit(mode, repoPath)
+			});
+		} else {
+			void undoCommit(mode, repoPath);
+		}
 	}
 
 	// Undo the HEAD commit of the current branch from the branch list.
@@ -3639,6 +3965,7 @@
 	}
 
 	async function revertLast(repoPath?: string) {
+		if (blockedFor('revert', repoPath)) return;
 		await runMore(async () => {
 			try {
 				const result = await ws.http('git:revert', { projectId, repoPath });
@@ -3680,12 +4007,53 @@
 		}, repoPath);
 	}
 
-	async function cleanUntracked(repoPath?: string) {
+	/** List what a clean would delete, then confirm with that list in hand. */
+	async function confirmClean(includeIgnored: boolean, repoPath?: string) {
+		// A detached HEAD is fine to clean; an operation in progress is not.
+		const operation = infoFor(repoPath)?.operation;
+		if (operation) {
+			showError('Cannot clean', `A ${operation} is in progress — finish or abort it first.`);
+			return;
+		}
+		let paths: string[];
+		try {
+			({ paths } = await ws.http('git:clean-preview', { projectId, includeIgnored, repoPath }));
+		} catch (err) {
+			showError('Clean Failed', err instanceof Error ? err.message : 'Unknown error');
+			return;
+		}
+		if (paths.length === 0) {
+			showInfo(
+				'Nothing To Clean',
+				includeIgnored ? 'There are no untracked or ignored files.' : 'There are no untracked files.'
+			);
+			return;
+		}
+		const MAX_LISTED = 12;
+		const lines = paths.slice(0, MAX_LISTED).map(p => `• ${p}`);
+		if (paths.length > MAX_LISTED) lines.push(`…and ${paths.length - MAX_LISTED} more`);
+		// Ignored files are where the expensive and the irreplaceable live.
+		const notable = includeIgnored
+			? paths.filter(p => /(^|\/)(\.env[^/]*|node_modules\/?)$/.test(p))
+			: [];
+		const notableNote = notable.length > 0
+			? `\nThis includes ${notable.slice(0, 4).join(', ')}${notable.length > 4 ? '…' : ''} — environment files and installed dependencies.`
+			: '';
+		requestConfirm({
+			title: includeIgnored ? 'Clean Untracked & Ignored Files' : 'Clean Untracked Files',
+			message: `Permanently delete ${paths.length} item${paths.length > 1 ? 's' : ''}? This cannot be undone.\n${lines.join('\n')}${notableNote}`,
+			type: 'error',
+			confirmText: 'Delete',
+			onConfirm: () => void cleanUntracked(includeIgnored, repoPath)
+		});
+	}
+
+	async function cleanUntracked(includeIgnored: boolean, repoPath?: string) {
 		await runMore(async () => {
 			try {
-				await ws.http('git:clean', { projectId, repoPath });
+				await ws.http('git:clean', { projectId, includeIgnored, repoPath });
 				await loadStatus();
-				showInfo('Clean Complete', 'Removed untracked files.');
+				showInfo('Clean Complete', includeIgnored ? 'Removed untracked and ignored files.' : 'Removed untracked files.');
 			} catch (err) {
 				debug.error('git', 'Clean failed:', err);
 				showError('Clean Failed', err instanceof Error ? err.message : 'Unknown error');
@@ -3705,13 +4073,46 @@
 		}, repoPath);
 	}
 
-	function handleNestedMoreAction(action: GitMoreAction, repoPath: string) {
-		const nested = branchInfo?.nested?.find(n => n.path === repoPath);
-		if (!nested) return;
-		const info = nested.info;
-		const subRemote = getNestedSelectedRemote(nested);
+	async function updateSubmodules(repoPath?: string) {
+		await runMore(async () => {
+			try {
+				const result = await ws.http('git:submodule-update', { projectId, repoPath });
+				await loadAll();
+				showInfo('Submodules Updated', result.message);
+			} catch (err) {
+				debug.error('git', 'Submodule update failed:', err);
+				showError('Submodule Update Failed', err instanceof Error ? err.message : 'Unknown error');
+			}
+		}, repoPath);
+	}
 
+	/**
+	 * One handler for the workspace's repo and every nested one: the More menu
+	 * offers the same actions in both, and the nested copy of this switch had
+	 * already drifted.
+	 */
+	function handleMoreAction(action: GitMoreAction, options?: { message?: string }, repoPath?: string) {
 		switch (action) {
+			case 'amend-no-edit':
+				return requestAmend('keep', repoPath);
+			case 'amend-message':
+				return requestAmend('message', repoPath, options?.message);
+			case 'sync':
+				return void runPull({ repoPath, thenPush: true });
+			case 'pull-merge':
+				return void runPull({ repoPath, mode: 'merge' });
+			case 'pull-rebase':
+				return void runPull({ repoPath, mode: 'rebase' });
+			case 'pull-ff-only':
+				return void runPull({ repoPath, mode: 'ff-only' });
+			case 'fetch-remote':
+				return void handleFetch(repoPath);
+			case 'fetch-all':
+				return void fetchAll(repoPath);
+			case 'push-follow-tags':
+				return void pushVariant('with-tags', 'Pushed branch with tags', repoPath);
+			case 'push-all-tags':
+				return void pushVariant('all-tags', 'Pushed all tags', repoPath);
 			case 'merge-branch':
 				return void openMergeBranchModal(repoPath);
 			case 'rebase-onto':
@@ -3719,48 +4120,19 @@
 			case 'return-to-branch':
 				return void returnToPreviousBranch(repoPath);
 			case 'set-upstream':
-				// The editor is scoped to the outer repo's current branch.
+				// The menu hides this for nested repos: the editor is scoped to the
+				// workspace's own repository.
 				return openUpstreamModal();
-			case 'stash-apply':
-				return void applyLatestStash(repoPath);
-			case 'reflog':
-				return openReflog(repoPath);
-			case 'push-follow-tags':
-				return void pushVariant('with-tags', 'Pushed branch with tags', repoPath, info.current, subRemote);
-			case 'push-all-tags':
-				return void pushVariant('all-tags', 'Pushed all tags', repoPath, info.current, subRemote);
-			case 'push-force-lease':
-				return requestConfirm({
-					title: 'Force Push (with lease)',
-					message: `Force push "${info.current}" to ${subRemote}? This overwrites the remote branch but aborts if someone else has pushed.`,
-					type: 'warning',
-					confirmText: 'Force Push',
-					onConfirm: () => void pushVariant('force-lease', 'Force-pushed branch', repoPath, info.current, subRemote)
-				});
-			case 'push-force':
-				return requestConfirm({
-					title: 'Force Push',
-					message: `Force push "${info.current}" to ${subRemote}? This unconditionally overwrites the remote branch and can destroy others' commits.`,
-					type: 'error',
-					confirmText: 'Force Push',
-					onConfirm: () => void pushVariant('force', 'Force-pushed branch', repoPath, info.current, subRemote)
-				});
-			case 'pull-rebase':
-				return void pullRebase(repoPath, info.current, subRemote);
-			case 'fetch-all':
-				return void fetchAll(repoPath);
+			case 'prune-merged':
+				return void pruneBranches('merged', repoPath);
+			case 'prune-gone':
+				return void pruneBranches('gone', repoPath);
 			case 'undo-soft':
-				return void undoCommit('soft', repoPath);
+				return requestUndo('soft', repoPath);
 			case 'undo-mixed':
-				return void undoCommit('mixed', repoPath);
+				return requestUndo('mixed', repoPath);
 			case 'undo-hard':
-				return requestConfirm({
-					title: 'Undo Last Commit (discard)',
-					message: 'Undo the last commit and discard all its changes? This cannot be undone.',
-					type: 'error',
-					confirmText: 'Discard',
-					onConfirm: () => void undoCommit('hard', repoPath)
-				});
+				return requestUndo('hard', repoPath);
 			case 'revert-last':
 				return void revertLast(repoPath);
 			case 'npm-patch':
@@ -3775,99 +4147,42 @@
 					onConfirm: () => void npmVersion(bump, repoPath)
 				});
 			}
-			case 'clean-untracked':
-				return requestConfirm({
-					title: 'Clean Untracked Files',
-					message: 'Permanently delete all untracked files and directories? This cannot be undone.',
-					type: 'error',
-					confirmText: 'Clean',
-					onConfirm: () => void cleanUntracked(repoPath)
-				});
+			case 'stash-apply':
+				return void applyLatestStash(repoPath);
+			case 'stash-untracked':
+				return openStashPrompt('untracked', repoPath);
+			case 'reflog':
+				return openReflog(repoPath);
+			case 'submodule-update':
+				return void updateSubmodules(repoPath);
 			case 'gc':
 				return void optimizeRepo(repoPath);
-		}
-	}
-
-	function handleMoreAction(action: GitMoreAction) {
-		switch (action) {
-			case 'open-pull-request':
-				// Hands off to the Issues & PRs surface with its composer already up. The
-				// git panel owns local state; a pull request is remote state, and
-				// duplicating the composer here is exactly the split this surface
-				// exists to avoid.
-				return openWorkDialog({ composePullRequest: true });
-			case 'merge-branch':
-				return void openMergeBranchModal();
-			case 'rebase-onto':
-				return void openMergeBranchModal(undefined, 'rebase');
-			case 'return-to-branch':
-				return void returnToPreviousBranch();
-			case 'set-upstream':
-				return openUpstreamModal();
-			case 'stash-apply':
-				return void applyLatestStash();
-			case 'reflog':
-				return openReflog();
-			case 'push-follow-tags':
-				return void pushVariant('with-tags', 'Pushed branch with tags');
-			case 'push-all-tags':
-				return void pushVariant('all-tags', 'Pushed all tags');
-			case 'push-force-lease':
+			case 'force-pull':
+				return void forcePull(repoPath);
+			case 'push-force-lease': {
+				const branch = infoFor(repoPath)?.current;
 				return requestConfirm({
 					title: 'Force Push (with lease)',
-					message: `Force push "${branchInfo?.current}" to ${selectedRemote}? This overwrites the remote branch but aborts if someone else has pushed.`,
+					message: `Force push "${branch}" to ${remoteFor(repoPath)}? This overwrites the remote branch but aborts if someone else has pushed.`,
 					type: 'warning',
 					confirmText: 'Force Push',
-					onConfirm: () => void pushVariant('force-lease', 'Force-pushed branch')
+					onConfirm: () => void pushVariant('force-lease', 'Force-pushed branch', repoPath)
 				});
-			case 'push-force':
+			}
+			case 'push-force': {
+				const branch = infoFor(repoPath)?.current;
 				return requestConfirm({
 					title: 'Force Push',
-					message: `Force push "${branchInfo?.current}" to ${selectedRemote}? This unconditionally overwrites the remote branch and can destroy others' commits.`,
+					message: `Force push "${branch}" to ${remoteFor(repoPath)}? This unconditionally overwrites the remote branch and can destroy others' commits.`,
 					type: 'error',
 					confirmText: 'Force Push',
-					onConfirm: () => void pushVariant('force', 'Force-pushed branch')
-				});
-			case 'pull-rebase':
-				return void pullRebase();
-			case 'fetch-all':
-				return void fetchAll();
-			case 'undo-soft':
-				return void undoCommit('soft');
-			case 'undo-mixed':
-				return void undoCommit('mixed');
-			case 'undo-hard':
-				return requestConfirm({
-					title: 'Undo Last Commit (discard)',
-					message: 'Undo the last commit and discard all its changes? This cannot be undone.',
-					type: 'error',
-					confirmText: 'Discard',
-					onConfirm: () => void undoCommit('hard')
-				});
-			case 'revert-last':
-				return void revertLast();
-			case 'npm-patch':
-			case 'npm-minor':
-			case 'npm-major': {
-				const bump = action.replace('npm-', '') as 'patch' | 'minor' | 'major';
-				return requestConfirm({
-					title: `npm version ${bump}`,
-					message: `Bump the package version (${bump}) and create a version commit and tag? Requires a clean working tree.`,
-					type: 'info',
-					confirmText: 'Bump Version',
-					onConfirm: () => void npmVersion(bump)
+					onConfirm: () => void pushVariant('force', 'Force-pushed branch', repoPath)
 				});
 			}
 			case 'clean-untracked':
-				return requestConfirm({
-					title: 'Clean Untracked Files',
-					message: 'Permanently delete all untracked files and directories? This cannot be undone.',
-					type: 'error',
-					confirmText: 'Clean',
-					onConfirm: () => void cleanUntracked()
-				});
-			case 'gc':
-				return void optimizeRepo();
+				return void confirmClean(false, repoPath);
+			case 'clean-ignored':
+				return void confirmClean(true, repoPath);
 		}
 	}
 
@@ -4170,12 +4485,13 @@
 			await ws.http('git:stash-save', {
 				projectId,
 				message: stashMessage.trim() || undefined,
-				staged: stashStagedOnly,
+				staged: stashScope === 'staged',
+				includeUntracked: stashScope === 'untracked',
 				repoPath: stashRepoPath
 			});
 			stashMessage = '';
 			showStashSaveForm = false;
-			stashStagedOnly = false;
+			stashScope = 'all';
 			stashRepoPath = undefined;
 			await Promise.all([loadStash(), loadStatus()]);
 		} catch (err) {
@@ -4191,9 +4507,9 @@
 	 * scope, and focuses the message input so the user can type a description
 	 * and submit.
 	 */
-	function openStashPrompt(scope: 'all' | 'staged' = 'all', repoPath?: string) {
+	function openStashPrompt(scope: 'all' | 'untracked' | 'staged' = 'all', repoPath?: string) {
 		stashMessage = '';
-		stashStagedOnly = scope === 'staged';
+		stashScope = scope;
 		stashRepoPath = repoPath;
 		showStashSaveForm = true;
 		moreSubTab = 'stash';
@@ -4763,6 +5079,18 @@
 	// when the panel loaded becomes one the moment `git init` or `git clone` runs
 	// in a terminal, and the gate is what pinned the panel on "Not a git
 	// repository" until the user switched projects and back.
+	// The shared operation lock: every client's running git operations, so a
+	// pull started anywhere — another tab, another device, this panel before a
+	// remount — spins every button that can see it. The snapshot covers what the
+	// event stream missed while the socket was down or no panel was listening.
+	$effect(() => {
+		const pid = projectId;
+		const scope = watchScope;
+		if (!pid || !scope) return;
+		void syncGitOpStates(pid, scope);
+		return initGitOpSync(() => void syncGitOpStates(pid, scope));
+	});
+
 	$effect(() => {
 		if (!hasActiveProject || !projectId) return;
 
@@ -4946,30 +5274,30 @@
 			</div>
 			{#if !branch.isCurrent}
 			<div class="flex items-center gap-1 shrink-0">
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title="Switch to this branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleSwitchNestedBranch(nested, branch.name); }} title={busyReason('isBranching', nested.path) ?? 'Switch to this branch'} disabled={!!busyReason('isBranching', nested.path)}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 				{#if !nestedPushed.has(branch.name)}
-					{#if pushingBranch === branch.name}
+					{#if isOpOn('isPushing', branch.name, nested.path)}
 						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 					{:else}
-						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title={busyReason('isPushing', nested.path) ?? 'Push branch to remote'} disabled={!!busyReason('isPushing', nested.path)}><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 					{/if}
 				{/if}
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title="Delete branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); mergeNestedBranch(branch.name, nested.path); }} title={busyReason('isMoreBusy', nested.path) ?? 'Merge into current branch'} disabled={!!busyReason('isMoreBusy', nested.path)}><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteNestedBranch(nested, branch.name); }} title={busyReason('isBranching', nested.path) ?? 'Delete branch'} disabled={!!busyReason('isBranching', nested.path)}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 			</div>
 			{:else}
 			<div class="flex items-center gap-1 shrink-0">
 				{#if !nestedPushed.has(branch.name) || branch.ahead > 0}
-					{#if pushingBranch === branch.name}
+					{#if isOpOn('isPushing', branch.name, nested.path)}
 						<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 					{:else}
-						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+						<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name, nested.path); }} title={busyReason('isPushing', nested.path) ?? `Push${branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}`} disabled={!!busyReason('isPushing', nested.path)}><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 					{/if}
 				{/if}
 				{#if branch.behind > 0}
-					<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
+					{#if isOpOn('isPulling', branch.name, nested.path)}<div class="flex items-center justify-center w-6 h-6 rounded-md text-blue-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>{:else}<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePull(nested.path, getNestedSelectedRemote(nested)); }} title={busyReason('isPulling', nested.path) ?? `Pull (${branch.behind} behind)`} disabled={!!busyReason('isPulling', nested.path)}><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>{/if}
 				{/if}
-				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title="Rename branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+				<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name, nested.path); }} title={busyReason('isBranching', nested.path) ?? 'Rename branch'} disabled={!!busyReason('isBranching', nested.path)}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 			</div>
 			{/if}
 		</div>
@@ -5007,15 +5335,15 @@
 								<div class="flex items-center gap-1 shrink-0">
 									<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit, nested.path); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 									{#if !branch.isCurrent}
-										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash, nested.path); }} title="Cherry-pick this commit onto {nested.info.current}"><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
+										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash, nested.path); }} title={busyReason('isMoreBusy', nested.path) ?? `Cherry-pick this commit onto ${nested.info.current}`} disabled={!!busyReason('isMoreBusy', nested.path)}><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
 									{:else if i === 0}
-										{#if pushingBranch === branch.name}
+										{#if isOpOn('isPushing', branch.name, nested.path)}
 											<div class="flex items-center justify-center w-6 h-6 text-slate-400"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 										{:else if showHeadPush}
 											{@const isDiverged = nestedPushed.has(branch.name) && (nested.info.ahead ?? 0) > 0 && (nested.info.behind ?? 0) > 0}
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch, nested.path); }} title={isDiverged ? `Force push ${branch.name} (diverged: ${nested.info.ahead} ahead, ${nested.info.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch, nested.path); }} title={busyReason('isPushing', nested.path) ?? (isDiverged ? `Force push ${branch.name} (diverged: ${nested.info.ahead} ahead, ${nested.info.behind} behind)` : `Push ${branch.name} to remote`)} disabled={!!busyReason('isPushing', nested.path)}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
 										{/if}
-										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch, nested.path); }} title="Undo this commit (keep changes staged){nestedPushed.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
+										<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch, nested.path); }} title={busyReason('isMoreBusy', nested.path) ?? `Undo this commit (keep changes staged)${nestedPushed.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}`} disabled={!!busyReason('isMoreBusy', nested.path)}><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
 									{/if}
 								</div>
 							</div>
@@ -5103,7 +5431,7 @@
 					<div class="pt-2">
 						<GitOperationBanner
 							state={nestedOperations[nested.relPath]}
-							busy={isOperationBusy}
+							busy={!!busyReason('isResolving', nested.path)}
 							repoLabel={nested.relPath}
 							onContinue={() => void runOperationAction('continue', nested.path)}
 							onSkip={() => void runOperationAction('skip', nested.path)}
@@ -5134,7 +5462,11 @@
 					onCreateBranch={(name) => createBranch(name, nested.path)}
 					onPush={() => handlePush(nested.path, getNestedSelectedRemote(nested))}
 					onPull={() => handlePull(nested.path, getNestedSelectedRemote(nested))}
-					onMoreAction={(action) => handleNestedMoreAction(action, nested.path)}
+					onMoreAction={(action, options) => handleMoreAction(action, options, nested.path)}
+					repoOperation={nested.info.operation ?? null}
+					repoDetached={Boolean(nested.info.detached)}
+					hasPackageJson={Boolean(nested.info.hasPackageJson)}
+					hasSubmodules={Boolean(nested.info.hasSubmodules)}
 					branchDraft={nestedBranchDrafts[nested.relPath] ?? ''}
 					showBranchDraft={nestedShowBranchDrafts[nested.relPath] ?? false}
 					onBranchDraftChange={(val) => nestedBranchDrafts = { ...nestedBranchDrafts, [nested.relPath]: val }}
@@ -5173,6 +5505,7 @@
 						onStash={() => openStashPrompt('staged', nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						busy={getGitOps(watchScope, nested.path).isStaging}
+						blockedReason={busyReason('isStaging', nested.path)}
 					/>
 					<ChangesSection
 						title="Changes"
@@ -5187,6 +5520,7 @@
 						onDiscardAll={() => discardAll(nested.path)}
 						onViewDiff={(file, sec) => viewDiff(file, sec)}
 						busy={getGitOps(watchScope, nested.path).isStaging}
+						blockedReason={busyReason('isStaging', nested.path)}
 					/>
 					{#if nestedTotalChanges === 0 && !isLoading}
 						<div class="flex flex-col items-center justify-center gap-2 py-6 text-slate-500 text-xs">
@@ -5331,7 +5665,7 @@
 								{@const remoteName = remote.name}
 								{@const rbList = remoteBranches.filter(b => b.name.startsWith(remoteName + '/'))}
 								{@const isActiveRemote = remoteName === getNestedActiveRemote(nested.relPath)}
-								{@const isFetching = nestedFetchingRemote[nested.relPath] === remoteName}
+								{@const isFetching = isOpOn('isFetching', remoteName, nested.path)}
 								{@const isEditing = nestedEditingRemote[nested.relPath] === remoteName}
 								<div>
 									{#if isEditing}
@@ -5360,8 +5694,8 @@
 														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setNestedActiveRemote(remoteName, nested.relPath); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); nestedEditingRemote = { ...nestedEditingRemote, [nested.relPath]: remoteName }; nestedEditRemoteNames = { ...nestedEditRemoteNames, [nested.relPath]: remoteName }; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title="Disconnect" disabled={getGitOps(watchScope, nested.path).isConfiguring}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); void handleNestedFetchRemote(remoteName, nested.relPath); }} title={busyReason('isFetching', nested.path) ?? 'Fetch'} disabled={!!busyReason('isFetching', nested.path)}><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleNestedRemoveRemote(remoteName, nested.relPath); }} title={busyReason('isConfiguring', nested.path) ?? 'Disconnect'} disabled={!!busyReason('isConfiguring', nested.path)}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -5371,7 +5705,7 @@
 											{#each rbList as branch (branch.name)}
 												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												{@const shortName = branch.name.substring(remoteName.length + 1)}
-												{@const isDeleting = deletingRemoteBranch === nestedRemoteBranchKey(remoteName, shortName, nested.path)}
+												{@const isDeleting = getGitOpTarget(watchScope, 'isBranching', nested.path)?.target === `${remoteName}/${shortName}`}
 												<div class="group/rb flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors">
 													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 														<span class="text-sm text-slate-700 dark:text-slate-300 whitespace-nowrap leading-tight truncate" title={branch.name}>{shortName}</span>
@@ -5381,9 +5715,9 @@
 														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
 														<div class="flex items-center gap-1 shrink-0">
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title="Checkout locally" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name, nested.path); }} title={busyReason('isBranching', nested.path) ?? 'Checkout locally'} disabled={!!busyReason('isBranching', nested.path)}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title="Delete branch" disabled={getGitOps(watchScope, nested.path).isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remoteName, shortName, nested.path); }} title={busyReason('isBranching', nested.path) ?? 'Delete branch'} disabled={!!busyReason('isBranching', nested.path)}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -5538,16 +5872,17 @@
 							<div class="p-2.5 bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-lg space-y-2">
 								<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
 								<div class="flex gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
-									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
-									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashScope === 'all' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashScope = 'all'} title="Staged and unstaged changes to tracked files">Tracked</button>
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashScope === 'untracked' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashScope = 'untracked'} title="Tracked changes plus untracked files (--include-untracked)">+ Untracked</button>
+<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashScope === 'staged' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashScope = 'staged'} title="Only what is staged (--staged)">Staged only</button>
 								</div>
 								<div class="flex gap-1.5">
-									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={getGitOps(watchScope, nested.path).isStashing}>Stash Changes</button>
-									<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button>
+									<button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={!!busyReason('isStashing', nested.path)}>Stash Changes</button>
+									<button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashScope = 'all'; stashRepoPath = undefined; }}>Cancel</button>
 								</div>
 							</div>
 						{:else}
-							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; stashRepoPath = nested.path; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashScope = 'all'; stashRepoPath = nested.path; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
 						{/if}
 					</div>
 					{#if nestedStashes.length === 0}
@@ -5581,8 +5916,8 @@
 											</p>
 										</div>
 										<div class="flex items-center gap-1 shrink-0">
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop — apply and remove this entry" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button><button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashRestore(entry, 'apply'); }} title="Apply — keep this entry in the stash list" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:copy-plus" class="w-3.5 h-3.5" /></button>
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={getGitOps(watchScope, nested.path).isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title={busyReason('isStashing', nested.path) ?? 'Pop — apply and remove this entry'} disabled={!!busyReason('isStashing', nested.path)}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button><button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashRestore(entry, 'apply'); }} title={busyReason('isStashing', nested.path) ?? 'Apply — keep this entry in the stash list'} disabled={!!busyReason('isStashing', nested.path)}><Icon name="lucide:copy-plus" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title={busyReason('isStashing', nested.path) ?? 'Drop'} disabled={!!busyReason('isStashing', nested.path)}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 									</div>
 									{#if stashExpanded}
@@ -5746,8 +6081,8 @@
 											type="button"
 											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handlePushTag(tag.name, nested.path)}
-											disabled={getGitOps(watchScope, nested.path).isTagging}
-											title="Push tag to remote"
+											disabled={!!busyReason('isTagging', nested.path)}
+											title={busyReason('isTagging', nested.path) ?? 'Push tag to remote'}
 										>
 											<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
 										</button>
@@ -5755,8 +6090,8 @@
 											type="button"
 											class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 											onclick={() => handleDeleteTag(tag.name, nested.path)}
-											disabled={getGitOps(watchScope, nested.path).isTagging}
-											title="Delete tag"
+											disabled={!!busyReason('isTagging', nested.path)}
+											title={busyReason('isTagging', nested.path) ?? 'Delete tag'}
 										>
 											<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
 										</button>
@@ -6017,7 +6352,7 @@
 			<div class="pt-2">
 				<GitOperationBanner
 					state={operationState}
-					busy={isOperationBusy}
+					busy={!!busyReason('isResolving')}
 					onContinue={() => void runOperationAction('continue')}
 					onSkip={() => void runOperationAction('skip')}
 					onAbort={() => confirmAbortOperation(operationState!)}
@@ -6085,7 +6420,11 @@
 			onCreateBranch={createBranch}
 			onPush={() => handlePush()}
 			onPull={() => handlePull()}
-			onMoreAction={handleMoreAction}
+			onMoreAction={(action, options) => handleMoreAction(action, options)}
+			repoOperation={branchInfo?.operation ?? null}
+			repoDetached={Boolean(branchInfo?.detached)}
+			hasPackageJson={Boolean(branchInfo?.hasPackageJson)}
+			hasSubmodules={Boolean(branchInfo?.hasSubmodules)}
 		/>
 
 		<!-- Main repo changes -->
@@ -6121,6 +6460,7 @@
 				onStash={() => openStashPrompt('staged')}
 				onViewDiff={viewDiff}
 				busy={ops.isStaging}
+				blockedReason={busyReason('isStaging')}
 			/>
 
 			<!--
@@ -6145,6 +6485,7 @@
 				onDiscardAll={discardAll}
 				onViewDiff={viewDiff}
 				busy={ops.isStaging}
+				blockedReason={busyReason('isStaging')}
 			/>
 
 			{#if mainStagedFiles.length === 0 && mainAllChanges.length === 0 && mainConflictedFiles.length === 0 && !isLoading && !(branchInfo?.nested?.length)}
@@ -6398,30 +6739,30 @@
 											</div>
 											{#if !branch.isCurrent}
 											<div class="flex items-center gap-1 shrink-0">
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title="Switch to this branch" disabled={ops.isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); switchBranch(branch.name); }} title={busyReason('isBranching') ?? 'Switch to this branch'} disabled={!!busyReason('isBranching')}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 												{#if !pushedBranchNames.has(branch.name)}
-													{#if pushingBranch === branch.name}
+													{#if isOpOn('isPushing', branch.name)}
 														<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
-														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push branch to remote"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title={busyReason('isPushing') ?? 'Push branch to remote'} disabled={!!busyReason('isPushing')}><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 													{/if}
 												{/if}
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title="Merge into current branch"><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title="Delete branch" disabled={ops.isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); mergeBranch(branch.name); }} title={busyReason('isMoreBusy') ?? 'Merge into current branch'} disabled={!!busyReason('isMoreBusy')}><Icon name="lucide:git-merge" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); deleteBranch(branch.name); }} title={busyReason('isBranching') ?? 'Delete branch'} disabled={!!busyReason('isBranching')}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 										</div>
 										{:else}
 										<div class="flex items-center gap-1 shrink-0">
 											{#if !pushedBranchNames.has(branch.name) || branch.ahead > 0}
-												{#if pushingBranch === branch.name}
+												{#if isOpOn('isPushing', branch.name)}
 													<div class="flex items-center justify-center w-6 h-6 rounded-md text-emerald-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 												{:else}
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title="Push{branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}"><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePushBranch(branch.name); }} title={busyReason('isPushing') ?? `Push${branch.ahead > 0 ? ` (${branch.ahead} ahead)` : ` ${branch.name} to remote`}`} disabled={!!busyReason('isPushing')}><Icon name="lucide:upload" class="w-3.5 h-3.5" /></button>
 												{/if}
 											{/if}
 											{#if branch.behind > 0}
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePull(); }} title="Pull ({branch.behind} behind)"><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>
+												{#if isOpOn('isPulling', branch.name)}<div class="flex items-center justify-center w-6 h-6 rounded-md text-blue-500"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>{:else}<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePull(); }} title={busyReason('isPulling') ?? `Pull (${branch.behind} behind)`} disabled={!!busyReason('isPulling')}><Icon name="lucide:download" class="w-3.5 h-3.5" /></button>{/if}
 											{/if}
-											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title="Rename branch" disabled={ops.isBranching}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
+											<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-orange-500/10 hover:text-orange-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); renameBranch(branch.name); }} title={busyReason('isBranching') ?? 'Rename branch'} disabled={!!busyReason('isBranching')}><Icon name="lucide:pen-line" class="w-3.5 h-3.5" /></button>
 										</div>
 										{/if}
 										</div>
@@ -6459,15 +6800,15 @@
 														<div class="flex items-center gap-1 shrink-0">
 															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-violet-500 hover:bg-violet-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleViewCommitDiffs(commit); }} title="View all file diffs in this commit"><Icon name="lucide:file-diff" class="w-3.5 h-3.5" /></button>
 															{#if !branch.isCurrent}
-																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title="Cherry-pick this commit onto {branchInfo?.current}"><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
+																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-emerald-500 hover:bg-emerald-500/10 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleCherryPick(commit.hash); }} title={busyReason('isMoreBusy') ?? `Cherry-pick this commit onto ${branchInfo?.current}`} disabled={!!busyReason('isMoreBusy')}><Icon name="lucide:git-fork" class="w-3.5 h-3.5" /></button>
 															{:else if i === 0}
-																{#if pushingBranch === branch.name}
+																{#if isOpOn('isPushing', branch.name)}
 																	<div class="flex items-center justify-center w-6 h-6 text-slate-400"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 																{:else if showHeadPush}
 																	{@const isDiverged = pushedBranchNames.has(branch.name) && (branchInfo?.ahead ?? 0) > 0 && (branchInfo?.behind ?? 0) > 0}
-																	<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
+																	<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handlePushFromBranchList(branch); }} title={busyReason('isPushing') ?? (isDiverged ? `Force push ${branch.name} to ${selectedRemote} (diverged: ${branchInfo?.ahead} ahead, ${branchInfo?.behind} behind)` : `Push ${branch.name} to remote`)} disabled={!!busyReason('isPushing')}><Icon name="lucide:upload" class="w-3.5 h-3.5 {isDiverged ? 'text-amber-500' : ''}" /></button>
 																{/if}
-																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title="Undo this commit (keep changes staged){pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}"><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
+																<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:text-amber-500 hover:bg-amber-500/10 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleUndoHeadCommit(commit, branch); }} title={busyReason('isMoreBusy') ?? `Undo this commit (keep changes staged)${pushedBranchNames.has(branch.name) && branch.ahead === 0 ? ' · force push needed after' : ''}`} disabled={!!busyReason('isMoreBusy')}><Icon name="lucide:undo-2" class="w-3.5 h-3.5" /></button>
 															{/if}
 														</div>
 															</div>
@@ -6552,7 +6893,7 @@
 												</div>
 												{#if remote.fetchUrl || remote.pushUrl}<span class="text-xs text-slate-500 leading-tight truncate" title={remote.fetchUrl || remote.pushUrl}>{remote.fetchUrl || remote.pushUrl}</span>{/if}
 											</div>
-											{#if fetchingRemote === remote.name}
+											{#if isOpOn('isFetching', remote.name)}
 												<div class="flex items-center justify-center w-6 h-6 text-slate-500 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 											{:else}
 												<div class="flex items-center gap-1 shrink-0">
@@ -6560,8 +6901,8 @@
 														<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); setActiveRemote(remote.name); }} title="Set as active remote"><Icon name="lucide:star" class="w-3.5 h-3.5" /></button>
 													{/if}
 													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); editingRemote = remote.name; editRemoteName = remote.name; editRemoteUrl = remote.fetchUrl || remote.pushUrl || ''; }} title="Edit remote"><Icon name="lucide:pencil" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title="Fetch"><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
-													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title="Disconnect" disabled={ops.isConfiguring}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleFetchRemote(remote.name); }} title={busyReason('isFetching') ?? 'Fetch'} disabled={!!busyReason('isFetching')}><Icon name="lucide:refresh-cw" class="w-3.5 h-3.5" /></button>
+													<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleRemoveRemote(remote.name); }} title={busyReason('isConfiguring') ?? 'Disconnect'} disabled={!!busyReason('isConfiguring')}><Icon name="lucide:unlink" class="w-3.5 h-3.5" /></button>
 												</div>
 											{/if}
 										</div>
@@ -6571,7 +6912,7 @@
 											{#each remoteBranches as branch (branch.name)}
 												{@const branchRelativeDate = formatRelativeTime(branch.lastCommitDate)}
 												{@const shortName = branch.name.substring(remote.name.length + 1)}
-												{@const isDeleting = deletingRemoteBranch === `${remote.name}/${shortName}`}
+												{@const isDeleting = getGitOpTarget(watchScope, 'isBranching')?.target === `${remote.name}/${shortName}`}
 												<div class="group/rb flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors select-none">
 													<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 														<span class="text-sm text-slate-700 dark:text-slate-300 leading-tight truncate" title={branch.name}>{shortName}</span>
@@ -6581,9 +6922,9 @@
 														<div class="flex items-center justify-center w-6 h-6 text-slate-400 shrink-0"><Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" /></div>
 													{:else}
 														<div class="flex items-center gap-1 shrink-0">
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title="Checkout locally" disabled={ops.isBranching}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); checkoutRemoteBranch(branch.name); }} title={busyReason('isBranching') ?? 'Checkout locally'} disabled={!!busyReason('isBranching')}><Icon name="lucide:arrow-right" class="w-3.5 h-3.5" /></button>
 															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer" onclick={(e) => { e.stopPropagation(); copyToClipboard(branch.name); }} title="Copy branch name"><Icon name="lucide:copy" class="w-3.5 h-3.5" /></button>
-															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title="Delete branch" disabled={ops.isBranching}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+															<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleDeleteRemoteBranch(remote.name, shortName); }} title={busyReason('isBranching') ?? 'Delete branch'} disabled={!!busyReason('isBranching')}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 														</div>
 													{/if}
 												</div>
@@ -6714,8 +7055,8 @@
 												type="button"
 												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-blue-500/10 hover:text-blue-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handlePushTag(tag.name)}
-												disabled={ops.isTagging}
-												title="Push tag to remote"
+												disabled={!!busyReason('isTagging')}
+												title={busyReason('isTagging') ?? 'Push tag to remote'}
 											>
 												<Icon name="lucide:arrow-up-from-line" class="w-3.5 h-3.5" />
 											</button>
@@ -6723,8 +7064,8 @@
 												type="button"
 												class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer"
 												onclick={() => handleDeleteTag(tag.name)}
-												disabled={ops.isTagging}
-												title="Delete tag"
+												disabled={!!busyReason('isTagging')}
+												title={busyReason('isTagging') ?? 'Delete tag'}
 											>
 												<Icon name="lucide:trash-2" class="w-3.5 h-3.5" />
 											</button>
@@ -6757,13 +7098,14 @@
 								<input type="text" data-stash-message-input bind:value={stashMessage} placeholder="Stash message (optional)..." class="w-full px-2.5 py-2 text-sm bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 outline-none focus:border-violet-500/40 focus:ring-1 focus:ring-violet-500/20" onkeydown={(e) => e.key === 'Enter' && handleStashSave()} />
 								<!-- Scope: stash everything vs. only the staged (index) changes -->
 								<div class="flex gap-1 p-0.5 bg-slate-100 dark:bg-slate-800 rounded-md">
-									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {!stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = false}>All changes</button>
-									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashStagedOnly ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashStagedOnly = true}>Staged only</button>
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashScope === 'all' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashScope = 'all'} title="Staged and unstaged changes to tracked files">Tracked</button>
+									<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashScope === 'untracked' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashScope = 'untracked'} title="Tracked changes plus untracked files (--include-untracked)">+ Untracked</button>
+<button type="button" class="flex-1 px-2 py-1 text-xs font-medium rounded transition-colors cursor-pointer border-none {stashScope === 'staged' ? 'bg-white dark:bg-slate-700 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'}" onclick={() => stashScope = 'staged'} title="Only what is staged (--staged)">Staged only</button>
 								</div>
-								<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={ops.isStashing}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashStagedOnly = false; stashRepoPath = undefined; }}>Cancel</button></div>
+								<div class="flex gap-1.5"><button type="button" class="flex-1 px-3 py-1.5 text-xs font-medium rounded-md bg-violet-600 text-white hover:bg-violet-700 transition-colors cursor-pointer border-none disabled:opacity-40 disabled:cursor-not-allowed" onclick={handleStashSave} disabled={!!busyReason('isStashing')}>Stash Changes</button><button type="button" class="px-3 py-1.5 text-xs font-medium bg-transparent border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors cursor-pointer" onclick={() => { showStashSaveForm = false; stashMessage = ''; stashScope = 'all'; stashRepoPath = undefined; }}>Cancel</button></div>
 							</div>
 						{:else}
-							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashStagedOnly = false; stashRepoPath = undefined; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
+							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => { stashScope = 'all'; stashRepoPath = undefined; showStashSaveForm = true; }}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Stash Current Changes</span></button>
 						{/if}
 					</div>
 					{#if isStashLoading}
@@ -6798,8 +7140,8 @@
 												</p>
 											</div>
 											<div class="flex items-center gap-1 shrink-0">
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title="Pop — apply and remove this entry" disabled={ops.isStashing}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button><button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashRestore(entry, 'apply'); }} title="Apply — keep this entry in the stash list" disabled={ops.isStashing}><Icon name="lucide:copy-plus" class="w-3.5 h-3.5" /></button>
-												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title="Drop" disabled={ops.isStashing}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashPop(entry); }} title={busyReason('isStashing') ?? 'Pop — apply and remove this entry'} disabled={!!busyReason('isStashing')}><Icon name="lucide:archive-restore" class="w-3.5 h-3.5" /></button><button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashRestore(entry, 'apply'); }} title={busyReason('isStashing') ?? 'Apply — keep this entry in the stash list'} disabled={!!busyReason('isStashing')}><Icon name="lucide:copy-plus" class="w-3.5 h-3.5" /></button>
+												<button type="button" class="flex items-center justify-center w-6 h-6 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed" onclick={(e) => { e.stopPropagation(); handleStashDrop(entry); }} title={busyReason('isStashing') ?? 'Drop'} disabled={!!busyReason('isStashing')}><Icon name="lucide:trash-2" class="w-3.5 h-3.5" /></button>
 											</div>
 										</div>
 										{#if stashExpanded}
@@ -7236,7 +7578,7 @@
 		onResolveWithAI={resolveWithAI}
 		onResolveAllWithAI={resolveAllWithAI}
 		onAbortMerge={abortMerge}
-		busy={ops.isResolving || isOperationBusy}
+		busy={ops.isResolving}
 		onClose={() => {
 			showConflictResolver = false;
 			conflictInitialPath = null;
@@ -7324,7 +7666,7 @@
 				class="rounded-lg border-none bg-transparent px-3 py-2 text-sm font-medium text-red-600 transition-colors hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-transparent dark:text-red-400
 					{ops.isConfiguring ? '' : 'cursor-pointer'}"
 				onclick={clearUpstream}
-				disabled={ops.isConfiguring}
+				disabled={!!busyReason('isConfiguring')}
 			>
 				Clear upstream
 			</button>
@@ -7348,6 +7690,88 @@
 					<div class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-slate-400/40 border-t-slate-600 dark:border-slate-500/40 dark:border-t-slate-200"></div>
 				{/if}
 				Set Upstream
+			</button>
+		{/snippet}
+	</Modal>
+
+	<!-- Diverged pull: git refused to pick a strategy, so the user does -->
+	<Modal isOpen={divergedPull !== null} onClose={() => (divergedPull = null)} size="sm">
+		{#snippet header()}
+			<div class="flex items-center justify-between px-4 py-3 md:px-6 md:py-4">
+				<div class="flex items-center gap-2.5">
+					<Icon name="lucide:git-compare-arrows" class="w-5 h-5 text-violet-600" />
+					<div>
+						<h2 class="text-base font-bold text-slate-900 md:text-lg dark:text-slate-100">
+							Branches Have Diverged
+						</h2>
+						<p class="text-xs text-slate-500 dark:text-slate-400">
+							<span class="font-mono text-slate-700 dark:text-slate-300">{divergedPull?.branch ?? ''}</span>
+							and {divergedPull?.remoteLabel ?? 'the remote'} both have new commits
+						</p>
+					</div>
+				</div>
+				<button
+					type="button"
+					class="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-violet-500/10 hover:text-slate-900 md:p-2 dark:hover:text-slate-100"
+					onclick={() => (divergedPull = null)}
+					aria-label="Close diverged pull dialog"
+				>
+					<Icon name="lucide:x" class="w-4 h-4 md:w-5 md:h-5" />
+				</button>
+			</div>
+		{/snippet}
+
+		{#snippet children()}
+			{@const ahead = divergedPull?.ahead ?? 0}
+			{@const behind = divergedPull?.behind ?? 0}
+			<div class="flex flex-col gap-2">
+				<p class="text-sm text-slate-600 dark:text-slate-400">
+					Your branch has {ahead} local commit{ahead === 1 ? '' : 's'} and the remote has {behind}
+					commit{behind === 1 ? '' : 's'} you do not have. Choose how to bring them together:
+				</p>
+				<button
+					type="button"
+					class="flex items-start gap-3 rounded-lg border border-violet-500/30 bg-violet-500/5 px-3 py-2.5 text-left transition-colors hover:bg-violet-500/10 cursor-pointer"
+					onclick={() => chooseDivergedStrategy('merge')}
+				>
+					<Icon name="lucide:git-merge" class="mt-0.5 w-4 h-4 shrink-0 text-violet-600" />
+					<span class="flex flex-col">
+						<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Merge <span class="font-normal text-xs text-slate-500">— recommended</span></span>
+						<span class="text-xs text-slate-500 dark:text-slate-400">Keeps both histories and records a merge commit. Nothing is rewritten.</span>
+					</span>
+				</button>
+				<button
+					type="button"
+					class="flex items-start gap-3 rounded-lg border border-slate-200 px-3 py-2.5 text-left transition-colors hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800 cursor-pointer"
+					onclick={() => chooseDivergedStrategy('rebase')}
+				>
+					<Icon name="lucide:git-pull-request-arrow" class="mt-0.5 w-4 h-4 shrink-0 text-slate-500" />
+					<span class="flex flex-col">
+						<span class="text-sm font-semibold text-slate-900 dark:text-slate-100">Rebase</span>
+						<span class="text-xs text-slate-500 dark:text-slate-400">Replays your {ahead} commit{ahead === 1 ? '' : 's'} on top of the remote for a linear history. Local changes are stashed around it.</span>
+					</span>
+				</button>
+				<button
+					type="button"
+					class="flex items-start gap-3 rounded-lg border border-red-500/30 px-3 py-2.5 text-left transition-colors hover:bg-red-500/10 cursor-pointer"
+					onclick={() => chooseDivergedStrategy('force')}
+				>
+					<Icon name="lucide:arrow-down-to-line" class="mt-0.5 w-4 h-4 shrink-0 text-red-500" />
+					<span class="flex flex-col">
+						<span class="text-sm font-semibold text-red-600 dark:text-red-400">Force pull</span>
+						<span class="text-xs text-slate-500 dark:text-slate-400">Drops your {ahead} local commit{ahead === 1 ? '' : 's'} and makes the branch match the remote exactly. You will see what is lost before anything happens.</span>
+					</span>
+				</button>
+			</div>
+		{/snippet}
+
+		{#snippet footer()}
+			<button
+				type="button"
+				class="cursor-pointer rounded-lg border border-slate-200 bg-transparent px-3 py-2 text-sm font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+				onclick={() => (divergedPull = null)}
+			>
+				Cancel
 			</button>
 		{/snippet}
 	</Modal>

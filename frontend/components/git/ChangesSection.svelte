@@ -28,6 +28,11 @@
 		 * without feedback the panel reads as frozen and invites a second click.
 		 */
 		busy?: boolean;
+		/**
+		 * Why the bulk actions cannot run right now — another git operation
+		 * holds the repository. Disables them and becomes their tooltip.
+		 */
+		blockedReason?: string | null;
 	}
 
 	let {
@@ -39,8 +44,15 @@
 		onStageAll, onUnstageAll, onDiscardAll,
 		onStash,
 		onViewDiff, onResolve,
-		busy = false
+		busy = false,
+		blockedReason = null
 	}: Props = $props();
+
+	const isDisabled = $derived(busy || Boolean(blockedReason));
+
+	function tip(label: string): string {
+		return busy ? 'Working…' : (blockedReason ?? label);
+	}
 
 	function isFileActive(filePath: string): boolean {
 		if (!activeFilePath || activeFilePath !== filePath) return false;
@@ -147,8 +159,8 @@
 						type="button"
 						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-violet-500/10 hover:text-violet-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 						onclick={(e) => { e.stopPropagation(); onStash?.(); }}
-						title="Stash changes"
-						disabled={busy}
+						title={tip('Stash changes')}
+						disabled={isDisabled}
 					>
 						<Icon name="lucide:archive" class="w-3.5 h-3.5" />
 					</button>
@@ -158,8 +170,8 @@
 						type="button"
 						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 						onclick={(e) => { e.stopPropagation(); onUnstageAll?.(); }}
-						title={busy ? 'Working…' : 'Unstage All'}
-						disabled={busy}
+						title={tip('Unstage All')}
+						disabled={isDisabled}
 					>
 						{#if busy}
 							<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
@@ -173,8 +185,8 @@
 							type="button"
 							class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-red-500/10 hover:text-red-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 							onclick={(e) => { e.stopPropagation(); onDiscardAll?.(); }}
-							title={busy ? 'Working…' : 'Discard All'}
-							disabled={busy}
+							title={tip('Discard All')}
+							disabled={isDisabled}
 						>
 							{#if busy}
 								<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
@@ -187,8 +199,8 @@
 						type="button"
 						class="flex items-center justify-center w-7 h-7 rounded-md text-slate-400 hover:bg-emerald-500/10 hover:text-emerald-500 transition-colors bg-transparent border-none cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
 						onclick={(e) => { e.stopPropagation(); onStageAll?.(); }}
-						title={busy ? 'Working…' : 'Stage All'}
-						disabled={busy}
+						title={tip('Stage All')}
+						disabled={isDisabled}
 					>
 						{#if busy}
 							<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />

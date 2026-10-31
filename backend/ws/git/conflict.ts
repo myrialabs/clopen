@@ -9,6 +9,7 @@ import { gitService } from '../../git/git-service';
 import { findNestedRepoPaths, findRepoForFile } from '../../git/nested-repos';
 import { requireProjectWorkspace } from '../access';
 import { identityEnvFor } from './identity-context';
+import { gitRepoContext, withRepoLock } from './repo-context';
 import { debug } from '$shared/utils/logger';
 
 function resolveRepoCwd(projectPath: string, repoPath: string | undefined): string | null {
@@ -130,13 +131,10 @@ export const conflictHandler = createRouter()
 	}, async ({ data, conn }) => {
 		const { root } = requireProjectWorkspace(conn, data.projectId);
 		const repo = await findRepoForFile(root, data.filePath);
-		const cwd = repo?.repoPath ?? root;
+		const ctx = gitRepoContext(conn, data.projectId, undefined, repo?.repoPath ?? root);
 		const filePath = repo?.relativeFilePath ?? data.filePath;
-		await gitService.resolveConflict(
-			cwd,
-			filePath,
-			data.resolution,
-			data.customContent
+		await withRepoLock(ctx, { category: 'resolve', label: 'Resolve conflict', target: data.filePath, queue: true }, () =>
+			gitService.resolveConflict(ctx.cwd, filePath, data.resolution, data.customContent)
 		);
 		return { ok: true };
 	})
@@ -166,9 +164,10 @@ export const conflictHandler = createRouter()
 		}),
 		response: t.Object({ success: t.Boolean(), message: t.String() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		return await gitService.continueOperation(cwd, identityEnvFor(data.projectId));
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		return await withRepoLock(ctx, { category: 'resolve', label: 'Continue' }, () =>
+			gitService.continueOperation(ctx.cwd, identityEnvFor(data.projectId))
+		);
 	})
 
 	.http('git:skip-operation', {
@@ -178,9 +177,10 @@ export const conflictHandler = createRouter()
 		}),
 		response: t.Object({ success: t.Boolean(), message: t.String() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		return await gitService.skipOperation(cwd, identityEnvFor(data.projectId));
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		return await withRepoLock(ctx, { category: 'resolve', label: 'Skip' }, () =>
+			gitService.skipOperation(ctx.cwd, identityEnvFor(data.projectId))
+		);
 	})
 
 	.http('git:abort-operation', {
@@ -190,9 +190,8 @@ export const conflictHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		await gitService.abortOperation(cwd);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		await withRepoLock(ctx, { category: 'resolve', label: 'Abort' }, () => gitService.abortOperation(ctx.cwd));
 		return { ok: true };
 	})
 
@@ -204,8 +203,7 @@ export const conflictHandler = createRouter()
 		}),
 		response: t.Object({ ok: t.Boolean() })
 	}, async ({ data, conn }) => {
-		const { root } = requireProjectWorkspace(conn, data.projectId);
-		const cwd = resolveRepoCwd(root, data.repoPath) ?? root;
-		await gitService.abortOperation(cwd);
+		const ctx = gitRepoContext(conn, data.projectId, data.repoPath);
+		await withRepoLock(ctx, { category: 'resolve', label: 'Abort' }, () => gitService.abortOperation(ctx.cwd));
 		return { ok: true };
 	});

@@ -16,6 +16,9 @@ import { resolveBinary } from '../utils/cli';
  */
 export type GitIdentityEnv = Record<string, string>;
 
+/** How long a timed-out git gets to exit on SIGTERM before it is killed outright. */
+const KILL_GRACE_MS = 5000;
+
 export interface GitExecResult {
 	stdout: string;
 	stderr: string;
@@ -108,9 +111,15 @@ export async function execGit(
 		}
 	});
 
-	// Timeout handling
+	// Timeout handling. SIGTERM first: git traps it and deletes the lockfile it
+	// holds, where SIGKILL would strand `.git/index.lock` and break every later
+	// command until someone removes it by hand. SIGKILL only if git ignores it.
+	let timedOut = false;
+	let killTimer: ReturnType<typeof setTimeout> | null = null;
 	const timeoutId = setTimeout(() => {
-		proc.kill();
+		timedOut = true;
+		proc.kill('SIGTERM');
+		killTimer = setTimeout(() => proc.kill('SIGKILL'), KILL_GRACE_MS);
 	}, timeout);
 
 	try {
@@ -123,14 +132,25 @@ export async function execGit(
 
 		const exitCode = await proc.exited;
 		clearTimeout(timeoutId);
+		if (killTimer) clearTimeout(killTimer);
 
-		if (exitCode !== 0 && !okExitCodes.includes(exitCode)) {
-			debug.warn('git', `Command failed (exit ${exitCode}): git ${args.join(' ')}\n${stderr}`);
+		// A killed git usually prints nothing, which surfaced as an error dialog
+		// with an empty message.
+		const finalStderr = timedOut
+			? `${stderr.trim() ? `${stderr.trim()}\n` : ''}git ${args[0]} timed out after ${Math.round(timeout / 1000)}s and was stopped.`
+			: stderr;
+		const finalExitCode = timedOut && exitCode === 0 ? 1 : exitCode;
+
+		if (finalExitCode !== 0 && !okExitCodes.includes(finalExitCode)) {
+			debug.warn('git', `Command failed (exit ${finalExitCode}): git ${args.join(' ')}\n${finalStderr}`);
 		}
 
-		return raw ? { stdout, stderr, exitCode, stdoutBytes } : { stdout, stderr, exitCode };
+		return raw
+			? { stdout, stderr: finalStderr, exitCode: finalExitCode, stdoutBytes }
+			: { stdout, stderr: finalStderr, exitCode: finalExitCode };
 	} catch (err) {
 		clearTimeout(timeoutId);
+		if (killTimer) clearTimeout(killTimer);
 		throw err;
 	}
 }
