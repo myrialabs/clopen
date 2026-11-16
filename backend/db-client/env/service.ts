@@ -399,7 +399,7 @@ export const dbClientEnv = {
 			updated: plan.updated,
 			appended: plan.appended,
 			unchanged: plan.unchanged,
-			diff: diffLines(plan.current, plan.next),
+			diff: await diffLines(plan.current, plan.next),
 			warnings
 		};
 	},

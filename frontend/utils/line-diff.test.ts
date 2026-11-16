@@ -175,7 +175,7 @@ describe('invariants', () => {
 		expect(performance.now() - started).toBeLessThan(2000);
 	});
 
-	test('never reports fewer changed lines than the minimal diff, and matches it on ordinary edits', () => {
+	test('reports exactly the minimal diff', () => {
 		let seed = 20260626;
 		const rnd = () => ((seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
 		const alphabet = ['import os', 'def f():', '    return 1', '', '# comment', 'x = 2', 'class A:'];

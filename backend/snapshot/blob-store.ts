@@ -14,6 +14,7 @@ import fs from 'fs/promises';
 import { gzipSync, gunzipSync } from 'zlib';
 import { debug } from '$shared/utils/logger';
 import { getClopenDir } from '../utils/index.js';
+import { blobLineStatsQueries } from '../database/queries/blob-line-stats-queries';
 
 const SNAPSHOTS_DIR = join(getClopenDir(), 'snapshots');
 const BLOBS_DIR = join(SNAPSHOTS_DIR, 'blobs');
@@ -156,7 +157,8 @@ class BlobStore {
 
 	/**
 	 * Delete multiple blobs by hash.
-	 * Also invalidates fileHashCache entries whose hash matches a deleted blob.
+	 * Also invalidates fileHashCache entries whose hash matches a deleted blob,
+	 * and the cached line counts of every pair that names one.
 	 */
 	async deleteBlobs(hashes: string[]): Promise<number> {
 		const hashSet = new Set(hashes);
@@ -175,6 +177,12 @@ class BlobStore {
 			if (hashSet.has(entry.hash)) {
 				this.fileHashCache.delete(filepath);
 			}
+		}
+
+		try {
+			blobLineStatsQueries.deleteByHashes(hashes);
+		} catch (error) {
+			debug.warn('snapshot', 'Failed to prune cached line stats:', error);
 		}
 
 		return deleted;

@@ -18,16 +18,21 @@ import {
 	summariseTurnFiles,
 	excerptPrompt,
 	netChangeRuns,
-	summariseNetChanges
+	summariseNetChanges,
+	statsFromBlobs
 } from './turn-changes';
+import type { LineStatsSource } from './turn-changes';
 
-/** Blob reader over an in-memory store, so the tests own their failure modes. */
-function readerFor(blobs: Record<string, string | Buffer>) {
-	return async (hash: string): Promise<Buffer> => {
+/**
+ * Line stats over an in-memory blob store, so the tests own their failure
+ * modes. Uncached on purpose: the hashes here are labels, not content hashes.
+ */
+function readerFor(blobs: Record<string, string | Buffer>): LineStatsSource {
+	return statsFromBlobs(async (hash: string): Promise<Buffer> => {
 		const value = blobs[hash];
 		if (value === undefined) throw new Error(`missing blob ${hash}`);
 		return Buffer.isBuffer(value) ? value : Buffer.from(value, 'utf8');
-	};
+	});
 }
 
 describe('statusOf', () => {

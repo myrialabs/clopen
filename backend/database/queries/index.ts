@@ -5,6 +5,8 @@ export { messageQueries } from './message-queries';
 export { settingsQueries } from './settings-queries';
 export { dbUtils } from './utils-queries';
 export { snapshotQueries } from './snapshot-queries';
+export { blobLineStatsQueries } from './blob-line-stats-queries';
+export type { BlobLineStatsRow } from './blob-line-stats-queries';
 export { worktreeQueries } from './worktree-queries';
 export { checkpointQueries } from './checkpoint-queries';
 export { engineQueries } from './engine-queries';

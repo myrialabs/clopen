@@ -29,6 +29,7 @@ import {
 } from '../../database/queries';
 import { loadMessage } from '$shared/utils/message-formatter';
 import { blobStore } from '../../snapshot/blob-store';
+import { blobLineStats } from '../../snapshot/line-stats';
 import { snapshotService } from '../../snapshot/snapshot-service';
 import { resolveSessionRoot } from '../../worktrees';
 import { makeScopeKey } from '$shared/utils/workspace-scope';
@@ -143,7 +144,6 @@ export const changesHandler = createRouter()
 		requireSessionAccess(data.sessionId);
 
 		const activePath = activeCheckpoints(data.sessionId);
-		const readBlob = (hash: string) => blobStore.readBlob(hash);
 
 		const turns = [];
 		const settled: SessionScopedChanges[] = [];
@@ -152,7 +152,7 @@ export const changesHandler = createRouter()
 			const snapshot = snapshotQueries.getByMessageId(checkpoint.id);
 			const changes = parseSessionChanges(snapshot?.session_changes);
 			settled.push(changes);
-			const files = await buildTurnFiles(changes, readBlob);
+			const files = await buildTurnFiles(changes, blobLineStats);
 
 			turns.push({
 				checkpointMessageId: checkpoint.id,
@@ -166,7 +166,7 @@ export const changesHandler = createRouter()
 			});
 		}
 
-		const net = await summariseNetChanges(settled, readBlob);
+		const net = await summariseNetChanges(settled, blobLineStats);
 
 		// Newest first: the turn a user wants to review is almost always the last
 		// one, and scrolling to reach it is a tax on the common case.
@@ -300,12 +300,11 @@ export const changesHandler = createRouter()
 			);
 			if (Object.keys(changes).length === 0) return { files: [], net: null };
 
-			const readBlob = (hash: string) => blobStore.readBlob(hash);
-			const files = await buildTurnFiles(changes, readBlob);
+			const files = await buildTurnFiles(changes, blobLineStats);
 			const settled = activeCheckpoints(data.sessionId).map((checkpoint) =>
 				parseSessionChanges(snapshotQueries.getByMessageId(checkpoint.id)?.session_changes)
 			);
-			const net = await summariseNetChanges([...settled, changes], readBlob);
+			const net = await summariseNetChanges([...settled, changes], blobLineStats);
 			return { files, net };
 		} catch (error) {
 			debug.warn('snapshot', 'Failed to read pending changes:', error);

@@ -23,7 +23,8 @@ import { attributeGitChanges, readRepoHeads, type RepoHeads } from './git-attrib
 import { TurnActivity, type ObservedOutput } from './turn-activity';
 import { fileWatcher } from '../files/file-watcher';
 import type { MessageSnapshot, SessionScopedChanges } from '$shared/types/database/schema';
-import { calculateFileChangeStats } from '$shared/utils/diff-calculator';
+import { buildTurnFiles, summariseTurnFiles } from './turn-changes';
+import { blobLineStats } from './line-stats';
 import { makeScopeKey } from '$shared/utils/workspace-scope';
 import { debug } from '$shared/utils/logger';
 
@@ -180,14 +181,13 @@ export class SnapshotService {
 	private async scanTree(
 		root: string,
 		previous: TreeMap
-	): Promise<{ tree: TreeMap; contents: Map<string, Buffer> }> {
+	): Promise<{ tree: TreeMap }> {
 		const scan = await scanSnapshotFiles(root, { pruneGenerated: true });
 		if (scan.incomplete.includes('')) {
 			throw new Error(`Could not list the files of ${root}`);
 		}
 
 		const tree: TreeMap = {};
-		const contents = new Map<string, Buffer>();
 
 		if (scan.incomplete.length > 0) {
 			for (const [filepath, hash] of Object.entries(previous)) {
@@ -207,16 +207,13 @@ export class SnapshotService {
 
 				const result = await blobStore.hashFile(filepath);
 				tree[relativePath] = result.hash;
-				if (result.content !== null && result.hash !== previous[relativePath]) {
-					contents.set(relativePath, result.content);
-				}
 			} catch (error) {
 				if (isMissingFile(error)) return;
 				if (previous[relativePath]) tree[relativePath] = previous[relativePath];
 			}
 		});
 
-		return { tree, contents };
+		return { tree };
 	}
 
 	// ========================================================================
@@ -556,7 +553,7 @@ export class SnapshotService {
 			// closed. A gitignore-aware scan + hash diff against the baseline is
 			// always correct, and blobStore.hashFile's mtime+size cache keeps it
 			// cheap — only files that actually changed are re-read.
-			const { tree: currentTree, contents: readContents } = await this.scanTree(projectPath, previousTree);
+			const { tree: currentTree } = await this.scanTree(projectPath, previousTree);
 			const sessionChanges = diffTrees(previousTree, currentTree);
 
 			// A disk diff sees every writer. Take out what is not this turn's.
@@ -589,7 +586,7 @@ export class SnapshotService {
 			}
 
 			// Calculate line-level file change stats
-			const fileStats = await this.calculateChangeStats(sessionChanges, readContents);
+			const fileStats = await this.calculateChangeStats(sessionChanges);
 
 			const metadata: SnapshotMetadata = {
 				totalFiles: Object.keys(currentTree).length,
@@ -1069,27 +1066,17 @@ export class SnapshotService {
 	}
 
 	/**
-	 * Calculate line-level change stats for changed files.
+	 * Line-level change stats for a turn's changed files.
+	 *
+	 * Counted through the same `buildTurnFiles` + `blobLineStats` every other
+	 * surface reads, so the numbers stored on the row are the ones the Changes
+	 * tab shows — and counting here, at capture, is what puts each pair in the
+	 * cache before anyone opens the chat.
 	 */
 	private async calculateChangeStats(
-		sessionChanges: SessionScopedChanges,
-		readContents: Map<string, Buffer>
+		sessionChanges: SessionScopedChanges
 	): Promise<{ filesChanged: number; insertions: number; deletions: number }> {
-		const previousSnapshot: Record<string, Buffer> = {};
-		const currentSnapshot: Record<string, Buffer> = {};
-
-		for (const [filepath, change] of Object.entries(sessionChanges)) {
-			try {
-				if (change.oldHash) {
-					previousSnapshot[filepath] = await blobStore.readBlob(change.oldHash);
-				}
-				if (change.newHash) {
-					currentSnapshot[filepath] = readContents.get(filepath) ?? await blobStore.readBlob(change.newHash);
-				}
-			} catch { /* skip */ }
-		}
-
-		return calculateFileChangeStats(previousSnapshot, currentSnapshot);
+		return summariseTurnFiles(await buildTurnFiles(sessionChanges, blobLineStats));
 	}
 
 	/**
