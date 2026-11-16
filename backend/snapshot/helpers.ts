@@ -3,6 +3,7 @@ import { blobStore } from './blob-store';
 import { debug } from '$shared/utils/logger';
 import { loadMessage } from '$shared/utils/message-formatter';
 import { buildTurnFiles, summariseTurnFiles } from './turn-changes';
+import { blobLineStats } from './line-stats';
 import type { DatabaseMessage, SessionScopedChanges } from '$shared/types/database/schema';
 import type { UnifiedMessage, UserMessage } from '$shared/types/unified';
 
@@ -348,16 +349,8 @@ export async function getCheckpointFileStats(
 		const changes = JSON.parse(snapshot.session_changes as string) as SessionScopedChanges;
 		if (Object.keys(changes).length === 0) return stored;
 
-		let blobMissing = false;
-		const files = await buildTurnFiles(changes, async (hash) => {
-			try {
-				return await blobStore.readBlob(hash);
-			} catch (err) {
-				blobMissing = true;
-				throw err;
-			}
-		});
-		return blobMissing ? stored : summariseTurnFiles(files);
+		const files = await buildTurnFiles(changes, blobLineStats);
+		return files.some((file) => !file.contentAvailable) ? stored : summariseTurnFiles(files);
 	} catch {
 		return stored;
 	}

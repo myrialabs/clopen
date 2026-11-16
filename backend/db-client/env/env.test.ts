@@ -545,30 +545,30 @@ describe('dbClientEnv.apply and remove', () => {
 });
 
 describe('diffLines', () => {
-	it('marks what went and what arrived', () => {
-		expect(diffLines('A=1\nB=2', 'A=1\nB=3')).toEqual([
+	it('marks what went and what arrived', async () => {
+		expect(await diffLines('A=1\nB=2', 'A=1\nB=3')).toEqual([
 			{ kind: 'context', text: 'A=1' },
 			{ kind: 'removed', text: 'B=2' },
 			{ kind: 'added', text: 'B=3' }
 		]);
 	});
 
-	it('collapses a long unchanged run instead of dropping it silently', () => {
+	it('collapses a long unchanged run instead of dropping it silently', async () => {
 		const before = Array.from({ length: 20 }, (_, i) => `K${i}=1`).join('\n');
 		const after = `${before}\nNEW=1`;
 
-		const diff = diffLines(before, after);
+		const diff = await diffLines(before, after);
 		expect(diff.filter((line) => line.text === '…')).toHaveLength(1);
 		expect(diff.at(-1)).toEqual({ kind: 'added', text: 'NEW=1' });
 	});
 
-	it('handles a file that did not exist, without a phantom blank line', () => {
-		expect(diffLines('', 'A=1\n')).toEqual([{ kind: 'added', text: 'A=1' }]);
+	it('handles a file that did not exist, without a phantom blank line', async () => {
+		expect(await diffLines('', 'A=1\n')).toEqual([{ kind: 'added', text: 'A=1' }]);
 	});
 
-	it('answers empty when nothing changed', () => {
+	it('answers empty when nothing changed', async () => {
 		// An ellipsis standing in for the whole file reads as "something is
 		// hidden here"; the honest rendering of no change is no diff.
-		expect(diffLines('A=1\nB=2\n', 'A=1\nB=2\n')).toEqual([]);
+		expect(await diffLines('A=1\nB=2\n', 'A=1\nB=2\n')).toEqual([]);
 	});
 });

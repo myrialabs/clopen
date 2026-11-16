@@ -18,7 +18,7 @@
 
 import type { SessionScopedChanges } from '$shared/types/database/schema';
 import { naturalCompare } from '$shared/utils/compare';
-import { countLineChanges, isBinaryBuffer } from '$shared/utils/diff-calculator';
+import { countLineChangesAsync, isBinaryBuffer } from '$shared/utils/diff-calculator';
 
 export { isBinaryBuffer };
 
@@ -46,54 +46,92 @@ export function statusOf(oldHash: string, newHash: string): TurnFileStatus {
 	return 'modified';
 }
 
+/** What one (old, new) pair of blobs amounts to as a +/- badge. */
+export interface PairLineStats {
+	insertions: number;
+	deletions: number;
+	isBinary: boolean;
+	/** False when a blob this pair needs is no longer readable. */
+	contentAvailable: boolean;
+}
+
+/**
+ * Where a pair's numbers come from. Production passes `blobLineStats`
+ * (backend/snapshot/line-stats.ts), which counts each pair once and remembers
+ * it; tests pass `statsFromBlobs` over an in-memory store.
+ */
+export type LineStatsSource = (oldHash: string, newHash: string) => Promise<PairLineStats>;
+
+/**
+ * Count one pair straight from its blobs. This is the single definition of
+ * "how many lines did this change" — the cache only stores what it returns.
+ */
+export async function countPairFromBlobs(
+	oldHash: string,
+	newHash: string,
+	readBlob: (hash: string) => Promise<Buffer>
+): Promise<PairLineStats> {
+	let oldBuf: Buffer | null = null;
+	let newBuf: Buffer | null = null;
+	let contentAvailable = true;
+
+	if (oldHash) {
+		try {
+			oldBuf = await readBlob(oldHash);
+		} catch {
+			contentAvailable = false;
+		}
+	}
+	if (newHash) {
+		try {
+			newBuf = await readBlob(newHash);
+		} catch {
+			contentAvailable = false;
+		}
+	}
+
+	const isBinary =
+		(oldBuf !== null && isBinaryBuffer(oldBuf)) || (newBuf !== null && isBinaryBuffer(newBuf));
+
+	let insertions = 0;
+	let deletions = 0;
+	if (contentAvailable && !isBinary) {
+		// Cooperative: a pathological pair takes long, but never holds the
+		// server's thread for more than a few milliseconds at a time.
+		const counts = await countLineChangesAsync(
+			oldBuf ? oldBuf.toString('utf8') : '',
+			newBuf ? newBuf.toString('utf8') : ''
+		);
+		insertions = counts.additions;
+		deletions = counts.deletions;
+	}
+
+	return { insertions, deletions, isBinary, contentAvailable };
+}
+
+/** An uncached source over any blob reader. */
+export function statsFromBlobs(readBlob: (hash: string) => Promise<Buffer>): LineStatsSource {
+	return (oldHash, newHash) => countPairFromBlobs(oldHash, newHash, readBlob);
+}
+
 /**
  * Turn one checkpoint's `session_changes` into a displayable file list.
  *
- * `readBlob` is injected so this stays a pure function over its inputs — the
- * only I/O is the reader the caller hands in.
+ * `statsFor` is injected so this stays a pure function over its inputs — the
+ * only I/O is the source the caller hands in.
  */
 export async function buildTurnFiles(
 	changes: SessionScopedChanges,
-	readBlob: (hash: string) => Promise<Buffer>
+	statsFor: LineStatsSource
 ): Promise<TurnFileChange[]> {
 	const files: TurnFileChange[] = [];
 
 	for (const [path, change] of Object.entries(changes)) {
 		const status = statusOf(change.oldHash, change.newHash);
-
-		let oldBuf: Buffer | null = null;
-		let newBuf: Buffer | null = null;
-		let contentAvailable = true;
-
-		if (change.oldHash) {
-			try {
-				oldBuf = await readBlob(change.oldHash);
-			} catch {
-				contentAvailable = false;
-			}
-		}
-		if (change.newHash) {
-			try {
-				newBuf = await readBlob(change.newHash);
-			} catch {
-				contentAvailable = false;
-			}
-		}
-
-		const isBinary =
-			(oldBuf !== null && isBinaryBuffer(oldBuf)) || (newBuf !== null && isBinaryBuffer(newBuf));
-
-		let insertions = 0;
-		let deletions = 0;
-		if (contentAvailable && !isBinary) {
-			const counts = countLineChanges(
-				oldBuf ? oldBuf.toString('utf8') : '',
-				newBuf ? newBuf.toString('utf8') : ''
-			);
-			insertions = counts.additions;
-			deletions = counts.deletions;
-		}
-
+		const { insertions, deletions, isBinary, contentAvailable } = await statsFor(
+			change.oldHash,
+			change.newHash
+		);
 		files.push({ path, status, insertions, deletions, isBinary, contentAvailable });
 	}
 
@@ -177,7 +215,7 @@ export function netChangeRuns(turns: SessionScopedChanges[]): Map<string, Change
 /** The chat-level numbers: net files changed, and net lines in and out. */
 export async function summariseNetChanges(
 	turns: SessionScopedChanges[],
-	readBlob: (hash: string) => Promise<Buffer>
+	statsFor: LineStatsSource
 ): Promise<{ filesChanged: number; insertions: number; deletions: number }> {
 	let insertions = 0;
 	let deletions = 0;
@@ -189,7 +227,7 @@ export async function summariseNetChanges(
 		list.forEach((run, index) => {
 			changes[`${index}\0${path}`] = run;
 		});
-		const summary = summariseTurnFiles(await buildTurnFiles(changes, readBlob));
+		const summary = summariseTurnFiles(await buildTurnFiles(changes, statsFor));
 		insertions += summary.insertions;
 		deletions += summary.deletions;
 	}

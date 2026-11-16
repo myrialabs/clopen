@@ -3,8 +3,8 @@
  *
  * Exists because applying this feature EDITS SOMEONE'S CONFIGURATION FILE, and
  * the only version of that which is defensible is one where they see the change
- * first. `shared/utils/diff-calculator` counts lines for checkpoint stats and
- * never produces the lines themselves, so there was nothing to reuse.
+ * first. The edit script is the shared engine in `shared/utils/diff-calculator`,
+ * the same exact diff behind every other diff and +/- count in the app.
  *
  * Unchanged runs are collapsed to an ellipsis rather than dropped silently: a
  * dotenv file can hold thirty unrelated variables, and a preview that showed
@@ -13,44 +13,20 @@
  */
 
 import type { DbEnvDiffLine } from '$shared/types/db-client';
+import { diffSequencesAsync } from '$shared/utils/diff-calculator';
 
 /** How many unchanged lines to keep on each side of a change. */
 const CONTEXT = 2;
 
-export function diffLines(before: string, after: string, context = CONTEXT): DbEnvDiffLine[] {
+export async function diffLines(before: string, after: string, context = CONTEXT): Promise<DbEnvDiffLine[]> {
 	const a = before === '' ? [] : before.split('\n');
 	const b = after === '' ? [] : after.split('\n');
 
-	// Longest common subsequence. Both sides are one dotenv file, so the table
-	// is at worst a few hundred squared — small enough that the simple algorithm
-	// is the right one.
-	const table: number[][] = Array.from({ length: a.length + 1 }, () =>
-		new Array<number>(b.length + 1).fill(0)
-	);
-	for (let i = a.length - 1; i >= 0; i -= 1) {
-		for (let j = b.length - 1; j >= 0; j -= 1) {
-			table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
-		}
-	}
-
-	const full: DbEnvDiffLine[] = [];
-	let i = 0;
-	let j = 0;
-	while (i < a.length && j < b.length) {
-		if (a[i] === b[j]) {
-			full.push({ kind: 'context', text: a[i] });
-			i += 1;
-			j += 1;
-		} else if (table[i + 1][j] >= table[i][j + 1]) {
-			full.push({ kind: 'removed', text: a[i] });
-			i += 1;
-		} else {
-			full.push({ kind: 'added', text: b[j] });
-			j += 1;
-		}
-	}
-	for (; i < a.length; i += 1) full.push({ kind: 'removed', text: a[i] });
-	for (; j < b.length; j += 1) full.push({ kind: 'added', text: b[j] });
+	const full: DbEnvDiffLine[] = (await diffSequencesAsync(a, b)).map((op): DbEnvDiffLine => {
+		if (op.type === 'keep') return { kind: 'context', text: a[op.oldIndex] };
+		if (op.type === 'delete') return { kind: 'removed', text: a[op.oldIndex] };
+		return { kind: 'added', text: b[op.newIndex] };
+	});
 
 	// A file's final newline shows up as a blank line gained or lost, which is
 	// not a change anyone means. Left in, it rendered as a lone `+` under every

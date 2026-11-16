@@ -18,8 +18,8 @@
 	import type { editor } from 'monaco-editor';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
-	import { computeLineDiff, type GutterChange } from '$frontend/utils/line-diff';
-	import { buildLineMap, remapHunks } from '$frontend/utils/line-map';
+	import type { GutterChange } from '$frontend/utils/line-diff';
+	import { runDiff, isDiffAbort } from '$frontend/services/diff/diff-pool';
 	import { gitStatusState } from '$frontend/stores/features/git-status.svelte';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import { aiChangesState, turnsForPath, turnId, onAiReveal, consumeAiReveal } from '$frontend/stores/features/ai-changes.svelte';
@@ -234,6 +234,10 @@
 	let pendingScrollRestore: number | null = null;
 	let scrollListenerDispose: (() => void) | null = null;
 	let gutterUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+	// The gutter diffs run in the worker pool. Each repaint drops the one before
+	// it, so a stale answer can never paint over a newer buffer.
+	let gitGutterJob: AbortController | null = null;
+	let aiGutterJob: AbortController | null = null;
 	let gutterClickDispose: (() => void) | null = null;
 	let activeDiffZone: {
 		id: string;
@@ -348,6 +352,8 @@
 			changeNav?.dispose();
 			changeNav = null;
 			if (gutterUpdateTimer) clearTimeout(gutterUpdateTimer);
+			gitGutterJob?.abort();
+			aiGutterJob?.abort();
 			clearTargetTimers();
 			scrollListenerDispose?.();
 			scrollListenerDispose = null;
@@ -697,6 +703,9 @@
 	 * hunk lands where its lines actually live and disappears if they are gone.
 	 */
 	function applyAiChangeDecorations(forceClear = false) {
+		aiGutterJob?.abort();
+		aiGutterJob = null;
+
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
 
@@ -741,10 +750,22 @@
 			return;
 		}
 
-		const changes = remapHunks(
-			computeLineDiff(aiPair.before, aiPair.after),
-			buildLineMap(computeLineDiff(aiPair.after, editableContent))
-		);
+		const job = new AbortController();
+		aiGutterJob = job;
+		runDiff('turnGutter', { before: aiPair.before, after: aiPair.after, buffer: editableContent }, job.signal)
+			.then((changes) => {
+				if (aiGutterJob !== job) return;
+				aiGutterJob = null;
+				paintAiChanges(changes);
+			})
+			.catch((error) => {
+				if (!isDiffAbort(error, job.signal)) debug.warn('file', 'AI gutter diff failed:', error);
+			});
+	}
+
+	function paintAiChanges(changes: GutterChange[]) {
+		const editor = monacoEditorRef?.getEditor();
+		if (!editor || gutterMode === 'git') return;
 
 		const newDecorations = changes.map((change) => ({
 			range: {
@@ -801,6 +822,9 @@
 	}
 
 	function updateGutterDecorations(forceClear = false) {
+		gitGutterJob?.abort();
+		gitGutterJob = null;
+
 		const editor = monacoEditorRef?.getEditor();
 		if (!editor) return;
 
@@ -823,7 +847,23 @@
 			return;
 		}
 
-		const changes = computeLineDiff(headContent, editableContent);
+		const job = new AbortController();
+		gitGutterJob = job;
+		runDiff('gutter', { before: headContent, after: editableContent }, job.signal)
+			.then((changes) => {
+				if (gitGutterJob !== job) return;
+				gitGutterJob = null;
+				paintGitChanges(changes);
+			})
+			.catch((error) => {
+				if (!isDiffAbort(error, job.signal)) debug.warn('file', 'Git gutter diff failed:', error);
+			});
+	}
+
+	function paintGitChanges(changes: GutterChange[]) {
+		const editor = monacoEditorRef?.getEditor();
+		if (!editor || gutterMode === 'ai') return;
+
 		setGitChanges(changes);
 
 		// Close any open peek whose anchor line is no longer marked as changed
