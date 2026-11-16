@@ -75,7 +75,7 @@ export function neonCredentialsOf(context: DbProviderContext): NeonCredentials {
 	const apiKey = (context.credentials.apiKey ?? '').trim();
 	if (!apiKey) {
 		throw new NeonError(
-			'This Neon account has no API key. Reconnect it in Settings → Integrations.',
+			'This Neon account has no API key. Reconnect it in Library → Integrations.',
 			401,
 			'auth'
 		);

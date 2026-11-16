@@ -1,5 +1,5 @@
 /**
- * Project Instructions — public facade. Settings → Instructions manages a
+ * Project Instructions — public facade. Library → Rules manages a
  * marker-region block injected into each engine's memory file (global + project).
  */
 

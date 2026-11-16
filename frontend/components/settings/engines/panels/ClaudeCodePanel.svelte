@@ -5,7 +5,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openAgentsInstall } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import { claudeAccountsStore, type ClaudeAccountItem as ClaudeCodeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import type { TerminalViewerHandle } from '@myrialabs/ptykit/client';
@@ -81,20 +81,20 @@
 	onMount(() => {
 		// Listen for setup events from backend
 		cleanups.push(
-			ws.on('engine:claude-account-setup-url', (data: { setupId: string; authUrl: string }) => {
+			ws.on('agents:claude-account-setup-url', (data: { setupId: string; authUrl: string }) => {
 				claudeCodeSetupId = data.setupId;
 				claudeCodeAuthUrl = data.authUrl;
 				claudeCodeSetupStep = 'waiting-code';
 			}),
-			ws.on('engine:claude-account-setup-complete', async (_data: { setupId: string; accountId: number }) => {
+			ws.on('agents:claude-account-setup-complete', async (_data: { setupId: string; accountId: number }) => {
 				claudeCodeSetupStep = 'success';
 				await refreshClaudeCodeAccounts();
 			}),
-			ws.on('engine:claude-account-setup-error', (data: { setupId: string; message: string }) => {
+			ws.on('agents:claude-account-setup-error', (data: { setupId: string; message: string }) => {
 				claudeCodeSetupError = data.message;
 				claudeCodeSetupStep = 'error';
 			}),
-			ws.on('engine:claude-account-setup-pty-data', (data: { setupId: string; data: string; phase: string; bufferLength: number }) => {
+			ws.on('agents:claude-account-setup-pty-data', (data: { setupId: string; data: string; phase: string; bufferLength: number }) => {
 				hasClaudeDebugData = true;
 				claudeDebugPhase = data.phase;
 				claudeDebugBufferLen = data.bufferLength;
@@ -114,7 +114,7 @@
 
 		// Cancel any running setup
 		if (claudeCodeSetupId && claudeCodeSetupStep !== 'idle' && claudeCodeSetupStep !== 'success' && claudeCodeSetupStep !== 'error') {
-			ws.emit('engine:claude-account-setup-cancel', { setupId: claudeCodeSetupId });
+			ws.emit('agents:claude-account-setup-cancel', { setupId: claudeCodeSetupId });
 		}
 	});
 
@@ -144,7 +144,7 @@
 		}
 
 		// Fire-and-forget: server will emit 'setup-url' or 'setup-error' back
-		ws.emit('engine:claude-account-setup-start', {});
+		ws.emit('agents:claude-account-setup-start', {});
 	}
 
 	// Re-authenticate an existing account in place: run the setup-token flow but
@@ -162,7 +162,7 @@
 		claudeCodeSetupError = '';
 
 		// Fire-and-forget: server will emit 'setup-complete' or 'setup-error' back
-		ws.emit('engine:claude-account-setup-submit', {
+		ws.emit('agents:claude-account-setup-submit', {
 			setupId: claudeCodeSetupId,
 			code: claudeCodeAuthCode.trim(),
 			name: claudeCodeAccountName.trim(),
@@ -172,7 +172,7 @@
 
 	function cancelClaudeCodeSetup() {
 		if (claudeCodeSetupId) {
-			ws.emit('engine:claude-account-setup-cancel', { setupId: claudeCodeSetupId });
+			ws.emit('agents:claude-account-setup-cancel', { setupId: claudeCodeSetupId });
 		}
 		resetClaudeCodeSetup();
 	}
@@ -189,7 +189,7 @@
 
 	async function switchClaudeCodeAccount(id: number) {
 		try {
-			await ws.http('engine:claude-accounts-switch', { id });
+			await ws.http('agents:claude-accounts-switch', { id });
 			await refreshClaudeCodeAccounts();
 		} catch {
 			// Ignore
@@ -204,7 +204,7 @@
 	async function deleteClaudeCodeAccount() {
 		if (claudeCodeDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:claude-accounts-delete', { id: claudeCodeDeleteTargetId });
+			await ws.http('agents:claude-accounts-delete', { id: claudeCodeDeleteTargetId });
 			await refreshClaudeCodeAccounts();
 		} catch {
 			// Ignore
@@ -220,7 +220,7 @@
 		if (claudeCodeRenamingId === null || !claudeCodeRenameValue.trim()) return;
 
 		try {
-			await ws.http('engine:claude-accounts-rename', { id: claudeCodeRenamingId, name: claudeCodeRenameValue.trim() });
+			await ws.http('agents:claude-accounts-rename', { id: claudeCodeRenamingId, name: claudeCodeRenameValue.trim() });
 			claudeCodeRenamingId = null;
 			claudeCodeRenameValue = '';
 			await refreshClaudeCodeAccounts();
@@ -243,7 +243,7 @@
 	}
 
 	function openStackSection() {
-		setActiveSection('stack');
+		openAgentsInstall();
 	}
 
 	async function copyClaudeCodeAuthUrl() {

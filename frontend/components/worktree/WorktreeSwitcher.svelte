@@ -33,11 +33,15 @@
 	interface Props {
 		collapsed?: boolean;
 		mobile?: boolean;
+		/** A small icon on a sidebar row: the menu opens beside it, outside the scrolling list. */
+		inline?: boolean;
 	}
 
-	const { collapsed = false, mobile = false }: Props = $props();
+	const { collapsed = false, mobile = false, inline = false }: Props = $props();
 
 	let isOpen = $state(false);
+	let trigger = $state<HTMLElement>();
+	let popAt = $state<{ top: number; left: number } | null>(null);
 	let showCreate = $state(false);
 	let showTransfer = $state(false);
 	let showBranching = $state(false);
@@ -56,6 +60,10 @@
 
 	function toggleMenu() {
 		isOpen = !isOpen;
+		if (isOpen && inline && trigger) {
+			const rect = trigger.getBoundingClientRect();
+			popAt = { top: Math.max(8, Math.min(rect.top, window.innerHeight - 460)), left: rect.right + 8 };
+		}
 		if (isOpen) void loadPending();
 	}
 
@@ -204,16 +212,17 @@
 		{#if collapsed}
 			<button
 				type="button"
+				bind:this={trigger}
 				class="flex items-center justify-center bg-transparent border-none cursor-pointer transition-all duration-150 relative
-					{mobile ? 'w-9 h-8 rounded-md active:bg-violet-500/10' : 'w-9 h-9 rounded-lg hover:bg-violet-500/10'}
+					{mobile ? 'w-9 h-8 rounded-md active:bg-violet-500/10' : inline ? 'w-7 h-7 rounded-md hover:bg-violet-500/10' : 'w-9 h-9 rounded-lg hover:bg-violet-500/10'}
 					{inWorktree ? 'text-amber-600 dark:text-amber-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}
 					{isOpen ? 'bg-violet-500/10' : ''}"
 				onclick={toggleMenu}
-				aria-label="Worktree"
+				aria-label="Workspace copy"
 				aria-expanded={isOpen}
-				title="Worktree: {contextName}"
+				title="Workspace copy: {contextName}"
 			>
-				<Icon name="lucide:git-fork" class={mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'} />
+				<Icon name="lucide:git-fork" class={mobile ? 'w-4.5 h-4.5' : inline ? 'w-4 h-4' : 'w-5 h-5'} />
 				{#if inWorktree}
 					<span
 						class="absolute top-0.5 right-0.5 w-2 h-2 rounded-full bg-amber-500 border-2 border-slate-50 dark:border-slate-900/95"
@@ -227,7 +236,7 @@
 					{inWorktree ? 'text-amber-700 dark:text-amber-400' : 'text-slate-500 hover:text-slate-900 dark:hover:text-slate-100'}
 					{isOpen ? 'bg-violet-500/10' : ''}"
 				onclick={toggleMenu}
-				aria-label="Worktree"
+				aria-label="Workspace copy"
 				aria-expanded={isOpen}
 			>
 				<Icon name="lucide:git-fork" class="w-4 h-4 shrink-0" />
@@ -238,7 +247,8 @@
 
 		{#if isOpen}
 			<div
-				class="absolute {mobile ? 'top-full right-0 mt-1' : 'bottom-full left-0 mb-1'} w-72 bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+				class="{inline || mobile ? 'fixed' : 'absolute'} {inline ? 'w-72' : mobile ? 'inset-x-3 top-14 w-auto' : 'bottom-full left-0 mb-1 w-72'} bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+				style={inline && popAt ? `top:${popAt.top}px;left:${popAt.left}px` : undefined}
 				transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
 			>
 				<div class="py-1.5 max-h-[28rem] overflow-y-auto">

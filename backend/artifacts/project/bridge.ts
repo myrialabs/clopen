@@ -12,7 +12,7 @@
  * Instructions have two project layers:
  *   - `AGENTS.md` (committed, shared with every tool) — bridged to the engines
  *     that don't read it: Claude (unless `CLAUDE.md` imports it), Cline, Cursor.
- *   - The Clopen-only block (Settings → Instructions → This project, stored in
+ *   - The Clopen-only block (Library → Rules → This project, stored in
  *     the database, never committed) — delivered to every engine.
  *
  * Never throws: a repo Clopen can't read yields an empty bridge.

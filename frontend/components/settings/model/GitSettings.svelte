@@ -2,16 +2,11 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import { settings, updateSettings } from '$frontend/stores/features/settings.svelte';
-	import { modelStore } from '$frontend/stores/features/models.svelte';
-	import { ENGINES } from '$shared/constants/engines';
-	import type { EngineType } from '$shared/types/unified';
 	import type { CommitMessageFormat } from '$shared/types/git';
 	import type { CommitMessageConfig, BranchNameConfig } from '$shared/types/stores/settings';
 	import type { IconName } from '$shared/types/ui/icons';
-	import { modelFieldsOf } from '$frontend/utils/model-override';
-	import EngineModelPicker from './EngineModelPicker.svelte';
+	import ModelPurposeLink from './ModelPurposeLink.svelte';
 
-	let showModelConfig = $state(false);
 	let showCommitConfig = $state(false);
 	let showBranchConfig = $state(false);
 
@@ -50,55 +45,12 @@
 	];
 
 	const commitGen = $derived(settings.commitGenerator);
-	const useCustomModel = $derived(commitGen.useCustomModel);
 
-	// Resolve which model is being used for display
-	const activeEngine = $derived(useCustomModel ? commitGen.engine : settings.selectedEngine);
-	const activeModelId = $derived(useCustomModel ? commitGen.modelId : settings.selectedModelId);
-	const activeEngineMeta = $derived(ENGINES.find(e => e.type === activeEngine));
-	const activeModelMeta = $derived(modelStore.getById(activeModelId));
 	const separatorOptions: { value: string; label: string }[] = [
 		{ value: '/', label: 'Slash' },
 		{ value: '-', label: 'Dash' },
 		{ value: '#', label: 'Hash' },
 	];
-
-	function toggleCustomModel() {
-		// No custom model picked yet: start from the assistant model, as Artifacts does,
-		// rather than an engine with no model selected.
-		const seed = !useCustomModel && !commitGen.modelId
-			? {
-				engine: settings.selectedEngine,
-				provider: settings.selectedProvider,
-				modelId: settings.selectedModelId,
-				modelName: settings.selectedModelName
-			}
-			: {};
-		updateSettings({
-			commitGenerator: { ...commitGen, ...seed, useCustomModel: !useCustomModel }
-		});
-	}
-
-	function handleCommitEngineChange(engineType: EngineType) {
-		const models = modelStore.getByEngine(engineType);
-		updateSettings({
-			commitGenerator: { ...commitGen, engine: engineType, ...modelFieldsOf(models[0]) }
-		});
-
-		modelStore.fetchModels(engineType).then(fetched => {
-			if (fetched.length > 0) {
-				updateSettings({
-					commitGenerator: { ...settings.commitGenerator, ...modelFieldsOf(fetched[0]) }
-				});
-			}
-		});
-	}
-
-	function handleCommitModelChange(modelId: string) {
-		updateSettings({
-			commitGenerator: { ...commitGen, ...modelFieldsOf(modelStore.getById(modelId), modelId) }
-		});
-	}
 
 	function selectFormat(format: CommitMessageFormat) {
 		updateSettings({
@@ -177,38 +129,8 @@
 		</div>
 	</div>
 
-	<!-- Model (compact row) -->
-	<div>
-		<div class="flex items-center justify-between mb-2">
-			<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300">Model</label>
-			<button
-				type="button"
-				onclick={() => showModelConfig = true}
-				class="flex items-center gap-1 text-xs text-violet-600 dark:text-violet-400 hover:text-violet-700 dark:hover:text-violet-300 transition-colors cursor-pointer"
-			>
-				<Icon name="lucide:settings-2" class="w-3 h-3" />
-				Configure
-			</button>
-		</div>
-		<div class="flex items-center gap-3 px-3.5 py-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/50">
-			{#if activeEngineMeta}
-				<div class="flex-shrink-0">
-					<div class="flex dark:hidden items-center justify-center w-4 h-4">{@html activeEngineMeta.icon.light}</div>
-					<div class="hidden dark:flex items-center justify-center w-4 h-4">{@html activeEngineMeta.icon.dark}</div>
-				</div>
-			{/if}
-			<div class="flex-1 min-w-0">
-				<span class="text-sm font-medium text-slate-900 dark:text-slate-100">
-					{activeModelMeta?.engine.model.name || activeModelId}
-				</span>
-				{#if useCustomModel}
-					<span class="text-xs text-violet-500 dark:text-violet-400 ml-1.5">Custom</span>
-				{:else}
-					<span class="text-xs text-slate-500 dark:text-slate-400 ml-1.5">(same as assistant)</span>
-				{/if}
-			</div>
-		</div>
-	</div>
+	<!-- Model: said here, chosen in Settings → Models. -->
+	<ModelPurposeLink purpose="commits" />
 </div>
 
 <Modal isOpen={showCommitConfig} onClose={() => showCommitConfig = false} size="md">
@@ -327,44 +249,3 @@
 	{/snippet}
 </Modal>
 
-<Modal isOpen={showModelConfig} onClose={() => showModelConfig = false} size="lg">
-	{#snippet header()}
-		<div class="flex items-center justify-between px-4 py-3 md:px-5 md:py-4">
-			<h2 class="text-base font-bold text-slate-900 dark:text-slate-100">Configure Model</h2>
-			<button
-				type="button"
-				class="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 dark:hover:text-slate-100 hover:bg-violet-500/10 transition-colors cursor-pointer"
-				onclick={() => showModelConfig = false}
-			>
-				<Icon name="lucide:x" class="w-4 h-4" />
-			</button>
-		</div>
-	{/snippet}
-	{#snippet children()}
-		<div class="space-y-4">
-			<button
-				type="button"
-				class="flex items-center gap-3 w-full text-left"
-				onclick={toggleCustomModel}
-			>
-				<div class="relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0
-					{useCustomModel ? 'bg-violet-600' : 'bg-slate-300 dark:bg-slate-600'}">
-					<div class="absolute top-0.5 w-4 h-4 rounded-full bg-white shadow-sm transition-transform duration-200
-						{useCustomModel ? 'translate-x-4.5' : 'translate-x-0.5'}"></div>
-				</div>
-				<div>
-					<span class="text-sm font-medium text-slate-900 dark:text-slate-100">Use custom model</span>
-					<p class="text-xs text-slate-500 dark:text-slate-400">Use a different engine and model instead of the assistant model</p>
-				</div>
-			</button>
-			{#if useCustomModel}
-				<EngineModelPicker
-					engine={commitGen.engine}
-					model={commitGen.modelId}
-					onEngineChange={handleCommitEngineChange}
-					onModelChange={handleCommitModelChange}
-				/>
-			{/if}
-		</div>
-	{/snippet}
-</Modal>

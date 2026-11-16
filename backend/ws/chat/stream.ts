@@ -8,6 +8,8 @@
  */
 
 import { t } from 'elysia';
+import { saveModelChoice } from '$backend/assistant/model';
+import { isAssistantProjectId } from '$backend/assistant/manager-policy';
 import { createRouter } from '$shared/utils/ws-server';
 import { streamManager, type StreamEvent } from '../../chat/stream-manager';
 import type { EngineType, StreamRequest, UnifiedMessage } from '$shared/types/unified';
@@ -756,6 +758,12 @@ export const streamHandler = createRouter()
 		// so refreshes and late joiners get the correct model
 		try {
 			sessionQueries.updateEngineModel(chatSessionId, data.engine, data.provider, data.modelId, data.modelName);
+			// Picking a model in Clopen's own chat sets the Clopen model everywhere
+			// (Telegram, new chats, Settings) — not just for this one chat.
+			const syncedSession = sessionQueries.getById(chatSessionId);
+			if (syncedSession && isAssistantProjectId(syncedSession.project_id)) {
+				saveModelChoice('assistant', { engine: data.engine as EngineType, provider: data.provider, modelId: data.modelId, modelName: data.modelName });
+			}
 			if (data.reasoningEffort !== undefined) {
 				sessionQueries.updateReasoning(chatSessionId, data.reasoningEffort);
 			}

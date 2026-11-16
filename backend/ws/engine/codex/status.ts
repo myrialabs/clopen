@@ -24,7 +24,7 @@ async function readCliVersion(): Promise<string | null> {
 }
 
 export const codexStatusHandler = createRouter()
-	.http('engine:codex-status', {
+	.http('agents:codex-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

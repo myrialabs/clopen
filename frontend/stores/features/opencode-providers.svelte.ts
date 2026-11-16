@@ -73,7 +73,7 @@ export const opencodeProvidersStore = {
 		credential: string;
 	}): Promise<OpenCodeProviderItem | null> {
 		try {
-			const result = await ws.http('engine:opencode-provider-add', data);
+			const result = await ws.http('agents:opencode-provider-add', data);
 			await this.refreshProviders();
 			return result.provider;
 		} catch (error) {
@@ -83,12 +83,12 @@ export const opencodeProvidersStore = {
 	},
 
 	async removeProvider(id: number): Promise<void> {
-		await ws.http('engine:opencode-provider-remove', { id });
+		await ws.http('agents:opencode-provider-remove', { id });
 		await this.refreshProviders();
 	},
 
 	async toggleProvider(id: number, enabled: boolean): Promise<void> {
-		await ws.http('engine:opencode-provider-toggle', { id, enabled });
+		await ws.http('agents:opencode-provider-toggle', { id, enabled });
 		await this.refreshProviders();
 	},
 
@@ -98,12 +98,12 @@ export const opencodeProvidersStore = {
 		apiUrl?: string;
 		options?: string;
 	}): Promise<void> {
-		await ws.http('engine:opencode-provider-update', { id, ...data });
+		await ws.http('agents:opencode-provider-update', { id, ...data });
 		await this.refreshProviders();
 	},
 
 	async updateProviderOptions(id: number, options: string): Promise<void> {
-		await ws.http('engine:opencode-provider-update-options', { id, options });
+		await ws.http('agents:opencode-provider-update-options', { id, options });
 		await this.refreshProviders();
 	},
 
@@ -112,27 +112,27 @@ export const opencodeProvidersStore = {
 	// ========================================================================
 
 	async addAccount(providerDbId: number, name: string, credential: string): Promise<void> {
-		await ws.http('engine:opencode-account-add', { providerDbId, name, credential });
+		await ws.http('agents:opencode-account-add', { providerDbId, name, credential });
 		await this.refreshProviders();
 	},
 
 	async switchAccount(accountId: number): Promise<void> {
-		await ws.http('engine:opencode-account-switch', { accountId });
+		await ws.http('agents:opencode-account-switch', { accountId });
 		await this.refreshProviders();
 	},
 
 	async deleteAccount(accountId: number): Promise<void> {
-		await ws.http('engine:opencode-account-delete', { accountId });
+		await ws.http('agents:opencode-account-delete', { accountId });
 		await this.refreshProviders();
 	},
 
 	async renameAccount(accountId: number, name: string): Promise<void> {
-		await ws.http('engine:opencode-account-rename', { accountId, name });
+		await ws.http('agents:opencode-account-rename', { accountId, name });
 		await this.refreshProviders();
 	},
 
 	async updateAccountCredential(accountId: number, credential: string): Promise<void> {
-		await ws.http('engine:opencode-account-update-credential', { accountId, credential });
+		await ws.http('agents:opencode-account-update-credential', { accountId, credential });
 		await this.refreshProviders();
 	},
 
@@ -159,7 +159,7 @@ export const opencodeProvidersStore = {
 	 */
 	async refetchCatalog(): Promise<ModelsDevProviderItem[]> {
 		try {
-			const result = await ws.http('engine:opencode-models-dev-fetch', {});
+			const result = await ws.http('agents:opencode-models-dev-fetch', {});
 			catalog = result.catalog;
 			catalogCachedAt = result.cachedAt;
 			catalogCache.markLoaded();
@@ -191,13 +191,13 @@ export const opencodeProvidersStore = {
  * way back short of a reload.
  */
 async function loadProviders(): Promise<void> {
-	const result = await ws.http('engine:opencode-providers-list', {});
+	const result = await ws.http('agents:opencode-providers-list', {});
 	providers = result.providers;
 	debug.log('settings', `OpenCode providers loaded: ${providers.length}`);
 }
 
 async function loadCatalog(): Promise<void> {
-	const result = await ws.http('engine:opencode-models-dev-list', {});
+	const result = await ws.http('agents:opencode-models-dev-list', {});
 	catalog = result.catalog;
 	catalogCachedAt = result.cachedAt;
 	debug.log('settings', `Models.dev catalog loaded: ${catalog.length} providers`);

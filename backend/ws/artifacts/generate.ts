@@ -1,5 +1,5 @@
 /**
- * Artifact AI-generation handler (Settings → Skills/Commands/Subagents/Instructions).
+ * Artifact AI-generation handler (Library → Skills/Commands/Subagents/Instructions).
  *
  *   - artifacts:generate — draft an artifact of a given type from a purpose
  *     sentence, using the caller-selected engine/model (the "Artifacts" model in
@@ -17,7 +17,7 @@ import type { EngineType } from '$shared/types/unified';
 import { requireProjectWorkspace } from '../access';
 
 export const artifactGenerateHandler = createRouter()
-	.http('artifacts:generate', {
+	.http('library:generate', {
 		data: t.Object({
 			artifactType: t.Union([
 				t.Literal('skill'),
@@ -35,7 +35,7 @@ export const artifactGenerateHandler = createRouter()
 		// Loose bag of fields — shape depends on artifactType (see backend/artifacts/generate.ts).
 		response: t.Object({ fields: t.Record(t.String(), t.Unknown()) })
 	}, async ({ data, conn }) => {
-		debug.log('path', `artifacts:generate ${data.artifactType}`);
+		debug.log('path', `library:generate ${data.artifactType}`);
 		if (!data.purpose.trim()) throw new Error('Describe what you want first');
 
 		// Optional project only decides the engine process cwd; generation has no

@@ -56,7 +56,7 @@ export const projectQueries = {
 	},
 
 	/** The Home workspace, if it has been created. */
-	getHome(): Project | null {
+	getAssistant(): Project | null {
 		const db = getDatabase();
 		return db.prepare(`
 			SELECT * FROM projects WHERE kind = 'home'

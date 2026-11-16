@@ -49,6 +49,8 @@ import { notesRouter } from './notes';
 import { workRouter } from './work';
 import { deploymentsRouter } from './deployments';
 import { chatAppsRouter } from './chat-apps';
+import { assistantRouter } from './assistant';
+import { dataSyncRouter } from './system/data-sync';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -134,7 +136,13 @@ export const wsRouter = createRouter()
 	.merge(deploymentsRouter)
 
 	// Notification channels — pairing a chat with a connected bot, per user
-	.merge(chatAppsRouter);
+	.merge(chatAppsRouter)
+
+	// The Clopen assistant — tasks, automations, the Inbox, scripts, recordings
+	.merge(assistantRouter)
+
+	// Auto-sync: `data:changed` after every write, whoever made it
+	.merge(dataSyncRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

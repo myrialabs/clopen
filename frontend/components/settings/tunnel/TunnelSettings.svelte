@@ -336,7 +336,7 @@
 </script>
 
 <div class="py-1">
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Tunnel</h3>
+	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Public Links</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Cloudflare tunnel services for persistent domains</p>
 
 	<div class="space-y-6">

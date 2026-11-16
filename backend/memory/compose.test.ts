@@ -48,7 +48,7 @@ mock.module('./config', () => ({
 }));
 
 mock.module('./indexer', () => ({ scheduleVectorIndexing: () => {} }));
-mock.module('./notify', () => ({ notifyGraphChanged: () => {}, notifyMemoryStatus: () => {} }));
+mock.module('./notify', () => ({ notifyGraphChanged: () => {}, broadcastGraphChanged: () => {}, notifyMemoryStatus: () => {}, notifyMemoryReadiness: () => {} }));
 
 const { graphQueries } = await import('$backend/database/queries/graph-queries');
 const { draftMemory, createMemory } = await import('./compose');

@@ -546,7 +546,7 @@ The fix is the **Restart-Server pattern** documented in §4.2:
    forced; on `force === true`, cancel streams + dispose engine + drop
    any cached subprocess/client; the next `streamQuery` lazy-inits fresh.
 2. Surface a **"Restart Server"** button in **two** UI places:
-   - **Settings → Engines** — visible after add/remove/switch in the
+   - **Settings → Agents** — visible after add/remove/switch in the
      engines settings panel itself. Confirmation dialog for non-forced.
    - **Chat Input** — visible next to the model/account picker when the
      user has switched account mid-session. Uses `force: true` so the
@@ -1264,7 +1264,7 @@ Consequences for an adapter:
   version ≠ the pinned version, throwing `EngineNotReadyError`
   (`reason: 'not-installed' | 'needs-update'`). The stream-manager surfaces that
   message in the chat error surface, telling the user to install/update the
-  engine in Settings → Stack. Don't catch-and-swallow it — the readable message
+  engine in Settings → Agents → Install. Don't catch-and-swallow it — the readable message
   is the UX.
 
 - **Detection reads the stack dir, not PATH.** `readEngineSdkVersion(pkg)` (used
@@ -1432,7 +1432,7 @@ into a bug:
 
 - **The failed load is not caught.** There is exactly one place that decides
   what an unusable engine means to the user — `checkEngineSetup`, whose message
-  embeds "Settings → Stack" and renders as a one-click **Open Stack** button
+  embeds "Settings → Agents → Install" and renders as a one-click **Open Stack** button
   (`frontend/components/chat/formatters/ErrorMessage.svelte`). A second
   handler here would let a broken engine masquerade as a working one. And
   translating a module-load failure into an install prompt is worse than

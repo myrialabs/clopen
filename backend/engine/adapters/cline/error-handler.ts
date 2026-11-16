@@ -33,7 +33,7 @@ export function handleStreamError(error: unknown): void {
 		|| lower.includes('invalid api key')
 		|| lower.includes('not subscribed')
 	) {
-		throw new Error('Cline is not authenticated for the selected provider. Add or re-authenticate the account in Settings → Engines → Cline.');
+		throw new Error('Cline is not authenticated for the selected provider. Add or re-authenticate the account in Settings → Agents → Cline.');
 	}
 
 	if (lower.includes('quota') || lower.includes('insufficient_quota') || lower.includes('429') || lower.includes('rate limit')) {

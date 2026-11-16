@@ -25,7 +25,7 @@ export function emptyGenerationError(engineLabel: string, detail?: string): Erro
 	return new Error(
 		`${engineLabel} returned nothing for this request${detail ? ` (${detail})` : ''}. ` +
 		`The selected model may be unavailable for your account — pick another in Settings → Models, ` +
-		`and check ${engineLabel} is connected in Settings → Engines.`
+		`and check ${engineLabel} is connected in Settings → Agents.`
 	);
 }
 

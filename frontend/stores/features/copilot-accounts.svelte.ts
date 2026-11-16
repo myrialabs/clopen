@@ -3,7 +3,7 @@
  *
  * Shared reactive store for GitHub Copilot accounts.
  * Used by AIEnginesSettings (and any future Copilot-aware UI) to stay in sync.
- * Fetches from backend via `engine:copilot-accounts-list`.
+ * Fetches from backend via `agents:copilot-accounts-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -58,7 +58,7 @@ export const copilotAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:copilot-accounts-list', {});
+	const result = await ws.http('agents:copilot-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Copilot accounts loaded: ${accounts.length}`);
 }

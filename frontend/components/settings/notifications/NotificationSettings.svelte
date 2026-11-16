@@ -595,15 +595,27 @@
 			refreshDevicePushStatus();
 		}
 	}
+	let notifyTab = $state<'sound' | 'push'>('sound');
 </script>
 
 <div class="py-1">
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Notifications</h3>
-	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">
-		Configure sound and push notification preferences
-	</p>
+	<p class="text-sm text-slate-600 dark:text-slate-500 mb-4">Sounds here, alerts on your devices.</p>
+
+	<div class="flex gap-1 p-0.5 mb-4 rounded-lg bg-slate-100 dark:bg-slate-800 w-fit" role="tablist">
+		{#each [{ id: 'sound', label: 'Sound' }, { id: 'push', label: 'Push' }] as tab (tab.id)}
+			<button
+				type="button"
+				role="tab"
+				aria-selected={notifyTab === tab.id}
+				class="px-3.5 py-1.5 rounded-md text-sm font-medium border-none cursor-pointer {notifyTab === tab.id ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 shadow-sm' : 'bg-transparent text-slate-500'}"
+				onclick={() => (notifyTab = tab.id as 'sound' | 'push')}
+			>{tab.label}</button>
+		{/each}
+	</div>
 
 	<div class="flex flex-col gap-3.5">
+		{#if notifyTab === 'sound'}
 		<!-- Sound notifications -->
 		<div
 			class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-all duration-150 hover:border-violet-500/20"
@@ -836,6 +848,7 @@
 			</div>
 		</div>
 
+		{:else}
 		<!-- Push notifications -->
 		<div
 			class="p-4 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-all duration-150 hover:border-violet-500/20"
@@ -933,5 +946,6 @@
 				</div>
 			</div>
 		</div>
+		{/if}
 	</div>
 </div>

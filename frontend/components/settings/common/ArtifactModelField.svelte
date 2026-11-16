@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * Per-engine model picker for artifacts (Commands / Subagents). Mirrors the
-	 * "Permission overlay" in Settings → Profiles: engine tabs, each engine either
+	 * "Permission overlay" in Library → Toolsets: engine tabs, each engine either
 	 * Inherits the session model or pins a specific model from that engine's catalog.
 	 *
 	 * An artifact is materialized into every engine, so model is stored per engine
@@ -156,7 +156,7 @@
 				<div class="w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 {!value[activeEngine] ? 'border-violet-600' : 'border-slate-300 dark:border-slate-600'}">
 					{#if !value[activeEngine]}<div class="w-2 h-2 rounded-full bg-violet-600"></div>{/if}
 				</div>
-				<span class="text-sm text-slate-700 dark:text-slate-200">Inherit <span class="text-xs text-slate-400">— use the session's model</span></span>
+				<span class="text-sm text-slate-700 dark:text-slate-200">Inherit <span class="text-xs text-slate-400">— use the chat's model</span></span>
 			</button>
 
 			<!-- Search -->

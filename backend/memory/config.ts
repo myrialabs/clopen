@@ -3,7 +3,7 @@
  *
  * Split across two settings screens on purpose, mirroring how Artifacts works:
  * the MODEL lives in Settings → Model → Memory next to the other model choices,
- * and the BEHAVIOUR lives in Settings → Infrastructure → Memory. They answer different questions
+ * and the BEHAVIOUR lives in Settings → Memory. They answer different questions
  * ("which model writes memories" vs "what should memory do"), and putting them
  * on one page made both harder to find.
  *

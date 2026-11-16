@@ -13,7 +13,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const copilotStatusHandler = createRouter()
-	.http('engine:copilot-status', {
+	.http('agents:copilot-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

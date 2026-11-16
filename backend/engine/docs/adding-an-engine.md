@@ -13,7 +13,7 @@ blueprint for the next engine you add.
 - [ ] `shared/types/unified/message.ts`: add `'newengine'` to `MessageEngine.type`.
 - [ ] `shared/constants/tool-icons.ts`: add the brand SVG to `TOOL_ICONS`
       (`{ light, dark }`). This is the single source of truth — Settings →
-      Engines, Settings → Stack, the wizard, and the chat picker all read it.
+      Engines, Settings → Agents → Install, the wizard, and the chat picker all read it.
 - [ ] `shared/constants/engines.ts`: add an entry in `ENGINES[]`
       (`type, name, description, icon: TOOL_ICONS['newengine']`). The array's
       order is the display order everywhere.
@@ -74,7 +74,7 @@ mandatory files; optional files use the canonical names from §2.6.
 > `backend/engine/sdk-loader.ts`. The loader throws `EngineNotReadyError`
 > (`not-installed` / `needs-update`) when the SDK is absent or version-mismatched,
 > and the stream-manager surfaces that message in the chat error surface —
-> nudging the user to install/update the engine in Settings → Stack. Mirror
+> nudging the user to install/update the engine in Settings → Agents → Install. Mirror
 > `copilot/stream.ts` / `codex/stream.ts` for the pattern.
 
 - [ ] Create `backend/engine/adapters/newengine/`
@@ -176,15 +176,15 @@ mandatory files; optional files use the canonical names from §2.6.
       `engine_providers`). **Do not change the schema** — the tables
       are already generic.
 
-### Stage 4 — WebSocket `engine:newengine-*`
+### Stage 4 — WebSocket `agents:newengine-*`
 
 - [ ] Create `backend/ws/engine/newengine/`:
-  - `status.ts` — `engine:newengine-status` (`installed`, `version`, etc).
+  - `status.ts` — `agents:newengine-status` (`installed`, `version`, etc).
   - `accounts.ts` or `providers.ts` — account/provider CRUD:
     - List, add, switch, delete, rename.
     - Setup flow: PTY (Claude-style) OR direct API-key/PAT input
       (OpenCode/Copilot-style) depending on the SDK's auth mechanism.
-  - (Optional) `presets.ts` — `engine:newengine-presets-list` if the
+  - (Optional) `presets.ts` — `agents:newengine-presets-list` if the
     adapter has a `presets.ts` module. See `backend/ws/engine/qwen/presets.ts`.
   - `index.ts` — merge the sub-router.
 - [ ] `backend/ws/engine/index.ts`: `.merge(newengineEngineRouter)`.
@@ -200,7 +200,7 @@ mandatory files; optional files use the canonical names from §2.6.
       engine is multi-provider). Mirror the pattern of
       `claudeAccountsStore` / `copilotAccountsStore` / `opencodeProvidersStore`.
 
-### Stage 6 — Settings → Engines
+### Stage 6 — Settings → Agents
 
 - [ ] Add `frontend/components/settings/engines/panels/NewEnginePanel.svelte`
       and wire it into `AIEnginesSettings.svelte`: its selector tile appears
@@ -212,7 +212,7 @@ mandatory files; optional files use the canonical names from §2.6.
       the panel:
   - Receive `status` + `isLoading` (+ `onRefreshStatus` if it mutates
     accounts) as props; read the account list from its own store.
-  - Load status via `ws.http('engine:newengine-status', {})` (in the shell).
+  - Load status via `ws.http('agents:newengine-status', {})` (in the shell).
   - Subscribe to server-emit events for login progress (in the panel's
     `onMount`, cleaned up in `onDestroy`).
   - After save: `newengineStore.refresh()` + `onRefreshStatus()` +
@@ -222,7 +222,7 @@ mandatory files; optional files use the canonical names from §2.6.
     account edit form (in-place re-auth), gated on `newengineReauthAccountId`
     — mirror `ClaudeCodePanel`/`CodexPanel`/`PiPanel`.
 
-### Stage 7 — Settings → Stack
+### Stage 7 — Settings → Agents → Install
 
 Engine SDKs are installed **on demand** into the clopen-managed stack dir
 (`~/.clopen/stack/engines`), not onto the machine's PATH — so you don't write a
@@ -292,9 +292,9 @@ bun run check && bun run lint
 
 Then the minimum UI scenarios that must pass:
 
-- [ ] Settings → Stack → Install NewEngine → exit 0 (SDK lands in
+- [ ] Settings → Agents → Install → Install NewEngine → exit 0 (SDK lands in
       `~/.clopen/stack/engines`, status shows the pinned version).
-- [ ] Settings → Engines → NewEngine → Add Account → status `Installed,
+- [ ] Settings → Agents → NewEngine → Add Account → status `Installed,
       Active account: <name>`.
 - [ ] Chat input → pick NewEngine + model → send a message → assistant
       replies → cancel mid-stream → idle → send again → resume works.

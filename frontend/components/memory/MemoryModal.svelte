@@ -427,7 +427,7 @@
 	/** Leave Memory and land on its settings, rather than stacking two modals. */
 	function openMemorySettings(): void {
 		onClose();
-		settingsModalState.activeSection = 'memory-graph';
+		settingsModalState.activeSection = 'memory';
 		settingsModalState.isOpen = true;
 	}
 
@@ -653,7 +653,7 @@
 					class="flex p-1.5 rounded-md text-slate-400 hover:text-slate-700 dark:hover:text-slate-200
 					       hover:bg-slate-100 dark:hover:bg-slate-800"
 					aria-label="Memory settings"
-					title="Settings → Infrastructure → Memory"
+					title="Settings → Memory"
 				>
 					<Icon name="lucide:settings" class="w-4 h-4" />
 				</button>

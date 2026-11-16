@@ -61,7 +61,7 @@ export const codexAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:codex-accounts-list', {});
+	const result = await ws.http('agents:codex-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Codex accounts loaded: ${accounts.length}`);
 }

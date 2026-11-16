@@ -75,7 +75,7 @@ export const clineAccountsHandler = createRouter()
 
 	// ═══ CRUD ═══
 
-	.http('engine:cline-accounts-list', {
+	.http('agents:cline-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -116,7 +116,7 @@ export const clineAccountsHandler = createRouter()
 
 	// Add or edit an API-key account from an all-fields-at-once form. A blank
 	// secret field on edit keeps the stored value; blank fields keep theirs.
-	.http('engine:cline-accounts-save', {
+	.http('agents:cline-accounts-save', {
 		data: t.Object({
 			accountId: t.Optional(t.Number()),
 			name: t.String({ minLength: 1 }),
@@ -171,7 +171,7 @@ export const clineAccountsHandler = createRouter()
 		return { success: true, accountId };
 	})
 
-	.http('engine:cline-accounts-switch', {
+	.http('agents:cline-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -180,7 +180,7 @@ export const clineAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:cline-accounts-delete', {
+	.http('agents:cline-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -190,7 +190,7 @@ export const clineAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:cline-accounts-rename', {
+	.http('agents:cline-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -200,7 +200,7 @@ export const clineAccountsHandler = createRouter()
 
 	// ═══ OAuth login (event-driven) ═══
 
-	.on('engine:cline-account-login-start', {
+	.on('agents:cline-account-login-start', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			provider: t.String({ minLength: 1 }),
@@ -213,7 +213,7 @@ export const clineAccountsHandler = createRouter()
 		const { getProviderAuthHandler, isOAuthProvider } = await loadEngineSdk<typeof import('@cline/sdk')>('cline', '@cline/sdk');
 		const handler = getProviderAuthHandler(data.provider);
 		if (!handler || !isOAuthProvider(data.provider)) {
-			ws.emit.user(userId, 'engine:cline-account-login-error', { loginId, message: `Provider "${data.provider}" does not support OAuth sign-in.` });
+			ws.emit.user(userId, 'agents:cline-account-login-error', { loginId, message: `Provider "${data.provider}" does not support OAuth sign-in.` });
 			return;
 		}
 
@@ -224,12 +224,12 @@ export const clineAccountsHandler = createRouter()
 			pendingPrompt: null,
 			authUrl: null,
 			timer: setTimeout(() => {
-				ws.emit.user(userId, 'engine:cline-account-login-error', { loginId, message: 'Login timed out after 15 minutes' });
+				ws.emit.user(userId, 'agents:cline-account-login-error', { loginId, message: 'Login timed out after 15 minutes' });
 				cleanupLogin(loginId);
 			}, LOGIN_TIMEOUT_MS),
 		};
 		loginSessions.set(loginId, entry);
-		ws.emit.user(userId, 'engine:cline-account-login-started', { loginId });
+		ws.emit.user(userId, 'agents:cline-account-login-started', { loginId });
 
 		// `onManualCodeInput` is raced against the loopback callback, so it is
 		// optional while that callback is listening; `onPrompt` only follows a
@@ -238,7 +238,7 @@ export const clineAccountsHandler = createRouter()
 			new Promise<string>((resolve, reject) => {
 				entry.pendingPrompt = { resolve, reject };
 				const emitPrompt = (optional: boolean) =>
-					ws.emit.user(userId, 'engine:cline-account-login-prompt', { loginId, message, kind, optional });
+					ws.emit.user(userId, 'agents:cline-account-login-prompt', { loginId, message, kind, optional });
 				if (kind === 'manual_code' && entry.authUrl) {
 					void hasLoopbackCallbackListener(entry.authUrl).then((listening) => {
 						if (entry.pendingPrompt?.resolve === resolve) emitPrompt(listening);
@@ -251,13 +251,13 @@ export const clineAccountsHandler = createRouter()
 		const callbacks: OAuthLoginCallbacks = {
 			onAuth: (info: { url: string; instructions?: string }) => {
 				entry.authUrl = info.url;
-				ws.emit.user(userId, 'engine:cline-account-login-event', {
+				ws.emit.user(userId, 'agents:cline-account-login-event', {
 					loginId, kind: 'auth_url', message: info.instructions, url: info.url,
 				});
 			},
 			onPrompt: (prompt: OAuthPrompt) => awaitPrompt(prompt.message, 'text'),
 			onProgress: (message: string) => {
-				ws.emit.user(userId, 'engine:cline-account-login-event', { loginId, kind: 'progress', message });
+				ws.emit.user(userId, 'agents:cline-account-login-event', { loginId, kind: 'progress', message });
 			},
 			onManualCodeInput: () => awaitPrompt('Paste the authorization code from your browser:', 'manual_code'),
 		};
@@ -279,12 +279,12 @@ export const clineAccountsHandler = createRouter()
 			}
 			await disposeClineEngines();
 
-			ws.emit.user(userId, 'engine:cline-account-login-complete', { loginId, accountId });
+			ws.emit.user(userId, 'agents:cline-account-login-complete', { loginId, accountId });
 			cleanupLogin(loginId);
 		} catch (error) {
 			if (!entry.disposed) {
 				debug.warn('engine', `Cline login failed: ${error instanceof Error ? error.message : String(error)}`);
-				ws.emit.user(userId, 'engine:cline-account-login-error', {
+				ws.emit.user(userId, 'agents:cline-account-login-error', {
 					loginId,
 					message: error instanceof Error ? error.message : 'Login failed',
 				});
@@ -293,7 +293,7 @@ export const clineAccountsHandler = createRouter()
 		}
 	})
 
-	.on('engine:cline-account-login-submit', {
+	.on('agents:cline-account-login-submit', {
 		data: t.Object({ loginId: t.String(), value: t.String() })
 	}, async ({ data }) => {
 		let entry: ClineLoginSession;
@@ -307,7 +307,7 @@ export const clineAccountsHandler = createRouter()
 		pending?.resolve(data.value);
 	})
 
-	.on('engine:cline-account-login-cancel', {
+	.on('agents:cline-account-login-cancel', {
 		data: t.Object({ loginId: t.String() })
 	}, async ({ data }) => {
 		try {
@@ -320,19 +320,19 @@ export const clineAccountsHandler = createRouter()
 
 	// ═══ Event declarations (Server → Client) ═══
 
-	.emit('engine:cline-account-login-started', t.Object({ loginId: t.String() }))
-	.emit('engine:cline-account-login-event', t.Object({
+	.emit('agents:cline-account-login-started', t.Object({ loginId: t.String() }))
+	.emit('agents:cline-account-login-event', t.Object({
 		loginId: t.String(),
 		kind: t.String(),
 		message: t.Optional(t.String()),
 		url: t.Optional(t.String()),
 	}))
-	.emit('engine:cline-account-login-prompt', t.Object({
+	.emit('agents:cline-account-login-prompt', t.Object({
 		loginId: t.String(),
 		message: t.String(),
 		kind: t.Union([t.Literal('text'), t.Literal('manual_code')]),
 		/** A manual fallback the flow can complete without (its loopback callback is listening). */
 		optional: t.Boolean(),
 	}))
-	.emit('engine:cline-account-login-complete', t.Object({ loginId: t.String(), accountId: t.Number() }))
-	.emit('engine:cline-account-login-error', t.Object({ loginId: t.String(), message: t.String() }));
+	.emit('agents:cline-account-login-complete', t.Object({ loginId: t.String(), accountId: t.Number() }))
+	.emit('agents:cline-account-login-error', t.Object({ loginId: t.String(), message: t.String() }));

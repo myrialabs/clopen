@@ -460,8 +460,7 @@
 						<div class="flex items-start gap-2 p-3 bg-violet-500/5 border border-violet-500/20 rounded-lg text-violet-700 dark:text-violet-300">
 							<Icon name="lucide:box" class="w-4 h-4 mt-0.5 shrink-0" />
 							<span class="text-xs">
-								Built into Clopen and defined in code. It can be switched off, but there is
-								nothing to configure and nothing to remove.
+								Built in. It can be switched off; nothing to set up.
 							</span>
 						</div>
 					{/if}
@@ -479,8 +478,7 @@
 					{/if}
 					{#if server?.transport !== 'stdio'}
 						<p class="text-[11px] text-slate-400">
-							For OAuth servers, leave these blank and use Authenticate instead — sign-in is
-							managed for you and applied to every engine.
+							For OAuth servers, leave blank and use Authenticate.
 						</p>
 					{/if}
 					<div class="flex items-center gap-3">
@@ -537,7 +535,7 @@
 								{:else if !engineConfigs}
 									<p class="text-xs text-slate-400">Loading…</p>
 								{:else if Object.keys(engineConfigs).length === 0}
-									<p class="text-xs text-slate-400">Nothing — a disabled connector is handed to no engine.</p>
+									<p class="text-xs text-slate-400">Off: no agent gets it.</p>
 								{:else}
 									<div class="space-y-2">
 										{#each Object.entries(engineConfigs) as [engine, config] (engine)}

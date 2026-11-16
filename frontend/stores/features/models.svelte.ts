@@ -121,7 +121,7 @@ export const modelStore = {
 
 			// Drop any stale models for this engine so the picker reflects the failure.
 			// Intentionally do NOT add this engine to fetchedEngines so a remount
-			// (e.g. after the user configures an account in Settings → Engines)
+			// (e.g. after the user configures an account in Settings → Agents)
 			// retries the fetch instead of serving the cached failure.
 			const otherModels = models.filter(m => m.engine.type !== engine);
 			models = otherModels;
@@ -161,7 +161,7 @@ export const modelStore = {
  * has no stale list to correct, and pulling its catalog here would spend a
  * round-trip per engine on every settings edit.
  */
-ws.on('engine:config-changed', () => {
+ws.on('agents:config-changed', () => {
 	const engines = [...fetchedEngines];
 	if (engines.length === 0) return;
 	debug.log('settings', `Engine config changed — refreshing models for ${engines.join(', ')}`);

@@ -21,7 +21,7 @@ import type { ChannelButton, ChannelCard } from './platforms';
 
 /** Where an event happened, as the chat shows it. */
 export interface ChannelContext {
-	/** The project's name, or "Home" for a user's Home workspace. */
+	/** The project's name, or "Clopen" for the assistant's own workspace. */
 	projectName?: string;
 	sessionTitle?: string;
 }
@@ -225,7 +225,7 @@ export function formatDuration(ms: number): string {
  * in: inside one conversation it would be noise on every message.
  */
 export function answerRuns(input: { markdown: string; context: ChannelContext; showHeader: boolean }): TextRun[] {
-	const body = markdownToRuns(input.markdown.trim() || '_(no text in this reply)_');
+	const body = markdownToRuns(input.markdown.trim() || 'Done.');
 	return input.showHeader ? stack(headerLine(input.context), body) : body;
 }
 
@@ -285,7 +285,8 @@ export interface MenuItem {
  * carry them — so a long model list stays readable.
  */
 export function menuCard(rowId: string, title: TextRun[], items: MenuItem[]): ChannelCard {
-	const listed = items.length <= MAX_LISTED_ITEMS;
+	// Written out only when the items carry something a button cannot show (a path, a state); otherwise the buttons are the list.
+	const listed = items.length <= MAX_LISTED_ITEMS && items.some((item) => item.detail);
 	const listing = listed
 		? items.map((item, i) => {
 				const row: TextRun[] = [bold(`${i + 1}. ${item.label}`)];
@@ -315,10 +316,10 @@ export function confirmCard(rowId: string, input: { title: string; detail: strin
  * unlinking, going back in its conversation). Everything else comes from
  * the control catalog (`backend/control/`), which is where a new command belongs.
  */
-export const CHAT_COMMANDS: { command: string; description: string; hint?: string }[] = [
-	{ command: 'help', description: 'What this bot can do' },
+export const CHAT_COMMANDS: { command: string; description: string; hint?: string; menu?: boolean }[] = [
+	{ command: 'help', description: 'What this bot can do', menu: true },
 	{ command: 'retry', description: 'Ask the last message again' },
-	{ command: 'undo', description: 'Undo the last message and its file changes' },
+	{ command: 'undo', description: 'Undo the last message' },
 	{ command: 'unlink', description: 'Unlink this chat' }
 ];
 
@@ -326,16 +327,15 @@ export const CHAT_COMMANDS: { command: string; description: string; hint?: strin
 
 export const REPLIES = {
 	paired:
-		`Linked to your Clopen. Just type to chat, or send photos and files. You start in Home, with no project selected: /projects switches project, /model picks a model, /help lists everything.\n\nSend /unlink to unlink this chat.`,
-	chatOff: 'This chat is switched off in Clopen → Settings → Chat Apps, so it cannot do anything right now.',
+		`Linked to your Clopen. Just type — ask for anything and Clopen gets it done. /tasks shows what it is working on, /help lists everything.`,
+	chatOff: 'This chat is switched off in Clopen → Settings → Messaging, so it cannot do anything right now.',
 	chatOn: '✅ This chat is switched back on.',
-	pairingExpired: 'That link has expired or was already used. Open Clopen → Settings → Chat Apps and link Telegram again.',
-	notLinked: 'This chat is not linked to Clopen yet. Open Clopen → Settings → Chat Apps and choose "Link Telegram".',
+	pairingExpired: 'That link has expired or was already used. Open Clopen → Settings → Messaging and link Telegram again.',
+	notLinked: 'This chat is not linked to Clopen yet. Open Clopen → Settings → Messaging and choose "Link Telegram".',
 	groupRefused: 'Clopen only links to a private chat with this bot, never to a group.',
 	unlinked: 'Unlinked. This chat no longer controls Clopen.',
-	helpIntro:
-		'Type to chat with the session you are in, including photos, files and albums. Reply to any earlier message to continue from that point. Edit a message you sent to rewrite it, like Edit in Clopen.',
-	controlOff: 'Controlling Clopen is switched off for this bot. Turn on "Control Clopen" for it in Settings → Integrations.',
+	helpIntro: 'Just type, or send photos and files. Reply to an earlier message to continue from there.',
+	controlOff: 'Controlling Clopen is switched off for this bot. Turn on "Control Clopen" for it in Library → Integrations.',
 	unknownCommand: (name: string) => `There is no /${name}. /help lists what this bot can do.`,
 	sendAsMessage: 'Send it to the session as a message instead?',
 	skillNotACommand: (name: string) => `${name.replace(/_/g, '-')} is one of your skills. Run it with /run ${name.replace(/_/g, '-')}, followed by what it needs.`,

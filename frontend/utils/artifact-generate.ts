@@ -1,7 +1,7 @@
 /**
  * Client helper for AI-authoring an artifact from a purpose sentence. Resolves
  * which model to use (the "Artifacts" override in Settings → Models, else the
- * assistant model) and calls the `artifacts:generate` endpoint.
+ * assistant model) and calls the `library:generate` endpoint.
  */
 
 import ws from '$frontend/utils/ws';
@@ -16,19 +16,19 @@ export async function generateArtifactDraft(
 	artifactType: GeneratableArtifactType,
 	purpose: string
 ): Promise<Record<string, unknown>> {
-	const { engine, providerSlug, modelId } = resolveGenerationModel(settings.artifactGenerator);
+	const { engine, providerSlug, modelId } = resolveGenerationModel(settings.libraryGenerator);
 
 	// The backend repeats this check against the engine's live catalog (see
 	// `resolve-model.ts`); this one just avoids a round-trip for the common case.
 	if (!modelId) {
 		throw new Error(
-			settings.artifactGenerator?.useCustomModel
+			settings.libraryGenerator?.useCustomModel
 				? 'No model is selected for generating artifacts. Choose one in Settings → Models → Artifacts.'
 				: 'No assistant model is selected. Choose one in Settings → Models.'
 		);
 	}
 
-	const result = await ws.http('artifacts:generate', {
+	const result = await ws.http('library:generate', {
 		artifactType,
 		purpose,
 		engine,

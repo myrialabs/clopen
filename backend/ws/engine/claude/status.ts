@@ -12,7 +12,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const claudeCodeStatusHandler = createRouter()
-	.http('engine:claude-status', {
+	.http('agents:claude-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

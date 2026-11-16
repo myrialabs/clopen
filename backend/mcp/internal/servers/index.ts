@@ -10,8 +10,9 @@
  * 3. Done! Registries are auto-built and type-safe.
  */
 
-import browserAutomation from './browser-automation/index';
-import memoryGraph from './memory-graph/index';
+import browser from './browser/index';
+import memory from './memory/index';
+import control from './control/index';
 import { buildServerRegistries } from './helper';
 
 // Re-export types and remote server factory
@@ -25,8 +26,9 @@ export { createRemoteMcpServer } from './helper';
  * Metadata and registry will be automatically built.
  */
 export const allServers = [
-	browserAutomation,
-	memoryGraph,
+	browser,
+	memory,
+	control,
 	// Add more servers here...
 ] as const;
 

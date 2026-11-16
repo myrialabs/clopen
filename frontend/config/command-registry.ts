@@ -20,6 +20,17 @@ import {
 	openContainersDialog
 } from '$frontend/stores/ui/quick-panels.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
+import { newFlow, openNeedsYou, setAssistantTab, type AssistantTab } from '$frontend/stores/ui/assistant-view.svelte';
+import { openLibrary } from '$frontend/stores/ui/library-modal.svelte';
+import { setCurrentProject } from '$frontend/stores/core/projects.svelte';
+import { isAssistantProject } from '$shared/utils/assistant-project';
+
+/** Switch to Clopen's own screen, on one of its tabs. */
+async function openAssistant(tab: AssistantTab): Promise<void> {
+	const assistant = projectState.projects.find(isAssistantProject);
+	if (assistant && projectState.currentProject?.id !== assistant.id) await setCurrentProject(assistant);
+	setAssistantTab(tab);
+}
 
 export interface CommandAction {
 	id: string;
@@ -63,6 +74,54 @@ function setFontSize(size: number): void {
 /** Actions visible right now — gated by the current project context. */
 export function getCommandActions(): CommandAction[] {
 	const actions: CommandAction[] = [];
+
+	actions.push({
+		id: 'open-clopen',
+		label: 'Talk to Clopen',
+		description: 'Your AI that gets things done',
+		icon: 'lucide:sparkles',
+		keywords: ['assistant', 'home', 'ask', 'task', 'agent'],
+		run: () => openAssistant('chat')
+	});
+
+	actions.push({
+		id: 'open-needs-you',
+		label: 'Needs You',
+		description: 'What is waiting for you',
+		icon: 'lucide:bell',
+		keywords: ['inbox', 'approval', 'question', 'connect', 'notifications'],
+		run: openNeedsYou
+	});
+
+	actions.push({
+		id: 'open-tasks',
+		label: 'Tasks',
+		description: 'What Clopen is working on',
+		icon: 'lucide:list-checks',
+		keywords: ['goal', 'progress', 'agents', 'working', 'mission', 'flows', 'automations', 'repeating', 'routines'],
+		run: () => openAssistant('tasks')
+	});
+
+	actions.push({
+		id: 'new-repeating-task',
+		label: 'New Repeating Task',
+		description: 'Make something run on its own',
+		icon: 'lucide:alarm-clock-plus',
+		keywords: ['flow', 'automation', 'schedule', 'cron', 'job', 'every', 'daily', 'routine', 'recurring'],
+		run: async () => {
+			await openAssistant('tasks');
+			newFlow();
+		}
+	});
+
+	actions.push({
+		id: 'open-library',
+		label: 'Open Library',
+		description: 'Skills, scripts, specialists and more',
+		icon: 'lucide:library',
+		keywords: ['skills', 'scripts', 'subagents', 'specialists', 'rules', 'instructions', 'profiles', 'toolsets', 'integrations', 'mcp', 'secrets', 'passwords'],
+		run: () => openLibrary()
+	});
 
 	actions.push({
 		id: 'new-project',
@@ -147,15 +206,18 @@ export function getCommandActions(): CommandAction[] {
 
 	// Layout presets are intentionally NOT exposed as palette commands — they live
 	// in the dedicated Layout Presets menu, and listing all of them here just
-	// clutters search. Only "Reset Layout" stays as a quick utility.
-	actions.push({
-		id: 'reset-layout',
-		label: 'Reset Layout',
-		description: 'Restore the default panel arrangement',
-		icon: 'lucide:rotate-ccw',
-		keywords: ['layout', 'default', 'reset', 'panel'],
-		run: resetToDefault
-	});
+	// clutters search. Only "Reset Layout" stays as a quick utility — and only
+	// in a project's workspace, the one place with panels to arrange.
+	if (projectState.currentProject && !isAssistantProject(projectState.currentProject)) {
+		actions.push({
+			id: 'reset-layout',
+			label: 'Reset Layout',
+			description: 'Restore the default panel arrangement',
+			icon: 'lucide:rotate-ccw',
+			keywords: ['layout', 'default', 'reset', 'panel'],
+			run: resetToDefault
+		});
+	}
 
 	actions.push({
 		id: 'remote-access',
@@ -168,26 +230,26 @@ export function getCommandActions(): CommandAction[] {
 
 	actions.push({
 		id: 'public-tunnel',
-		label: 'Public Tunnel',
-		description: 'Expose a local port via Cloudflare',
+		label: 'Public Link',
+		description: 'Share a local port online',
 		icon: 'lucide:cloud-upload',
-		keywords: ['cloudflare', 'expose', 'port'],
+		keywords: ['cloudflare', 'expose', 'port', 'tunnel'],
 		run: openTunnelDialog
 	});
 
 	actions.push({
 		id: 'db-client',
-		label: 'DB Client',
+		label: 'Databases',
 		description: 'Connect to a database',
 		icon: 'lucide:database',
-		keywords: ['sql', 'database', 'query'],
+		keywords: ['sql', 'database', 'query', 'db client'],
 		run: openDbClientDialog
 	});
 
 	actions.push({
 		id: 'ssh-client',
-		label: 'SSH Client',
-		description: 'Open a shell, browse files, forward a port',
+		label: 'SSH',
+		description: 'Shell and files on a server',
 		icon: 'lucide:server',
 		keywords: ['ssh', 'shell', 'sftp', 'remote', 'server', 'tunnel', 'port forward'],
 		run: openSshClientDialog

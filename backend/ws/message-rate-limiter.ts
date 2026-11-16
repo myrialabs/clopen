@@ -15,7 +15,7 @@
  * the entire point. A busy Clopen tab is dominated by high-volume fire-and-
  * forget traffic — preview pointer moves at ~30/s per viewer, terminal
  * keystrokes, stream feedback — while the calls a panel actually waits on
- * (`files:list-tree`, `git:status`, `engine:*-accounts-list`) are a trickle by
+ * (`files:list-tree`, `git:status`, `agents:*-accounts-list`) are a trickle by
  * comparison.
  *
  * Counting them in one bucket and dropping whatever arrived last meant the

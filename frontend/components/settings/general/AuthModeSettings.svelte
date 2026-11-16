@@ -98,10 +98,8 @@
 				<Icon name="lucide:lock-open" class="w-5 h-5" />
 			</div>
 			<div class="flex-1 min-w-0">
-				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">No Login</div>
-				<div class="text-xs text-slate-600 dark:text-slate-500">
-					Opens straight to the app. Best for your own computer.
-				</div>
+				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Just this computer</div>
+				<div class="text-xs text-slate-600 dark:text-slate-500">Opens right away. Nothing to sign in to.</div>
 			</div>
 			{#if currentMode === 'none'}
 				<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 shrink-0">
@@ -112,7 +110,7 @@
 		</div>
 	</button>
 
-	<!-- With Login -->
+	<!-- Other devices too -->
 	<button
 		type="button"
 		disabled={isPreparingSwitch}
@@ -131,10 +129,8 @@
 				<Icon name="lucide:lock" class="w-5 h-5" />
 			</div>
 			<div class="flex-1 min-w-0">
-				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">With Login</div>
-				<div class="text-xs text-slate-600 dark:text-slate-500">
-					Requires sign-in. Best for reaching Clopen from other devices.
-				</div>
+				<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">My other devices too</div>
+				<div class="text-xs text-slate-600 dark:text-slate-500">Use it from your phone. Needs a sign-in key.</div>
 			</div>
 			{#if currentMode === 'required'}
 				<div class="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-violet-100 dark:bg-violet-900/30 text-violet-700 dark:text-violet-300 shrink-0">
@@ -149,7 +145,7 @@
 {#if isPreparingSwitch}
 	<div class="flex items-center gap-2 mt-4 text-sm text-slate-500">
 		<div class="w-4 h-4 border-2 border-violet-500/20 border-t-violet-600 rounded-full animate-spin"></div>
-		<span>Preparing authentication switch...</span>
+		<span>Preparing…</span>
 	</div>
 {/if}
 </div>
@@ -159,8 +155,8 @@
 	bind:isOpen={showSimpleConfirm}
 	onClose={() => { showSimpleConfirm = false; }}
 	type="info"
-	title="Change Authentication Mode"
-	message="Switching to No Login mode will disable login requirements. Your account and signed-in devices are kept, just no longer required."
+	title="Just this computer?"
+	message="Clopen will open without signing in. Your devices stay listed."
 	confirmText="Confirm"
 	cancelText="Cancel"
 	showCancel={true}
@@ -172,7 +168,7 @@
 	bind:isOpen={showPatDialog}
 	onClose={cancelPatDialog}
 	type="warning"
-	title="Change Authentication Mode"
+	title="Use other devices too?"
 	closable={false}
 	confirmText="Confirm"
 	cancelText="Cancel"
@@ -186,18 +182,14 @@
 			</div>
 
 			<div class="flex-1 space-y-1">
-				<h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100">
-					Change Authentication Mode
-				</h3>
-				<p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">
-					Switching to With Login mode will require authentication. All sessions will be logged out and you will need this token to log in again.
-				</p>
+				<h3 class="text-lg font-semibold text-slate-900 dark:text-slate-100">Use other devices too?</h3>
+				<p class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed">Everyone gets signed out. Sign back in with this key.</p>
 
 				<!-- PAT Display -->
 				<div class="mt-3 p-3.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800">
 					<div class="flex items-center gap-2 text-sm font-semibold text-amber-800 dark:text-amber-200 mb-2">
 						<Icon name="lucide:key-round" class="w-4 h-4" />
-						<span>Your Personal Access Token</span>
+						<span>Your sign-in key</span>
 					</div>
 					<div class="flex items-center gap-2">
 						<code class="flex-1 px-3 py-2 rounded-md bg-white dark:bg-slate-900 border border-amber-300 dark:border-amber-700 text-xs font-mono text-slate-900 dark:text-slate-100 select-all break-all">
@@ -210,7 +202,7 @@
 								{patCopied
 									? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
 									: 'bg-amber-100 dark:bg-amber-900 hover:bg-amber-200 dark:hover:bg-amber-800 text-amber-800 dark:text-amber-200'}"
-							title="Copy token"
+							title="Copy key"
 						>
 							<Icon name={patCopied ? 'lucide:check' : 'lucide:copy'} class="w-4 h-4" />
 						</button>

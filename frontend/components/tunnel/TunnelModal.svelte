@@ -57,7 +57,7 @@
 	}
 </script>
 
-<Modal {isOpen} {onClose} title="Public Tunnel" size="md">
+<Modal {isOpen} {onClose} title="Public Link" size="md">
 	<div class="space-y-6">
 		<!-- Add new tunnel form -->
 		<TunnelInactive />

@@ -5,7 +5,7 @@
 	import Input from '$frontend/components/common/form/Input.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import {
 		projectArtifactsStore,
 		splitFrontmatter,
@@ -269,7 +269,7 @@
 			<ArtifactGenerateBar
 				artifactType={kind}
 				placeholder={kind === 'skill' ? 'Describe the skill, e.g. "cut a release"' : 'Describe the subagent, e.g. "reviews diffs for bugs"'}
-				onNavigateArtifacts={() => { editorOpen = false; setActiveSection('artifacts'); }}
+				onNavigateArtifacts={() => { editorOpen = false; openSettingsModal('models'); }}
 				onGenerated={(f) => {
 					if (typeof f.name === 'string') edName = f.name;
 					if (typeof f.description === 'string') edDescription = f.description;

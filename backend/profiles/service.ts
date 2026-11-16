@@ -1,5 +1,5 @@
 /**
- * Profile service — the bundle layer (Settings → Profiles) and the stream-time
+ * Profile service — the bundle layer (Library → Toolsets) and the stream-time
  * resolution consumed by the artifact/MCP sync path.
  *
  * A Profile is a reusable, named set of references to existing artifacts

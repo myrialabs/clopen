@@ -30,7 +30,7 @@ export function handleStreamError(error: unknown, stderrTail?: string): void {
 	const tailLower = tail.toLowerCase();
 
 	if (error.message.includes('ENOENT') || error.message.includes('spawn qwen')) {
-		throw new Error('Qwen Code CLI not found. Install it via Settings → Stack (or `bun add -g @qwen-code/qwen-code`).');
+		throw new Error('Qwen Code CLI not found. Install it via Settings → Agents → Install (or `bun add -g @qwen-code/qwen-code`).');
 	}
 
 	if (
@@ -40,7 +40,7 @@ export function handleStreamError(error: unknown, stderrTail?: string): void {
 		|| tailLower.includes('invalid api key')
 		|| tailLower.includes('unauthorized')
 	) {
-		throw new Error('Qwen Code is not authenticated. Check the API key and base URL in Settings → Engines → Qwen Code.');
+		throw new Error('Qwen Code is not authenticated. Check the API key and base URL in Settings → Agents → Qwen Code.');
 	}
 
 	if (error.message.includes('insufficient_quota') || error.message.includes('quota') || tailLower.includes('insufficient_quota')) {

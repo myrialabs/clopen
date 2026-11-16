@@ -213,9 +213,7 @@
 				<div class="flex items-start gap-2 p-3 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg">
 					<Icon name="lucide:lock" class="w-4 h-4 mt-0.5 shrink-0 text-slate-400" />
 					<span class="text-[11px] text-slate-500 dark:text-slate-400">
-						Stored encrypted in Clopen's database. That protects a database file that
-						leaves this machine — a backup or a snapshot — not someone who can already
-						read this machine's data directory.
+						Stored encrypted in Clopen's database.
 					</span>
 				</div>
 

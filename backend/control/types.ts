@@ -17,7 +17,7 @@
 import type { Static, TSchema } from 'elysia';
 import type { AuthUser } from '$backend/auth/auth-service';
 
-/** Where an action acts: a project (Home when none was picked) and maybe a session. */
+/** Where an action acts: a project (Clopen's own when none was picked) and maybe a session. */
 export interface ControlTarget {
 	projectId: string;
 	sessionId: string | null;
@@ -73,9 +73,36 @@ export interface ControlResult {
 	target?: ControlTarget;
 	/** A link worth opening — rendered as a button in a chat. */
 	link?: { label: string; url: string };
+	/**
+	 * Structured result for an agent: ids it can pass to the next action in a
+	 * batch (`$step.path` references), lists it can reason over. A chat ignores
+	 * it; the text is what a person reads.
+	 */
+	data?: unknown;
 }
 
-export type ControlGroup = 'conversation' | 'sessions' | 'files' | 'skills' | 'projects' | 'models' | 'accounts';
+export type ControlGroup =
+	| 'conversation'
+	| 'sessions'
+	| 'files'
+	| 'skills'
+	| 'projects'
+	| 'models'
+	| 'accounts'
+	| 'task'
+	| 'automation'
+	| 'memory'
+	| 'secret'
+	| 'inbox'
+	| 'script'
+	| 'skill'
+	| 'terminal'
+	| 'git'
+	| 'db'
+	| 'api'
+	| 'agents'
+	| 'recording'
+	| 'assistant';
 
 export const CONTROL_GROUP_LABELS: Record<ControlGroup, string> = {
 	conversation: 'Conversation',
@@ -84,7 +111,21 @@ export const CONTROL_GROUP_LABELS: Record<ControlGroup, string> = {
 	skills: 'Skills',
 	projects: 'Projects',
 	models: 'Models',
-	accounts: 'Engine accounts'
+	accounts: 'Agent accounts',
+	task: 'Tasks',
+	automation: 'Flows',
+	memory: 'Memory',
+	secret: 'Secrets',
+	inbox: 'Inbox',
+	script: 'Scripts',
+	skill: 'Skill authoring',
+	terminal: 'Terminal',
+	git: 'Git',
+	db: 'Databases',
+	api: 'Clopen API',
+	agents: 'Agents',
+	recording: 'Recordings',
+	assistant: 'Clopen'
 };
 
 export interface ControlCommand {
@@ -100,6 +141,11 @@ export interface ControlCommand {
 	 * taking the rest.
 	 */
 	argument?: { keys: string[]; hint: string };
+	/**
+	 * Shown in a chat app's `/` menu. The menu stays short (the everyday ten);
+	 * every other command still works and is listed under "More" in /help.
+	 */
+	menu?: boolean;
 }
 
 export interface ControlAction<A extends TSchema = TSchema> {

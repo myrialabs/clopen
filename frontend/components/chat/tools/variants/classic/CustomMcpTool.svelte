@@ -3,6 +3,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { FileHeader, CodeBlock } from './components';
 	import type { ToolUseBlock } from '$shared/types/unified';
+	import SentFiles from '$frontend/components/assistant/SentFiles.svelte';
 	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
@@ -49,14 +50,24 @@
 		if (!result?.content) return null;
 		const content = result.content;
 		if (typeof content === 'string') return content;
-		return String(content);
+		// MCP results are content blocks: show their text, and say what the rest are.
+		if (Array.isArray(content)) {
+			return (content as unknown[])
+				.map((block) => {
+					const entry = block as { type?: string; text?: string; mimeType?: string };
+					return entry.type === 'text' ? (entry.text ?? '') : `[${entry.type ?? 'content'}${entry.mimeType ? ` · ${entry.mimeType}` : ''}]`;
+				})
+				.join('\n')
+				.trim();
+		}
+		return JSON.stringify(content, null, 2);
 	});
 
 	const isError = $derived.by(() => {
 		if (!result?.content) return false;
 		const content = result.content;
 		if (typeof content === 'string') return content.toLowerCase().includes('error:');
-		return false;
+		return Boolean((result as { isError?: boolean } | undefined)?.isError);
 	});
 
 	const formattedInput = $derived(JSON.stringify(toolInput.input, null, 2));
@@ -79,6 +90,10 @@
 	<div class="bg-white dark:bg-slate-800 rounded-md border border-slate-200/60 dark:border-slate-700/60 p-3">
 		<CodeBlock code={formattedInput} type="neutral" label="Input" />
 	</div>
+{/if}
+
+{#if tool === 'send' && result && !isError}
+	<SentFiles content={result.content} />
 {/if}
 
 {#if resultContent}

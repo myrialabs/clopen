@@ -1,5 +1,5 @@
 /**
- * Projects: list, open, Home, and adding one by walking the machine's
+ * Projects: list, open, Clopen itself, and adding one by walking the machine's
  * folders (making, renaming or deleting folders on the way).
  */
 
@@ -8,8 +8,8 @@ import { existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'path';
 import { homedir } from 'os';
 import { projectQueries } from '$backend/database/queries';
-import { ensureHomeProject } from '$backend/projects/home';
-import { homeFirst, isHomeProject, HOME_PROJECT_NAME } from '$shared/utils/home-project';
+import { ensureAssistantProject } from '$backend/assistant/project';
+import { assistantFirst, isAssistantProject, ASSISTANT_NAME } from '$shared/utils/assistant-project';
 import type { Project } from '$shared/types/database/schema';
 import { defineAction } from '../define';
 import type { ControlChoice, ControlResult } from '../types';
@@ -25,10 +25,10 @@ export const listProjects = defineAction({
 	title: 'Projects',
 	description: 'Switch project',
 	args: t.Object({ page: t.Optional(t.Number({ minimum: 0 })) }),
-	command: { name: 'projects' },
+	command: { name: 'project' },
 	async run(ctx, args) {
-		ensureHomeProject();
-		const projects = homeFirst(
+		ensureAssistantProject();
+		const projects = assistantFirst(
 			projectQueries.getListed().sort((a, b) => (b.last_opened_at ?? '').localeCompare(a.last_opened_at ?? ''))
 		);
 		const { choices, range } = paged(
@@ -36,7 +36,7 @@ export const listProjects = defineAction({
 			args.page,
 			(project) => ({
 				label: projectLabel(project),
-				detail: isHomeProject(project) ? 'no project, just chat' : project.path,
+				detail: isAssistantProject(project) ? 'no project, just chat' : project.path,
 				current: project.id === ctx.target.projectId,
 				action: 'projects.open',
 				args: { projectId: project.id }
@@ -64,18 +64,18 @@ export const openProject = defineAction({
 	}
 });
 
-export const goHome = defineAction({
-	id: 'projects.home',
+export const goToAssistant = defineAction({
+	id: 'projects.clopen',
 	group: 'projects',
-	title: 'Home',
-	description: 'Chat without a project',
+	title: 'Talk to Clopen',
+	description: 'Talk to Clopen itself — it runs your agents for you',
 	args: t.Object({}),
-	command: { name: 'home' },
+	command: { name: 'clopen' },
 	async run() {
-		const home = ensureHomeProject();
+		const assistant = ensureAssistantProject();
 		return {
-			text: `🏠 Now in **${HOME_PROJECT_NAME}**, with no project.`,
-			target: { projectId: home.id, sessionId: latestSession(home.id)?.id ?? null }
+			text: `✨ Now talking to **${ASSISTANT_NAME}**. Ask for anything — it hands the work to an agent and keeps going until it is done.`,
+			target: { projectId: assistant.id, sessionId: latestSession(assistant.id)?.id ?? null }
 		};
 	}
 });
@@ -107,7 +107,7 @@ function protectedReason(folder: string): string | null {
 	const data = getClopenDir();
 	if (isPathInside(data, folder) || isPathInside(folder, data)) return "it holds Clopen's own data";
 	const project = projectQueries.getAll().find((entry) => isPathInside(folder, resolve(entry.path)));
-	if (project) return `it ${resolve(project.path) === folder ? 'is' : 'holds'} the project ${isHomeProject(project) ? HOME_PROJECT_NAME : project.name}`;
+	if (project) return `it ${resolve(project.path) === folder ? 'is' : 'holds'} the project ${isAssistantProject(project) ? ASSISTANT_NAME : project.name}`;
 	return null;
 }
 

@@ -309,7 +309,7 @@
 			{ label: 'Actions', items: indexedItems.filter((i) => i.kind === 'action') },
 			{ label: 'Settings', items: indexedItems.filter((i) => i.kind === 'setting') },
 			{ label: 'Files', items: indexedItems.filter((i) => i.kind === 'file') },
-			{ label: 'Sessions', items: indexedItems.filter((i) => i.kind === 'session') }
+			{ label: 'Chats', items: indexedItems.filter((i) => i.kind === 'session') }
 		];
 		return all.filter((g) => g.items.length > 0);
 	});

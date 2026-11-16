@@ -12,20 +12,15 @@
 	} from '$frontend/stores/ui/settings-modal.svelte';
 
 	// Import settings components
-	import AssistantSettings from './model/AssistantSettings.svelte';
+	import SettingsTabs from './common/SettingsTabs.svelte';
+	import ModelsSettings from './model/ModelsSettings.svelte';
+	import ModelPurposeLink from './model/ModelPurposeLink.svelte';
+	import ClopenSettings from './clopen/ClopenSettings.svelte';
+	import AgentsSettings from './agents/AgentsSettings.svelte';
 	import GitSettings from './model/GitSettings.svelte';
-	import ArtifactsSettings from './model/ArtifactsSettings.svelte';
-	import AIEnginesSettings from './engines/AIEnginesSettings.svelte';
-	import StackSettings from './stack/StackSettings.svelte';
-	import IntegrationsSettings from './integrations/IntegrationsSettings.svelte';
-	import SkillsSettings from './skills/SkillsSettings.svelte';
-	import SubagentsSettings from './subagents/SubagentsSettings.svelte';
-	import InstructionsSettings from './instructions/InstructionsSettings.svelte';
 	import PermissionsSettings from './permissions/PermissionsSettings.svelte';
 	import FileSharesSettings from './files/FileSharesSettings.svelte';
 	import MemorySettings from './memory/MemorySettings.svelte';
-	import MemoryModelSettings from './model/MemoryModelSettings.svelte';
-	import ProfilesSettings from './profiles/ProfilesSettings.svelte';
 	import GitIdentitiesSettings from './git/GitIdentitiesSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
@@ -39,9 +34,6 @@
 	} from './system/AboutDeviceSettings.svelte';
 	import TunnelSettings from './tunnel/TunnelSettings.svelte';
 	import ScopedSection from './project/ScopedSection.svelte';
-	import ProjectItemsPanel from './project/ProjectItemsPanel.svelte';
-	import ProjectInstructionsPanel from './project/ProjectInstructionsPanel.svelte';
-	import ProjectMcpPanel from './project/ProjectMcpPanel.svelte';
 	import ProjectPermissionsPanel from './project/ProjectPermissionsPanel.svelte';
 
 	// Responsive state
@@ -265,129 +257,51 @@
 			<!-- Content Area -->
 			<main class="flex-1 flex flex-col min-w-0 overflow-hidden">
 				<div class="flex-1 overflow-y-auto p-4 md:p-5">
-					{#if activeSection === 'assistant'}
+					{#key activeSection}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<AssistantSettings />
+							{#if activeSection === 'clopen'}
+								<ClopenSettings />
+							{:else if activeSection === 'agents'}
+								<AgentsSettings />
+							{:else if activeSection === 'models'}
+								<ModelsSettings />
+							{:else if activeSection === 'memory'}
+								<div class="space-y-4">
+									<ModelPurposeLink purpose="memory" />
+									<MemorySettings />
+								</div>
+							{:else if activeSection === 'permissions'}
+								<ScopedSection title="Permissions" description="Which tools each agent may use.">
+									{#snippet global()}<PermissionsSettings showHeader={false} />{/snippet}
+									{#snippet project(projectId)}<ProjectPermissionsPanel {projectId} />{/snippet}
+								</ScopedSection>
+							{:else if activeSection === 'git'}
+								<SettingsTabs tabs={[{ id: 'commits', label: 'Commits' }, { id: 'accounts', label: 'Accounts' }]}>
+									{#snippet children(tab)}
+										{#if tab === 'commits'}<GitSettings />{:else}<GitIdentitiesSettings />{/if}
+									{/snippet}
+								</SettingsTabs>
+							{:else if activeSection === 'files'}
+								<FilesFoldersSettings />
+							{:else if activeSection === 'file-shares'}
+								<FileSharesSettings />
+							{:else if activeSection === 'devices'}
+								<AccessSettings />
+							{:else if activeSection === 'tunnel'}
+								<TunnelSettings />
+							{:else if activeSection === 'messaging'}
+								<ChatAppsSettings />
+							{:else if activeSection === 'appearance'}
+								<AppearanceSettings />
+							{:else if activeSection === 'notifications'}
+								<NotificationSettings />
+							{:else if activeSection === 'machine'}
+								<AboutDeviceSettings />
+							{:else if activeSection === 'maintenance'}
+								<SystemSettings />
+							{/if}
 						</div>
-					{:else if activeSection === 'commit-message'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<GitSettings />
-						</div>
-					{:else if activeSection === 'git-identities'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<GitIdentitiesSettings />
-						</div>
-					{:else if activeSection === 'artifacts'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ArtifactsSettings />
-						</div>
-					{:else if activeSection === 'appearance'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<AppearanceSettings />
-						</div>
-					{:else if activeSection === 'notifications'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<NotificationSettings />
-						</div>
-					{:else if activeSection === 'chat-apps'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ChatAppsSettings />
-						</div>
-					{:else if activeSection === 'tunnel'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<TunnelSettings />
-						</div>
-					{:else if activeSection === 'engines'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<AIEnginesSettings />
-						</div>
-					{:else if activeSection === 'stack'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<StackSettings />
-						</div>
-					{:else if activeSection === 'integrations'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ScopedSection
-								title="Integrations"
-								description="Connected services and MCP servers."
-							>
-								{#snippet global()}<IntegrationsSettings showHeader={false} />{/snippet}
-								{#snippet project(projectId)}<ProjectMcpPanel {projectId} />{/snippet}
-							</ScopedSection>
-						</div>
-					{:else if activeSection === 'skills'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ScopedSection
-								title="Skills"
-								description="Reusable instructions and /commands."
-							>
-								{#snippet global()}<SkillsSettings showHeader={false} />{/snippet}
-								{#snippet project(projectId)}<ProjectItemsPanel {projectId} kind="skill" />{/snippet}
-							</ScopedSection>
-						</div>
-					{:else if activeSection === 'subagents'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ScopedSection
-								title="Subagents"
-								description="Specialized agents to delegate tasks to."
-							>
-								{#snippet global()}<SubagentsSettings showHeader={false} />{/snippet}
-								{#snippet project(projectId)}<ProjectItemsPanel {projectId} kind="subagent" />{/snippet}
-							</ScopedSection>
-						</div>
-					{:else if activeSection === 'instructions'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ScopedSection
-								title="Instructions"
-								description="Standing instructions for every engine."
-							>
-								{#snippet global()}<InstructionsSettings showHeader={false} />{/snippet}
-								{#snippet project(projectId)}<ProjectInstructionsPanel {projectId} />{/snippet}
-							</ScopedSection>
-						</div>
-					{:else if activeSection === 'permissions'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ScopedSection
-								title="Permissions"
-								description="Allow or deny tools per engine."
-							>
-								{#snippet global()}<PermissionsSettings showHeader={false} />{/snippet}
-								{#snippet project(projectId)}<ProjectPermissionsPanel {projectId} />{/snippet}
-							</ScopedSection>
-						</div>
-					{:else if activeSection === 'file-shares'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<FileSharesSettings />
-						</div>
-					{:else if activeSection === 'memory'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<MemoryModelSettings />
-						</div>
-					{:else if activeSection === 'memory-graph'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<MemorySettings />
-						</div>
-					{:else if activeSection === 'profiles'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<ProfilesSettings />
-						</div>
-					{:else if activeSection === 'access'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<AccessSettings />
-						</div>
-					{:else if activeSection === 'files'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<FilesFoldersSettings />
-						</div>
-					{:else if activeSection === 'machine'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<AboutDeviceSettings />
-						</div>
-					{:else if activeSection === 'system'}
-						<div in:fly={{ x: 20, duration: 200 }}>
-							<SystemSettings />
-						</div>
-					{/if}
+					{/key}
 				</div>
 			</main>
 		</div>

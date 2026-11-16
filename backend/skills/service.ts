@@ -1,6 +1,6 @@
 /**
  * Skill service — orchestrates the DB metadata table and the on-disk canonical
- * store for the Settings → Skills CRUD surface. The WS layer calls these; they
+ * store for the Library → Skills CRUD surface. The WS layer calls these; they
  * keep the `skills` table and `{clopenDir}/skills/<slug>/` in lockstep.
  *
  * Since migration 079 a skill covers BOTH ways of invoking a reusable prompt:
@@ -12,6 +12,7 @@
 
 import {
 	skillQueries,
+	skillVersionQueries,
 	parseTriggers,
 	stringifyTriggers,
 	parseUses,
@@ -37,6 +38,24 @@ import {
 	skillDirExists
 } from './store';
 import { fetchMarketplaceSkill } from './marketplace';
+
+/** Who made a revision, and why — recorded in the skill's version history. */
+export interface SkillRevisionMeta {
+	note?: string;
+	createdBy?: 'user' | 'assistant';
+}
+
+/**
+ * Every content change is a revision the owner can compare and revert to. A
+ * history write must never fail the save it describes, so errors are logged.
+ */
+function recordRevision(slug: string, content: string, note: string, createdBy: 'user' | 'assistant' = 'user'): void {
+	try {
+		skillVersionQueries.add(slug, content, note, createdBy);
+	} catch (error) {
+		debug.warn('skills', `Recording a revision of ${slug} failed:`, error);
+	}
+}
 
 /** A skill as surfaced to the Settings UI (DB metadata + on-disk presence). */
 export interface SkillDTO {
@@ -214,7 +233,7 @@ export const skillService = {
 	},
 
 	/** Create a skill from in-app editor fields. */
-	async create(input: SkillInputFields): Promise<SkillDTO> {
+	async create(input: SkillInputFields, revision: SkillRevisionMeta = {}): Promise<SkillDTO> {
 		if (!input.name.trim()) throw new Error('A skill name is required');
 		// The body IS the skill — an empty one loads nothing and runs nothing.
 		if (!input.body.trim()) throw new Error('Instructions are required');
@@ -232,12 +251,13 @@ export const skillService = {
 			argumentHint: input.argumentHint?.trim() || null,
 			uses: stringifyUses(input.uses)
 		});
+		recordRevision(slug, serializeSkillMd(skill), revision.note ?? 'Created', revision.createdBy);
 		debug.log('skills', `📦 Created skill: ${slug} (${stringifyTriggers(input.triggers)})`);
 		return toDTO(row, true);
 	},
 
 	/** Update an existing skill's editable fields and rewrite its SKILL.md. */
-	async update(id: number, input: SkillInputFields): Promise<SkillDTO> {
+	async update(id: number, input: SkillInputFields, revision: SkillRevisionMeta = {}): Promise<SkillDTO> {
 		const row = skillQueries.getById(id);
 		if (!row) throw new Error('Skill not found');
 		if (!input.body.trim()) throw new Error('Instructions are required');
@@ -256,6 +276,7 @@ export const skillService = {
 			argumentHint: input.argumentHint?.trim() || null,
 			uses: stringifyUses(input.uses)
 		});
+		recordRevision(row.slug, serializeSkillMd(skill), revision.note ?? 'Edited', revision.createdBy);
 		debug.log('skills', `🔧 Updated skill: ${row.slug}`);
 		return toDTO(skillQueries.getById(id)!, true);
 	},
@@ -389,6 +410,7 @@ export const skillService = {
 		if (!row) throw new Error('Skill not found');
 		await deleteSkillDir(row.slug);
 		skillQueries.remove(id);
+		skillVersionQueries.deleteAll(row.slug);
 		debug.log('skills', `🗑️ Deleted skill: ${row.slug}`);
 	}
 };

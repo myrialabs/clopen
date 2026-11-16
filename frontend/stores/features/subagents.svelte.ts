@@ -1,7 +1,7 @@
 /**
  * Subagents Store
  *
- * Reactive store for Settings → Subagents. Manages user-defined specialized
+ * Reactive store for Library → Subagents. Manages user-defined specialized
  * agent definitions (Skills-shaped + tool allowlist / model override) and
  * surfaces on-disk detection. Each engine materializes the enabled set at stream
  * start (native agents dir for Claude, a synthetic preamble for the rest).

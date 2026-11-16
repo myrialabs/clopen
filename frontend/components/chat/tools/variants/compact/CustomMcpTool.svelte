@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import type { ToolUseBlock } from '$shared/types/unified';
+	import SentFiles from '$frontend/components/assistant/SentFiles.svelte';
 	import { mcpServersStore } from '$frontend/stores/features/mcp-servers.svelte';
 	import { ToolRow } from './components';
 
@@ -21,4 +22,7 @@
 </script>
 
 <ToolRow icon="lucide:plug" {label} inlineCode={tool} />
+{#if tool === 'send' && toolInput.result}
+	<SentFiles content={toolInput.result.content} />
+{/if}
 

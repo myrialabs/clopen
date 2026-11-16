@@ -2,7 +2,7 @@
  * Pi Provider Presets Store
  *
  * The Pi provider catalog (id, name, supported auth modes) for the login picker.
- * Fetched from backend via `engine:pi-presets-list`.
+ * Fetched from backend via `agents:pi-presets-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -39,7 +39,7 @@ export const piPresetsStore = {
  * because nothing would ever ask for it again.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:pi-presets-list', {});
+	const result = await ws.http('agents:pi-presets-list', {});
 	presets = result.presets;
 	debug.log('settings', `Pi presets loaded: ${presets.length}`);
 }

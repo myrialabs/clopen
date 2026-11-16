@@ -28,6 +28,11 @@ export const sessionQueries = {
 		`).all(projectId) as ChatSession[];
 	},
 
+	/** Who opened the chat: the owner, a task, a flow, or Clopen itself. */
+	setOrigin(id: string, origin: 'owner' | 'task' | 'flow' | 'system'): void {
+		getDatabase().prepare('UPDATE chat_sessions SET origin = ? WHERE id = ?').run(origin, id);
+	},
+
 	getById(id: string): ChatSession | null {
 		const db = getDatabase();
 		return db.prepare(`
@@ -505,11 +510,19 @@ export const sessionQueries = {
 			}
 		}
 
+		// "New chat" pressed again on a chat nobody wrote in yet: that chat IS the
+		// new chat. Creating another left a trail of empty chats in the history.
+		const empty = this.getByProjectId(projectId).find(
+			(session) => (session.worktree_id ?? null) === (worktreeId ?? null) && !session.ended_at && (session.message_count ?? 0) === 0 && !session.head_message_id && (session.origin ?? 'owner') === 'owner'
+		);
+		if (empty) return empty;
+
 		// Create a new session (existing sessions stay active)
 		const now = new Date().toISOString();
+		void projectName;
 		return this.create({
 			project_id: projectId,
-			title: `Shared Chat - ${projectName} (${new Date().toLocaleString()})`,
+			title: 'New chat',
 			started_at: now,
 			ended_at: undefined,
 			head_session_id: undefined,

@@ -185,7 +185,7 @@ function persistChatGptLoginResult(accountName: string, reauthAccountId?: number
 
 export const codexAccountsHandler = createRouter()
 
-	.http('engine:codex-accounts-list', {
+	.http('agents:codex-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -212,7 +212,7 @@ export const codexAccountsHandler = createRouter()
 	})
 
 	// ─── API-key flow (paste-token) ───
-	.http('engine:codex-accounts-add-api-key', {
+	.http('agents:codex-accounts-add-api-key', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			apiKey: t.String({ minLength: 1 })
@@ -250,7 +250,7 @@ export const codexAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:codex-accounts-switch', {
+	.http('agents:codex-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -268,7 +268,7 @@ export const codexAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:codex-accounts-delete', {
+	.http('agents:codex-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -285,7 +285,7 @@ export const codexAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:codex-accounts-rename', {
+	.http('agents:codex-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -295,7 +295,7 @@ export const codexAccountsHandler = createRouter()
 
 	// Replace the API key for an api_key-mode account. ChatGPT accounts have no
 	// editable key — they re-authenticate via the login flow instead.
-	.http('engine:codex-accounts-update-api-key', {
+	.http('agents:codex-accounts-update-api-key', {
 		data: t.Object({ id: t.Number(), apiKey: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -316,7 +316,7 @@ export const codexAccountsHandler = createRouter()
 	// isn't a TTY), scan stdout for the URL/device-code prompt, surface it
 	// to the UI, then on success snapshot ~/.codex/auth.json into
 	// engine_accounts.credential.
-	.on('engine:codex-account-setup-start', {
+	.on('agents:codex-account-setup-start', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			deviceAuth: t.Optional(t.Boolean()),
@@ -337,9 +337,9 @@ export const codexAccountsHandler = createRouter()
 		// works off a Stack install instead of demanding a global one.
 		const codexCli = await resolveEngineCli('codex');
 		if (!codexCli) {
-			ws.emit.user(userId, 'engine:codex-account-setup-error', {
+			ws.emit.user(userId, 'agents:codex-account-setup-error', {
 				setupId,
-				message: 'Codex CLI not found. Install the engine via Settings → Stack.'
+				message: 'Codex CLI not found. Install the engine via Settings → Agents → Install.'
 			});
 			return;
 		}
@@ -367,7 +367,7 @@ export const codexAccountsHandler = createRouter()
 					env: ptyEnv,
 				});
 			} catch (err) {
-				ws.emit.user(userId, 'engine:codex-account-setup-error', {
+				ws.emit.user(userId, 'agents:codex-account-setup-error', {
 					setupId,
 					message: `Failed to start codex login: ${err instanceof Error ? err.message : String(err)}`
 				});
@@ -375,7 +375,7 @@ export const codexAccountsHandler = createRouter()
 			}
 
 			const timer = setTimeout(() => {
-				ws.emit.user(userId, 'engine:codex-account-setup-error', {
+				ws.emit.user(userId, 'agents:codex-account-setup-error', {
 					setupId,
 					message: 'Codex login timed out after 15 minutes'
 				});
@@ -404,7 +404,7 @@ export const codexAccountsHandler = createRouter()
 				entry.buffer += chunk;
 
 				// Stream raw PTY bytes to the UI's xterm.js (handles ANSI).
-				ws.emit.user(userId, 'engine:codex-account-setup-stream-data', {
+				ws.emit.user(userId, 'agents:codex-account-setup-stream-data', {
 					setupId,
 					data: chunk,
 				});
@@ -416,7 +416,7 @@ export const codexAccountsHandler = createRouter()
 					if (url) {
 						entry.urlEmitted = true;
 						debug.log('engine', `[${setupId}] Auth URL captured`);
-						ws.emit.user(userId, 'engine:codex-account-setup-url', {
+						ws.emit.user(userId, 'agents:codex-account-setup-url', {
 							setupId,
 							authUrl: url,
 						});
@@ -428,7 +428,7 @@ export const codexAccountsHandler = createRouter()
 					if (device) {
 						entry.urlEmitted = true;
 						debug.log('engine', `[${setupId}] Device code captured: ${device.code}`);
-						ws.emit.user(userId, 'engine:codex-account-setup-device-code', {
+						ws.emit.user(userId, 'agents:codex-account-setup-device-code', {
 							setupId,
 							code: device.code,
 							verificationUrl: device.verificationUrl,
@@ -442,13 +442,13 @@ export const codexAccountsHandler = createRouter()
 					const result = persistChatGptLoginResult(entry.accountName, entry.reauthAccountId);
 					if (result.ok) {
 						disposeCodexEngines().finally(() => {
-							ws.emit.user(userId, 'engine:codex-account-setup-complete', {
+							ws.emit.user(userId, 'agents:codex-account-setup-complete', {
 								setupId,
 								accountId: result.accountId,
 							});
 						});
 					} else {
-						ws.emit.user(userId, 'engine:codex-account-setup-error', {
+						ws.emit.user(userId, 'agents:codex-account-setup-error', {
 							setupId,
 							message: result.error,
 						});
@@ -471,19 +471,19 @@ export const codexAccountsHandler = createRouter()
 					const result = persistChatGptLoginResult(entry.accountName, entry.reauthAccountId);
 					if (result.ok) {
 						disposeCodexEngines().finally(() => {
-							ws.emit.user(userId, 'engine:codex-account-setup-complete', {
+							ws.emit.user(userId, 'agents:codex-account-setup-complete', {
 								setupId,
 								accountId: result.accountId,
 							});
 						});
 					} else {
-						ws.emit.user(userId, 'engine:codex-account-setup-error', {
+						ws.emit.user(userId, 'agents:codex-account-setup-error', {
 							setupId,
 							message: result.error,
 						});
 					}
 				} else {
-					ws.emit.user(userId, 'engine:codex-account-setup-error', {
+					ws.emit.user(userId, 'agents:codex-account-setup-error', {
 						setupId,
 						message: exitCode === 0
 							? 'Codex login exited without confirming success'
@@ -495,7 +495,7 @@ export const codexAccountsHandler = createRouter()
 		});
 	})
 
-	.on('engine:codex-account-setup-cancel', {
+	.on('agents:codex-account-setup-cancel', {
 		data: t.Object({ setupId: t.String() })
 	}, async ({ data }) => {
 		let entry: CodexLoginProcess;
@@ -510,28 +510,28 @@ export const codexAccountsHandler = createRouter()
 
 	// ─── Server → client events ───
 
-	.emit('engine:codex-account-setup-url', t.Object({
+	.emit('agents:codex-account-setup-url', t.Object({
 		setupId: t.String(),
 		authUrl: t.String()
 	}))
 
-	.emit('engine:codex-account-setup-device-code', t.Object({
+	.emit('agents:codex-account-setup-device-code', t.Object({
 		setupId: t.String(),
 		code: t.String(),
 		verificationUrl: t.String()
 	}))
 
-	.emit('engine:codex-account-setup-complete', t.Object({
+	.emit('agents:codex-account-setup-complete', t.Object({
 		setupId: t.String(),
 		accountId: t.Number()
 	}))
 
-	.emit('engine:codex-account-setup-error', t.Object({
+	.emit('agents:codex-account-setup-error', t.Object({
 		setupId: t.String(),
 		message: t.String()
 	}))
 
-	.emit('engine:codex-account-setup-stream-data', t.Object({
+	.emit('agents:codex-account-setup-stream-data', t.Object({
 		setupId: t.String(),
 		data: t.String()
 	}));

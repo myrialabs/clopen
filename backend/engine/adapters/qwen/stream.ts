@@ -161,7 +161,7 @@ export class QwenEngine implements AIEngine {
 	async getAvailableModels(): Promise<EngineModel[]> {
 		const env = getEngineEnv();
 		if (!env) {
-			throw new Error('Qwen Code is not configured. Add an API key in Settings → Engines → Qwen Code.');
+			throw new Error('Qwen Code is not configured. Add an API key in Settings → Agents → Qwen Code.');
 		}
 		const dynamic = await fetchQwenModels(env);
 		debug.log('engine', `Qwen getAvailableModels: ${dynamic.length} models from ${env.preset}`);
@@ -185,7 +185,7 @@ export class QwenEngine implements AIEngine {
 
 		const resolution = getEngineEnv(accountId);
 		if (!resolution) {
-			throw new Error('Qwen Code is not configured. Add an API key in Settings → Engines → Qwen Code.');
+			throw new Error('Qwen Code is not configured. Add an API key in Settings → Agents → Qwen Code.');
 		}
 		// Layered here rather than inside `getEngineEnv` because the identity is a
 		// property of the turn, while that function answers "which account".
@@ -450,7 +450,7 @@ export class QwenEngine implements AIEngine {
 
 		const resolution = getEngineEnv(accountId);
 		if (!resolution) {
-			throw new Error('Qwen Code is not configured. Add an API key in Settings → Engines → Qwen Code.');
+			throw new Error('Qwen Code is not configured. Add an API key in Settings → Agents → Qwen Code.');
 		}
 		const { env } = resolution;
 

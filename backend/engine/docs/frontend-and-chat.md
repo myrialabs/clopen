@@ -2,7 +2,7 @@
 
 ## 5. Frontend — Settings UI
 
-### 5.1 Settings → Engines
+### 5.1 Settings → Agents
 
 Files:
 - `frontend/components/settings/engines/AIEnginesSettings.svelte` — the shell:
@@ -31,16 +31,16 @@ Pattern:
   and is rendered both at the bottom "Add Account" area (new accounts) and in
   the edit form (re-auth), gated on `<engine>ReauthAccountId`. Clicking
   **Cancel** in the auth flow returns to the edit form.
-- For **Claude**: calls `engine:claude-status`. The "Add Account" button
-  starts `engine:claude-account-setup-start` and renders an xterm terminal
+- For **Claude**: calls `agents:claude-status`. The "Add Account" button
+  starts `agents:claude-account-setup-start` and renders an xterm terminal
   for debug + to display the auth URL.
-- For **Copilot**: calls `engine:copilot-status` and
+- For **Copilot**: calls `agents:copilot-status` and
   `copilotAccountsStore.fetch()`. "Add Account" submits a GitHub PAT
-  directly via `engine:copilot-accounts-add` (no PTY required).
-- For **OpenCode**: calls `engine:opencode-status` and
+  directly via `agents:copilot-accounts-add` (no PTY required).
+- For **OpenCode**: calls `agents:opencode-status` and
   `opencodeProvidersStore.fetchProviders()`. "Add Provider" picks from the
   `models.dev` catalog, fills in API key + extra env options (per
-  `catalogEntry.env[]`), and submits → `engine:opencode-provider-add`.
+  `catalogEntry.env[]`), and submits → `agents:opencode-provider-add`.
 - After an account switch / restart: refresh the relevant store
   (`claudeAccountsStore.refresh()` / `copilotAccountsStore.refresh()` /
   `opencodeProvidersStore.refreshProviders()`) and call
@@ -63,7 +63,7 @@ modelStore                 // models[], fetchModels(engine), refreshModels(engin
                            // getByEngine(engine), getById(modelId)
 ```
 
-### 5.2 Settings → Stack
+### 5.2 Settings → Agents → Install
 
 Files:
 - `frontend/components/settings/stack/StackSettings.svelte`
@@ -73,13 +73,13 @@ Files:
 (`git`, `chrome`, `cloudflared`) plus every engine SDK (`claude`, `opencode`,
 `copilot`, `codex`, `qwen`, `pi`, `cline`, `cursor`). `ToolInstallCard`:
 
-1. Calls `stack:status` on mount.
+1. Calls `agents:install-status` on mount.
 2. Renders: status (installed/version/source; engines also carry
    `requiredVersion` + `needsUpdate`), an "Install" button if
    `recipe.autoInstallable`, otherwise a "Manual install" dialog.
-3. While installing: `stack:install-start` → subscribe to
-   `stack:install-stream` (per-line) → render in xterm + show
-   exit status from `stack:install-finished`.
+3. While installing: `agents:install-start` → subscribe to
+   `agents:install-stream` (per-line) → render in xterm + show
+   exit status from `agents:install-finished`.
 4. The session survives navigation: if `activeSession` exists on refresh,
    re-attach to the same session id.
 
@@ -104,8 +104,8 @@ To add a new **host** tool (e.g. `goose`):
    and `install.ts`).
 4. Add `<ToolInstallCard tool="goose" title="Goose" description="…" />`
    in `StackSettings.svelte`.
-5. (Optional) expose detection in the `engine:<name>-status` handler so
-   Settings → Engines can show an "Installed" badge.
+5. (Optional) expose detection in the `agents:<name>-status` handler so
+   Settings → Agents can show an "Installed" badge.
 
 For a new **engine SDK**, you declare the pinned package instead of a resolver —
 see [stack](./stack.md) §7.7.

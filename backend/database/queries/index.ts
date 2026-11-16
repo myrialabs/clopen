@@ -65,3 +65,15 @@ export type {
 } from './channel-queries';
 export type { PushSubscription, PushSubscriptionInput } from './push-subscription-queries';
 export type { WorktreeBranchBindingRow, WorktreeBranchRow } from './worktree-branch-queries';
+export { missionQueries, parseCriteria } from './mission-queries';
+export type { MissionRow, MissionSessionRow, MissionEventRow } from './mission-queries';
+export { jobQueries } from './job-queries';
+export type { JobRow, JobRunRow, JobInput } from './job-queries';
+export { inboxQueries } from './inbox-queries';
+export type { InboxItemRow } from './inbox-queries';
+export { scriptQueries, parseParams } from './script-queries';
+export type { ScriptRow, ScriptInput } from './script-queries';
+export { skillVersionQueries, controlAuditQueries, taskRecordingQueries, dbAgentAccessQueries } from './assistant-misc-queries';
+export type { SkillVersionRow, ControlAuditRow, TaskRecordingRow } from './assistant-misc-queries';
+export { journalQueries, secretQueries, normaliseSecretName } from './journal-queries';
+export type { JournalEntryRow, SecretRow, SecretSummary } from './journal-queries';

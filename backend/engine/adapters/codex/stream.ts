@@ -19,6 +19,7 @@
  * `backend/ws/chat/stream.ts` to it — same pattern as Claude/OpenCode.
  */
 
+import { isAssistantProjectId } from '$backend/assistant/manager-policy';
 import type { Codex, Thread, ThreadOptions, Input as CodexInput } from '@openai/codex-sdk';
 import { loadEngineSdk } from '$backend/engine/sdk-loader';
 import type { EngineOutput, EngineModel } from '$shared/types/unified';
@@ -160,12 +161,12 @@ export class CodexEngine implements AIEngine {
 			? engineQueries.getAccount(accountId)
 			: engineQueries.getActiveAccountForEngine('codex');
 		if (!account) {
-			throw new Error('Codex is not configured. Add an OpenAI API key or sign in with ChatGPT in Settings → Engines → Codex.');
+			throw new Error('Codex is not configured. Add an OpenAI API key or sign in with ChatGPT in Settings → Agents → Codex.');
 		}
 
 		const credential = parseCodexCredential(account.credential);
 		if (!credential) {
-			throw new Error(`Codex account "${account.name}" has invalid credentials. Re-add it in Settings → Engines → Codex.`);
+			throw new Error(`Codex account "${account.name}" has invalid credentials. Re-add it in Settings → Agents → Codex.`);
 		}
 
 		// For ChatGPT mode, ensure ~/.codex/auth.json reflects this account
@@ -297,7 +298,9 @@ export class CodexEngine implements AIEngine {
 			model: modelId,
 			workingDirectory: resolvedProjectPath,
 			skipGitRepoCheck: true,
-			sandboxMode: 'danger-full-access',
+			// Codex has no per-call permission hook, so Clopen's own chat (a
+			// manager that must not write files itself) runs read-only.
+			sandboxMode: isAssistantProjectId(streamProjectId) ? 'read-only' : 'danger-full-access',
 			approvalPolicy: 'never',
 			modelReasoningEffort,
 			webSearchMode: 'cached',

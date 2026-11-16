@@ -135,7 +135,7 @@ export const workService = {
 	require(projectId: string, accountId: string): { adapter: WorkProviderAdapter; context: WorkContext } {
 		const account = integrationAccountQueries.getById(accountId);
 		if (!account) throw new Error('That integration account is no longer connected');
-		if (account.is_enabled !== 1) throw new Error(`${account.label} is switched off in Settings → Integrations`);
+		if (account.is_enabled !== 1) throw new Error(`${account.label} is switched off in Library → Integrations`);
 
 		const adapter = getWorkAdapter(account.provider);
 		if (!adapter) throw new Error(`Clopen has no issues adapter for "${account.provider}"`);

@@ -12,7 +12,7 @@
  *
  *  2. Repair — OpenCode needs an external CLI binary on top of its SDK
  *     (see engine-cli.ts). Earlier builds installed only the SDK, so machines
- *     bootstrapped by them carry a half-installed engine: Settings → Stack
+ *     bootstrapped by them carry a half-installed engine: Settings → Agents → Install
  *     reported it as ready while the adapter could not spawn it at all. Those
  *     installs are clopen's own doing, so clopen finishes them rather than
  *     asking the user to. The repair is deliberately narrow — the SDK must
@@ -20,7 +20,7 @@
  *     engine nobody asked for.
  *
  * Both run in the background at startup through the normal install runner, so
- * the work shows up as a live session in Settings → Stack instead of a silent
+ * the work shows up as a live session in Settings → Agents → Install instead of a silent
  * download; failures are non-fatal (engines stay installable by hand).
  */
 

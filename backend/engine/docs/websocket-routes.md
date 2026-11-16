@@ -7,57 +7,57 @@ in `backend/ws/index.ts`. Four groups are relevant for engines:
 
 | Group                           | Path                                | Purpose                                    |
 |---------------------------------|-------------------------------------|--------------------------------------------|
-| `engine:claude-*`               | `backend/ws/engine/claude/`         | Status + Claude account CRUD               |
-| `engine:opencode-*`             | `backend/ws/engine/opencode/`       | Status + provider/account CRUD + restart   |
-| `engine:copilot-*`              | `backend/ws/engine/copilot/`        | Status + Copilot account CRUD              |
+| `agents:claude-*`               | `backend/ws/engine/claude/`         | Status + Claude account CRUD               |
+| `agents:opencode-*`             | `backend/ws/engine/opencode/`       | Status + provider/account CRUD + restart   |
+| `agents:copilot-*`              | `backend/ws/engine/copilot/`        | Status + Copilot account CRUD              |
 | `stack:*`                       | `backend/ws/stack/`                 | Detect/install binaries                    |
 | `models:list`, `chat:stream`    | `backend/ws/settings/crud.ts`, `backend/ws/chat/stream.ts` | Model fetch + stream start |
 
-### 4.1 Claude — `engine:claude-*`
+### 4.1 Claude — `agents:claude-*`
 
 `backend/ws/engine/claude/index.ts` merges two sub-handlers:
 
 | Event                                       | Mode    | Purpose                                       |
 |---------------------------------------------|---------|-----------------------------------------------|
-| `engine:claude-status`                      | `.http` | `{ installed, version, activeAccount, accountsCount, backendOS }` |
-| `engine:claude-accounts-list`               | `.http` | List Claude accounts                          |
-| `engine:claude-accounts-switch`             | `.http` | Set active; calls `resetEnvironment()` so a new token is picked up on the next stream |
-| `engine:claude-accounts-delete`             | `.http` |                                               |
-| `engine:claude-accounts-rename`             | `.http` |                                               |
-| `engine:claude-account-setup-start`         | `.on`   | Spawn PTY `claude setup-token` (state machine `waiting-url → waiting-token → done`) |
-| `engine:claude-account-setup-submit`        | `.on`   | Send the auth code to the PTY                 |
-| `engine:claude-account-setup-cancel`        | `.on`   |                                               |
-| `engine:claude-account-setup-url` (emit)    |         | OAuth URL detected in PTY output              |
-| `engine:claude-account-setup-complete` (emit) |       | Token success → `engineQueries.createAccount` + `resetEnvironment()` |
-| `engine:claude-account-setup-error` (emit)  |         |                                               |
-| `engine:claude-account-setup-pty-data` (emit) |       | Stream raw PTY (debug)                        |
+| `agents:claude-status`                      | `.http` | `{ installed, version, activeAccount, accountsCount, backendOS }` |
+| `agents:claude-accounts-list`               | `.http` | List Claude accounts                          |
+| `agents:claude-accounts-switch`             | `.http` | Set active; calls `resetEnvironment()` so a new token is picked up on the next stream |
+| `agents:claude-accounts-delete`             | `.http` |                                               |
+| `agents:claude-accounts-rename`             | `.http` |                                               |
+| `agents:claude-account-setup-start`         | `.on`   | Spawn PTY `claude setup-token` (state machine `waiting-url → waiting-token → done`) |
+| `agents:claude-account-setup-submit`        | `.on`   | Send the auth code to the PTY                 |
+| `agents:claude-account-setup-cancel`        | `.on`   |                                               |
+| `agents:claude-account-setup-url` (emit)    |         | OAuth URL detected in PTY output              |
+| `agents:claude-account-setup-complete` (emit) |       | Token success → `engineQueries.createAccount` + `resetEnvironment()` |
+| `agents:claude-account-setup-error` (emit)  |         |                                               |
+| `agents:claude-account-setup-pty-data` (emit) |       | Stream raw PTY (debug)                        |
 
 The Claude setup flow needs a PTY because Anthropic's CLI is interactive.
 See `backend/ws/engine/claude/accounts.ts` for the state-machine details
 (one `onData` listener + one `onExit` per session, the phase tracked in a
 `phase` field).
 
-### 4.2 OpenCode — `engine:opencode-*`
+### 4.2 OpenCode — `agents:opencode-*`
 
 `backend/ws/engine/opencode/index.ts` merges:
 
 | Event                                       | Purpose                                       |
 |---------------------------------------------|-----------------------------------------------|
-| `engine:opencode-status`                    | `{ installed, version, backendOS }`           |
-| `engine:opencode-providers-list`            | List `engine_providers WHERE engine_type='opencode'` + accounts |
-| `engine:opencode-provider-add`              | Create provider + first account (auto-active) |
-| `engine:opencode-provider-remove`           | Cascades to accounts                          |
-| `engine:opencode-provider-toggle`           | Flip `is_enabled`                             |
-| `engine:opencode-provider-update-options`   | Update JSON options (handler validates JSON)  |
-| `engine:opencode-account-add`               | Add an account to a provider                  |
-| `engine:opencode-account-switch`            |                                               |
-| `engine:opencode-account-delete`            |                                               |
-| `engine:opencode-account-rename`            |                                               |
-| `engine:opencode-models-dev-list`           | Cached catalog (auto-fetches if absent)       |
-| `engine:opencode-models-dev-fetch`          | Force refetch                                 |
-| `engine:opencode-server-restart`            | Stop subprocess + clear stored URL → next stream spawns a fresh server |
+| `agents:opencode-status`                    | `{ installed, version, backendOS }`           |
+| `agents:opencode-providers-list`            | List `engine_providers WHERE engine_type='opencode'` + accounts |
+| `agents:opencode-provider-add`              | Create provider + first account (auto-active) |
+| `agents:opencode-provider-remove`           | Cascades to accounts                          |
+| `agents:opencode-provider-toggle`           | Flip `is_enabled`                             |
+| `agents:opencode-provider-update-options`   | Update JSON options (handler validates JSON)  |
+| `agents:opencode-account-add`               | Add an account to a provider                  |
+| `agents:opencode-account-switch`            |                                               |
+| `agents:opencode-account-delete`            |                                               |
+| `agents:opencode-account-rename`            |                                               |
+| `agents:opencode-models-dev-list`           | Cached catalog (auto-fetches if absent)       |
+| `agents:opencode-models-dev-fetch`          | Force refetch                                 |
+| `agents:opencode-server-restart`            | Stop subprocess + clear stored URL → next stream spawns a fresh server |
 
-`engine:opencode-server-restart` first checks whether any OpenCode stream
+`agents:opencode-server-restart` first checks whether any OpenCode stream
 is active: if so and `force` was not set, it returns
 `{ needsConfirmation: true, activeChats: N }` so the UI can ask for
 confirmation. When `force=true`, all OpenCode streams are `cancelStream`'d,
@@ -75,7 +75,7 @@ the cached client — the engine must be **restarted**. The adapter exposes
 a `*-server-restart` event; the UI surfaces this to the user as a
 **"Restart Server"** button in two places:
 
-1. **Settings → Engines** card — shown whenever the user has just changed
+1. **Settings → Agents** card — shown whenever the user has just changed
    provider/account state (add / remove / switch). See
    `engines/panels/OpenCodePanel.svelte::handleRestartServer` (with the
    `needsConfirmation` confirm-dialog flow) and
@@ -107,18 +107,18 @@ appropriate analog for shared-CLI-dotfile engines like Codex is the
 auth-blob swap (§10.13) — performed inside `accounts-switch`, not via a
 separate restart event.
 
-### 4.3 Copilot — `engine:copilot-*`
+### 4.3 Copilot — `agents:copilot-*`
 
 `backend/ws/engine/copilot/index.ts` merges:
 
 | Event                                | Purpose                                       |
 |--------------------------------------|-----------------------------------------------|
-| `engine:copilot-status`              | `{ installed, version, activeAccount, accountsCount, backendOS }` |
-| `engine:copilot-accounts-list`       | List Copilot accounts                         |
-| `engine:copilot-accounts-add`        | Add account by submitting a GitHub PAT        |
-| `engine:copilot-accounts-switch`     | Set active                                    |
-| `engine:copilot-accounts-delete`     |                                               |
-| `engine:copilot-accounts-rename`     |                                               |
+| `agents:copilot-status`              | `{ installed, version, activeAccount, accountsCount, backendOS }` |
+| `agents:copilot-accounts-list`       | List Copilot accounts                         |
+| `agents:copilot-accounts-add`        | Add account by submitting a GitHub PAT        |
+| `agents:copilot-accounts-switch`     | Set active                                    |
+| `agents:copilot-accounts-delete`     |                                               |
+| `agents:copilot-accounts-rename`     |                                               |
 
 The Copilot setup flow does not need a PTY — the user pastes a GitHub
 Personal Access Token in the UI (Copilot Requests + read:user scope), and
@@ -136,14 +136,14 @@ Surfaced in Settings as the **Stack** panel. `backend/ws/stack/`:
 
 | Event                              | Purpose                                     |
 |------------------------------------|---------------------------------------------|
-| `stack:status`              | Detect a single tool: `{ status, recipe, activeSession }` |
-| `stack:status-all`          | Hardcoded list `['git','claude','opencode','copilot','codex','qwen','pi','cline','cursor','chrome']` (host tools + on-demand engine SDKs) |
-| `stack:install-start`       | Spawn the recipe via `install-runner`       |
-| `stack:install-cancel`      |                                             |
-| `stack:install-session`     | Snapshot session (for re-attach)            |
-| `stack:install-started` (emit)  | Session begun                           |
-| `stack:install-stream` (emit)   | Per-line stdout/stderr                  |
-| `stack:install-finished` (emit) | exit code + final status                |
+| `agents:install-status`              | Detect a single tool: `{ status, recipe, activeSession }` |
+| `agents:install-status-all`          | Hardcoded list `['git','claude','opencode','copilot','codex','qwen','pi','cline','cursor','chrome']` (host tools + on-demand engine SDKs) |
+| `agents:install-start`       | Spawn the recipe via `install-runner`       |
+| `agents:install-cancel`      |                                             |
+| `agents:install-session`     | Snapshot session (for re-attach)            |
+| `agents:install-started` (emit)  | Session begun                           |
+| `agents:install-stream` (emit)   | Per-line stdout/stderr                  |
+| `agents:install-finished` (emit) | exit code + final status                |
 
 ### 4.5 `models:list` (in `backend/ws/settings/crud.ts`)
 
@@ -219,8 +219,8 @@ Each adapter that has a `presets.ts` ships a thin WS router exposing it:
 
 | Engine    | WS event                                 | Frontend store                                    |
 |-----------|------------------------------------------|---------------------------------------------------|
-| `qwen`    | `engine:qwen-presets-list`               | `qwenPresetsStore` (`frontend/stores/features/qwen-presets.svelte.ts`) |
-| `opencode`| `engine:opencode-models-dev-list` (+ `…-fetch` to refresh) | `opencodeProvidersStore.catalog` (`frontend/stores/features/opencode-providers.svelte.ts`) |
+| `qwen`    | `agents:qwen-presets-list`               | `qwenPresetsStore` (`frontend/stores/features/qwen-presets.svelte.ts`) |
+| `opencode`| `agents:opencode-models-dev-list` (+ `…-fetch` to refresh) | `opencodeProvidersStore.catalog` (`frontend/stores/features/opencode-providers.svelte.ts`) |
 
 The rule: **frontend never imports `$backend` directly**. Runtime values
 the frontend needs (model lists, presets, …) flow through WS endpoints;

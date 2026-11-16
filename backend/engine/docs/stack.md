@@ -97,14 +97,14 @@ additionally carry `requiredVersion` + `needsUpdate`):
    pinned static-curl if needed, prepends its dir to PATH).
 4. `Bun.spawn(spawnArgs, { stdout: 'pipe', stderr: 'pipe', stdin: 'ignore', env })`.
 5. Streams stdout/stderr per-line into a ring buffer (10k lines) + emits
-   `stack:install-stream` to the user room.
+   `agents:install-stream` to the user room.
 6. After a successful engine install, prunes the stack dir
    (`pruneStackDependencies`): `bun remove`s packages that
    `knownStackEnginePackages()` no longer lists, then sweeps `node_modules`
    entries `bun.lock` does not resolve — bun leaves a dropped package's
    platform binary behind on its own. Skipped while another install shares
    the dir; a failed prune never fails the install.
-7. On exit: emits `stack:install-finished` + retains the session
+7. On exit: emits `agents:install-finished` + retains the session
    for 5 minutes for re-attach.
 
 The other managed stacks prune themselves too: the embedding artifact removes
@@ -125,7 +125,7 @@ or SIGTERM with actual total/free memory readings.
 4. Add the literal to `TOOL_UNION` (`status.ts`, `install.ts`).
 5. Add `<ToolInstallCard tool="goose" ... />` in
    `StackSettings.svelte`.
-6. (Optional) detect in `engine:<engine>-status` so Settings → Engines
+6. (Optional) detect in `agents:<engine>-status` so Settings → Agents
    knows the binary is installed.
 
 ### 7.7 Adding a new engine SDK
@@ -174,7 +174,7 @@ closes that gap: `ensureDefaultEngineInstalled()` runs the `opencode` recipe in
 the background (OpenCode is the one free, no-account engine) and no-ops the
 moment **any** engine SDK is present, so it never fights a user who
 deliberately removed it. Failures are non-fatal — everything stays installable
-from Settings → Stack.
+from Settings → Agents → Install.
 
 Two details that were bugs before they were rules:
 

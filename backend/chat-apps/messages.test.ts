@@ -198,7 +198,13 @@ describe('menus and confirmations', () => {
 		const card = menuCard('AbC123xyZ9', [{ text: 'Pick' }], [{ label: 'Home' }, { label: 'shop', current: true }]);
 		expect((card.buttons ?? []).flat().map((button) => button.label)).toEqual(['Home', '✓ shop']);
 		expect(buttonData(card)).toEqual(['AbC123xyZ9:0', 'AbC123xyZ9:1']);
-		expect(cardText(card)).toContain('2. shop ✓');
+		// The buttons are the list: no numbered copy of them above.
+		expect(cardText(card)).toBe('Pick');
+	});
+
+	it('writes the items out only when they carry what a button cannot show', () => {
+		const card = menuCard('AbC123xyZ9', [{ text: 'Pick' }], [{ label: 'Home', detail: '~/home' }, { label: 'shop', current: true, detail: '~/code/shop' }]);
+		expect(cardText(card)).toContain('2. shop ✓ · ~/code/shop');
 	});
 
 	it('a long menu lists its items only as buttons', () => {

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import RecordTaskButton from './RecordTaskButton.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { onDestroy } from 'svelte';
 
@@ -581,6 +582,8 @@
 					<Icon name="lucide:keyboard" class="h-4 w-4" />
 				</button>
 			{/if}
+
+			<RecordTaskButton />
 
 			<button
 				type="button"

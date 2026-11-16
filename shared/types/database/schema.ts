@@ -64,6 +64,7 @@ export interface ChatSession {
 	profile_id?: number | null; // Active Profile bundle for this session (null = use project default / none)
 	reasoning_effort?: string | null; // Reasoning/thinking level token (native per engine; null = engine default)
 	worktree_id?: string | null; // Isolated worktree this session runs in (null = main project tree)
+	origin?: 'owner' | 'task' | 'flow' | 'system'; // Who opened it — runs stay out of the owner's history
 
 	// ── HEAD state (re-derived when HEAD changes: undo/redo/restore/branch) ──
 	head_message_id?: string; // Git-like HEAD pointer to current branch tip

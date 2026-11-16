@@ -24,11 +24,11 @@ export function handleStreamError(error: unknown): void {
 	}
 
 	if (error.message.includes('ENOENT') || error.message.includes('spawn codex')) {
-		throw new Error('Codex CLI not found. Install it via Settings → Stack (or run `bun add -g @openai/codex`).');
+		throw new Error('Codex CLI not found. Install it via Settings → Agents → Install (or run `bun add -g @openai/codex`).');
 	}
 
 	if (error.message.includes('OPENAI_API_KEY') || error.message.includes('not authenticated')) {
-		throw new Error('Codex is not authenticated. Add an OpenAI API key or sign in with ChatGPT in Settings → Engines → Codex.');
+		throw new Error('Codex is not authenticated. Add an OpenAI API key or sign in with ChatGPT in Settings → Agents → Codex.');
 	}
 
 	if (error.message.includes('insufficient_quota') || error.message.includes('quota')) {
@@ -36,7 +36,7 @@ export function handleStreamError(error: unknown): void {
 	}
 
 	if (error.message.includes('401') || error.message.toLowerCase().includes('unauthorized')) {
-		throw new Error('Codex authentication failed. Re-authenticate in Settings → Engines → Codex.');
+		throw new Error('Codex authentication failed. Re-authenticate in Settings → Agents → Codex.');
 	}
 
 	throw new Error(extractDetailedError(error));

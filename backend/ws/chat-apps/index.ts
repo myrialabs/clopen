@@ -10,6 +10,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
+import { channelRuntime } from '$backend/chat-apps/runtime';
 import {
 	cancelPairingLink,
 	createPairingLink,
@@ -41,6 +42,8 @@ const BOT_SCHEMA = t.Object({
 	originSource: t.Union([t.Literal('configured'), t.Literal('domain'), t.Literal('tunnel'), t.Null()]),
 	connection: t.Union([t.Literal('connecting'), t.Literal('open'), t.Literal('closed'), t.Null()]),
 	error: t.Union([t.String(), t.Null()]),
+	retryInSeconds: t.Union([t.Number(), t.Null()]),
+	attempt: t.Number(),
 	control: t.Boolean(),
 	links: t.Array(LINK_SCHEMA)
 });
@@ -61,6 +64,15 @@ export const chatAppsRouter = createRouter()
 		response: t.Array(BOT_SCHEMA)
 	}, async ({ data }) => {
 		return listChannelBots(data.requestOrigin);
+	})
+
+	/** Reconnect a bot now, instead of waiting for its next attempt. */
+	.http('chat-apps:reconnect', {
+		data: t.Object({ accountId: t.String() }),
+		response: OK
+	}, async ({ data }) => {
+		await channelRuntime.reconnect(data.accountId);
+		return { ok: true };
 	})
 
 	.http('chat-apps:pair', {

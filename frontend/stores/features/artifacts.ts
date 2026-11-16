@@ -1,5 +1,5 @@
 /**
- * Shared artifact types for the Settings → Subagents editor.
+ * Shared artifact types for the Library → Subagents editor.
  *
  * Model and tool overrides are per-engine: a map keyed by `EngineType` where an
  * absent entry means "inherit" (model) or "all tools" (allowlist) for that

@@ -32,7 +32,7 @@
 	} from '$frontend/stores/ui/project-selection.svelte';
 	import { initializeSessions } from '$frontend/stores/core/sessions.svelte';
 	import { initializeNotifications, notificationStore } from '$frontend/stores/ui/notification.svelte';
-	import { applyServerSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
+	import { applyServerSettings, applyPendingWizardSettings, loadSystemSettings } from '$frontend/stores/features/settings.svelte';
 	import { loadUserState } from '$frontend/stores/core/user-state.svelte';
 	import { applyTodoPanelState } from '$frontend/stores/ui/todo-panel.svelte';
 	import { applyCommandUsage } from '$frontend/stores/ui/command-usage.svelte';
@@ -40,8 +40,43 @@
 	import { updateTitleBadge } from '$frontend/services/title.service';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
+	import { isAssistantProject } from '$shared/utils/assistant-project';
+	import { assistantStore } from '$frontend/stores/features/assistant.svelte';
+	import { initDataSync } from '$frontend/services/data-sync';
+	import NeedsYouModal from '$frontend/components/assistant/NeedsYouModal.svelte';
+	import LibraryModal from '$frontend/components/library/LibraryModal.svelte';
 
 	const { children } = $props();
+
+	/** Set once per tab, so a reload stays where it was and only a fresh open follows "Open with". */
+	const STARTED_KEY = 'clopen:tab-started';
+
+	/**
+	 * Which project to open. A fresh tab opens Clopen (the assistant) unless the
+	 * owner chose "My last project"; a reload — or a link to a session — keeps
+	 * the restored project, because yanking someone out of what they were
+	 * looking at on F5 is not a start.
+	 */
+	async function startProjectId(restored: string | null): Promise<string | null> {
+		let freshTab = true;
+		try {
+			freshTab = !sessionStorage.getItem(STARTED_KEY);
+			sessionStorage.setItem(STARTED_KEY, '1');
+		} catch {
+			// Storage unavailable: treat as a reload and keep the restored project.
+			freshTab = false;
+		}
+		if (!freshTab || window.location.hash.startsWith('#session/')) return restored;
+		try {
+			const settings = await ws.http('assistant:settings-get', {});
+			if (settings.startView === 'workspace' && restored) return restored;
+			const projects = (await ws.http('projects:list', {})) as Array<{ id: string; kind?: string }>;
+			return projects.find((project) => isAssistantProject(project as never))?.id ?? restored;
+		} catch (error) {
+			debug.warn('workspace', 'Choosing the start view failed, keeping the restored project:', error);
+			return restored;
+		}
+	}
 
 	// Responsive state
 	let isMobile = $state(false);
@@ -98,6 +133,7 @@
 			// user's saved settings on the next change.
 			if (serverState) {
 				applyServerSettings(serverState.settings);
+				applyPendingWizardSettings();
 			}
 			applyTodoPanelState(serverState?.todoPanelState);
 			applyCommandUsage(serverState?.commandUsage);
@@ -123,7 +159,7 @@
 			try {
 				// Step 5: Load projects (with server-restored currentProjectId)
 				setProgress(50, 'Loading projects...');
-				await initializeProjects(serverState?.currentProjectId);
+				await initializeProjects(await startProjectId(serverState?.currentProjectId ?? null));
 
 				// Step 6: Load sessions
 				setProgress(70, 'Restoring sessions...');
@@ -132,7 +168,12 @@
 				if (isRestoringProject) appState.isRestoring = false;
 			}
 
-			// Step 7: Ready
+			// Step 7: The assistant's overview (Inbox badge, tasks) and its live updates,
+			// and auto-sync for changes made anywhere else
+			assistantStore.init();
+			initDataSync();
+
+			// Step 8: Ready
 			setProgress(100, 'Ready!');
 		} catch (error) {
 			debug.error('workspace', 'Initialization error:', error);
@@ -204,6 +245,10 @@
 
 <!-- Settings Modal -->
 <SettingsModal />
+
+<!-- Library and Inbox — reachable from anywhere -->
+<LibraryModal />
+<NeedsYouModal />
 
 <!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
 <FilePeekModal />

@@ -9,7 +9,7 @@
  * a message, not a late answer. A command clears it.
  */
 
-export type Awaiting = { kind: 'question'; rowId: string } | { kind: 'ask'; rowId: string };
+export type Awaiting = { kind: 'question'; rowId: string } | { kind: 'ask'; rowId: string } | { kind: 'card'; rowId: string };
 
 const AWAIT_TTL_MS = 10 * 60 * 1000;
 
@@ -24,7 +24,7 @@ export function takeAwaiting(linkId: string): Awaiting | null {
 	const entry = awaiting.get(linkId);
 	awaiting.delete(linkId);
 	if (!entry || Date.now() - entry.at > AWAIT_TTL_MS) return null;
-	return entry.kind === 'question' ? { kind: 'question', rowId: entry.rowId } : { kind: 'ask', rowId: entry.rowId };
+	return { kind: entry.kind, rowId: entry.rowId } as Awaiting;
 }
 
 /** Is the chat waiting to type into this row? */

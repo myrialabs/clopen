@@ -18,13 +18,13 @@ import type { WSRouter } from '$shared/utils/ws-server';
 import { ws } from '$backend/utils/ws';
 import type { AuthUser } from '$backend/auth/auth-service';
 
-let router: Pick<WSRouter, 'invoke'> | null = null;
+let router: Pick<WSRouter, 'invoke' | 'describeRoutes'> | null = null;
 
-export function registerControlRouter(instance: Pick<WSRouter, 'invoke'>): void {
+export function registerControlRouter(instance: Pick<WSRouter, 'invoke' | 'describeRoutes'>): void {
 	router = instance;
 }
 
-function requireRouter(): Pick<WSRouter, 'invoke'> {
+function requireRouter(): Pick<WSRouter, 'invoke' | 'describeRoutes'> {
 	if (!router) throw new Error('The control surface is not ready yet');
 	return router;
 }
@@ -41,4 +41,9 @@ export async function callRouteAs<T = unknown>(
 	} finally {
 		ws.closeVirtualConnection(conn);
 	}
+}
+
+/** Every route the WebSocket API has, with its schemas. */
+export function describeRoutes(): ReturnType<WSRouter['describeRoutes']> {
+	return requireRouter().describeRoutes();
 }

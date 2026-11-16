@@ -1,5 +1,5 @@
 /**
- * Subagents Router — Settings → Subagents CRUD + on-disk detection.
+ * Subagents Router — Library → Subagents CRUD + on-disk detection.
  */
 
 import { createRouter } from '$shared/utils/ws-server';

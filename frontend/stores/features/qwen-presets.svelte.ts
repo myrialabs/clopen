@@ -2,7 +2,7 @@
  * Qwen Provider Presets Store
  *
  * Caches the static Qwen preset catalog (DashScope CN/INTL, OpenRouter,
- * Fireworks) fetched from the backend via `engine:qwen-presets-list`. The
+ * Fireworks) fetched from the backend via `agents:qwen-presets-list`. The
  * runtime data lives with the adapter at
  * `backend/engine/adapters/qwen/presets.ts` — the frontend mirrors it through
  * this store so it never imports from `$backend` directly.
@@ -50,7 +50,7 @@ export const qwenPresetsStore = {
  * never silently re-points an account at a different endpoint.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:qwen-presets-list', {});
+	const result = await ws.http('agents:qwen-presets-list', {});
 	presets = result.presets;
 	defaultPreset = result.defaultPreset;
 	debug.log('settings', `Qwen presets loaded: ${presets.length}`);

@@ -1,14 +1,14 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openAgentsInstall, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 
 	const { errorText }: { errorText: string } = $props();
 
-	// Engine-setup errors embed a "Settings → Stack" / "Settings → Engines"
+	// Engine-setup errors embed a "Settings → Agents → Install" / "Settings → Agents"
 	// phrase; surface a one-click button that opens the matching settings section.
 	const setupAction = $derived.by(() => {
-		if (errorText.includes('Settings → Stack')) return { label: 'Open Stack', section: 'stack' as const };
-		if (errorText.includes('Settings → Engines')) return { label: 'Open Engines', section: 'engines' as const };
+		if (errorText.includes('Settings → Agents → Install')) return { label: 'Install it', install: true };
+		if (errorText.includes('Settings → Agents')) return { label: 'Open Agents', install: false };
 		return null;
 	});
 	
@@ -65,7 +65,7 @@
 				<button
 					type="button"
 					class="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 transition-colors"
-					onclick={() => openSettingsModal(setupAction.section)}
+					onclick={() => (setupAction.install ? openAgentsInstall() : openSettingsModal('agents'))}
 				>
 					<Icon name="lucide:arrow-right" class="w-3.5 h-3.5" />
 					{setupAction.label}

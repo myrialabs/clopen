@@ -17,6 +17,7 @@ import { permissionSetQueries, subagentQueries, type PermissionScope } from '$ba
 import { getEnabledExternalServers, listExternalServerTools } from '$backend/mcp';
 import { isBestEffortTarget, parseEngineMap } from '$backend/artifacts';
 import { debug } from '$shared/utils/logger';
+import { ASSISTANT_DENIED_TOOLS, isAssistantProjectId } from '$backend/assistant/manager-policy';
 import { mergeLayers, pickEngineSet, isToolAllowed, hasAnyRestriction, type ResolvedPermissions } from './resolve';
 
 /** Engine keys used by the artifact matrix (config-dir slugs). */
@@ -65,7 +66,10 @@ export function resolvePermissionsFromDb(engine: EngineType, projectId?: string,
 	const profile = profileId != null
 		? pickEngineSet(permissionSetQueries.getForProfile(profileId), engine)
 		: undefined;
-	return mergeLayers([global, project, profile]);
+	// Clopen's own chat is a manager: the engine's file-writing and shell tools
+	// are withheld there whatever else is configured (see manager-policy.ts).
+	const manager = isAssistantProjectId(projectId) ? { allow: [], deny: ASSISTANT_DENIED_TOOLS[engine] ?? [] } : undefined;
+	return mergeLayers([global, project, profile, manager]);
 }
 
 /** One engine's stored rules for the Settings UI (scopes flattened by caller). */

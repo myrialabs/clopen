@@ -1,5 +1,5 @@
 /**
- * Profiles Router — Settings → Profiles CRUD + per-session picker + project
+ * Profiles Router — Library → Toolsets CRUD + per-session picker + project
  * default + per-profile permission overlay.
  */
 

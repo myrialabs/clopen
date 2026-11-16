@@ -24,6 +24,7 @@ import { INITIAL_NODE_ID } from '../../snapshot/helpers';
 import { requireSessionAccess } from '../access';
 import { bridgeStreamToRoom, startChatStream } from './stream';
 import { registerComposer } from '../../chat-apps';
+import { registerPromptSubmitter } from '../../assistant/prompt';
 
 // ============================================================================
 // State
@@ -200,6 +201,7 @@ export function replaceQueuedPrompt(chatSessionId: string, queueId: string, cont
 }
 
 registerComposer({ submit: submitPrompt, replaceQueued: replaceQueuedPrompt });
+registerPromptSubmitter(submitPrompt, replaceQueuedPrompt);
 
 // ============================================================================
 // Lifecycle

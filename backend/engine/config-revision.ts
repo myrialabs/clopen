@@ -97,7 +97,7 @@ function fire(revision: number): void {
 	// `models:list` route rather than duplicated into this event. This is what
 	// used to happen as a side effect of the restart button's success path.
 	try {
-		ws.emit.global('engine:config-changed', { revision });
+		ws.emit.global('agents:config-changed', { revision });
 	} catch (error) {
 		debug.warn('engine', 'Failed to broadcast engine:config-changed', error);
 	}

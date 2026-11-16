@@ -33,17 +33,25 @@ import { getMcpServiceToken } from './service-token';
  * Type-safe: Server names and tool names are validated at compile time!
  */
 export const mcpServersConfig: Record<ServerName, ServerConfig> = {
-	"browser-automation": {
+	"browser": {
 		enabled: true,
-		// One tool. Every browser capability is an action inside `actions`, so a
+		// One tool. Every browser capability is an action inside `browse`, so a
 		// whole interaction is one call and the agent decides what to batch.
-		tools: ["actions"]
+		tools: ["browse"]
 	},
-	"memory-graph": {
+	"memory": {
 		enabled: true,
-		// Same shape: every graph capability is an operation inside `memory`, so
+		// Same shape: every memory operation is a step inside `remember`, so
 		// recalling a memory and then walking its neighbours is a single call.
-		tools: ["memory"]
+		tools: ["remember"]
+	},
+	"control": {
+		enabled: true,
+		// Clopen itself: intent tools for what is asked most (delegate, automate,
+		// remind, connect, send, ask, status), and `run` for every other action.
+		// Tool names are unique across servers on purpose: engines that reach the
+		// internal bridge see one namespace, so two tools called the same would collide.
+		tools: ["delegate", "automate", "remind", "connect", "send", "ask", "status", "run"]
 	}
 };
 
@@ -182,7 +190,7 @@ export { abortedToolResult };
  * Get list of all allowed MCP tool names
  *
  * Tool names follow the format: mcp__{server-name}__{tool-name}
- * Example: "mcp__browser-automation__navigate"
+ * Example: "mcp__browser__browse"
  */
 export function getAllowedMcpTools(): string[] {
 	const tools: string[] = [];
@@ -246,7 +254,7 @@ export function isToolEnabled(serverName: string, toolName: string): boolean {
  * Parse MCP tool name into components
  *
  * Format: mcp__{server-name}__{tool-name}
- * Example: "mcp__browser-automation__navigate"
+ * Example: "mcp__browser__browse"
  */
 export function parseMcpToolName(fullName: string): ParsedMcpToolName | null {
 	if (!fullName.startsWith('mcp__')) {
@@ -410,7 +418,7 @@ export function resolveOpenCodeToolName(toolName: string): string | null {
 	// observed in the wild depending on the engine's SDK; Qwen prepends the
 	// full `mcp__<namespace>__` form so the bare tool name still needs to be
 	// re-resolved against the registry to land on the correct server alias
-	// (`mcp__browser-automation__open_new_tab`, not `mcp__clopen-mcp__...`).
+	// (`mcp__browser__browse`, not `mcp__clopen-mcp__...`).
 	let rawName = toolName;
 	let strippedNamespace = false;
 	for (const prefix of ['mcp__clopen-mcp__', 'clopen-mcp_', 'clopen-mcp-']) {

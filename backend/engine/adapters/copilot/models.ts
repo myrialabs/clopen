@@ -63,7 +63,7 @@ function withAuto(infos: ModelInfo[]): ModelInfo[] {
  */
 function summariseModelsError(raw: string): string {
 	const firstLine = raw.split('\n')[0]?.replace(/^Request models\.list failed with message:\s*/, '').trim() || raw;
-	const fix = 'Update the token in Settings → Engines → Copilot.';
+	const fix = 'Update the token in Settings → Agents → Copilot.';
 
 	if (raw.includes('Not authenticated')) {
 		return `GitHub rejected the Copilot account's token — it is invalid, expired or revoked. ${fix}`;

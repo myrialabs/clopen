@@ -461,7 +461,7 @@
 <Dialog
 	bind:isOpen={showRestoreConfirm}
 	type="warning"
-	title="Undo to Checkpoint"
+	title="Go back to here"
 	message={`Are you sure you want to undo to this checkpoint?
 "${getMessagePreview()}"
 This will restore your conversation to this point.`}

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
-	import { settingsModalState, clearEngineFocus, setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { settingsModalState, clearEngineFocus } from '$frontend/stores/ui/settings-modal.svelte';
 	import { DEFAULT_ENGINE, ENGINES } from '$shared/constants/engines';
 	import type { EngineType } from '$shared/types/unified';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
@@ -21,6 +21,7 @@
 	import ClinePanel from './panels/ClinePanel.svelte';
 	import CursorPanel from './panels/CursorPanel.svelte';
 	import OpenCodePanel from './panels/OpenCodePanel.svelte';
+	import ToolInstallCard from '../stack/ToolInstallCard.svelte';
 	import type {
 		ClaudeCodeStatus,
 		OpenCodeStatus,
@@ -35,14 +36,8 @@
 	interface Props {
 		showHeader?: boolean;
 		compact?: boolean;
-		/**
-		 * Override for the "Open Stack" action shown when an engine isn't installed.
-		 * In the Settings modal this defaults to routing to the Stack section; the
-		 * setup Wizard passes a callback that returns to its Stack step instead.
-		 */
-		onOpenStack?: () => void;
 	}
-	const { showHeader = true, compact = false, onOpenStack }: Props = $props();
+	const { showHeader = true, compact = false }: Props = $props();
 
 	// Opens on the DEFAULT engine, not a hardcoded one. It is the engine a fresh
 	// install actually gets, the first card in `ENGINES`, and the one every other
@@ -108,7 +103,7 @@
 	async function refreshClaudeCodeStatus() {
 		isLoadingClaudeCodeStatus = true;
 		try {
-			claudeCodeStatus = await ws.http('engine:claude-status', {});
+			claudeCodeStatus = await ws.http('agents:claude-status', {});
 			if (claudeCodeStatus?.installed) {
 				await claudeAccountsStore.refresh();
 			}
@@ -121,7 +116,7 @@
 	async function refreshOpenCodeStatus() {
 		isLoadingOpenCodeStatus = true;
 		try {
-			openCodeStatus = await ws.http('engine:opencode-status', {});
+			openCodeStatus = await ws.http('agents:opencode-status', {});
 		} catch {
 			openCodeStatus = null;
 		}
@@ -136,7 +131,7 @@
 	async function refreshCopilotStatus() {
 		isLoadingCopilotStatus = true;
 		try {
-			copilotStatus = await ws.http('engine:copilot-status', {});
+			copilotStatus = await ws.http('agents:copilot-status', {});
 			if (copilotStatus?.installed) {
 				await copilotAccountsStore.refresh();
 			}
@@ -149,7 +144,7 @@
 	async function refreshCodexStatus() {
 		isLoadingCodexStatus = true;
 		try {
-			codexStatus = await ws.http('engine:codex-status', {});
+			codexStatus = await ws.http('agents:codex-status', {});
 			await codexAccountsStore.refresh();
 		} catch {
 			codexStatus = null;
@@ -160,7 +155,7 @@
 	async function refreshQwenStatus() {
 		isLoadingQwenStatus = true;
 		try {
-			qwenStatus = await ws.http('engine:qwen-status', {});
+			qwenStatus = await ws.http('agents:qwen-status', {});
 			if (qwenStatus?.installed) {
 				await qwenAccountsStore.refresh();
 			}
@@ -173,7 +168,7 @@
 	async function refreshPiStatus() {
 		isLoadingPiStatus = true;
 		try {
-			piStatus = await ws.http('engine:pi-status', {});
+			piStatus = await ws.http('agents:pi-status', {});
 			if (piStatus?.installed) await piAccountsStore.refresh();
 		} catch {
 			piStatus = null;
@@ -184,7 +179,7 @@
 	async function refreshClineStatus() {
 		isLoadingClineStatus = true;
 		try {
-			clineStatus = await ws.http('engine:cline-status', {});
+			clineStatus = await ws.http('agents:cline-status', {});
 			if (clineStatus?.installed) await clineAccountsStore.refresh();
 		} catch {
 			clineStatus = null;
@@ -195,13 +190,43 @@
 	async function refreshCursorStatus() {
 		isLoadingCursorStatus = true;
 		try {
-			cursorStatus = await ws.http('engine:cursor-status', {});
+			cursorStatus = await ws.http('agents:cursor-status', {});
 			if (cursorStatus?.installed) await cursorAccountsStore.refresh();
 		} catch {
 			cursorStatus = null;
 		}
 		isLoadingCursorStatus = false;
 	}
+
+	/** The install tool behind each agent. */
+	const INSTALL_TOOL: Record<EngineType, 'claude' | 'opencode' | 'copilot' | 'codex' | 'qwen' | 'pi' | 'cline' | 'cursor'> = {
+		'claude-code': 'claude',
+		opencode: 'opencode',
+		copilot: 'copilot',
+		codex: 'codex',
+		qwen: 'qwen',
+		pi: 'pi',
+		cline: 'cline',
+		cursor: 'cursor'
+	};
+
+	const REFRESH: Record<string, () => Promise<void>> = {
+		claude: refreshClaudeCodeStatus,
+		opencode: refreshOpenCodeStatus,
+		copilot: refreshCopilotStatus,
+		codex: refreshCodexStatus,
+		qwen: refreshQwenStatus,
+		pi: refreshPiStatus,
+		cline: refreshClineStatus,
+		cursor: refreshCursorStatus
+	};
+
+	// An agent installed right here (or anywhere) moves on to "Sign in" at once.
+	$effect(() =>
+		ws.on('agents:install-finished', (payload: { tool: string; status: string }) => {
+			if (payload.status === 'success') void REFRESH[payload.tool]?.();
+		})
+	);
 
 	onMount(async () => {
 		await Promise.all([
@@ -221,15 +246,13 @@
 	{#if showHeader}
 		<!-- Header -->
 		<div class="mb-4">
-			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Engines</h3>
-			<p class="text-sm text-slate-600 dark:text-slate-500">
-				Connect accounts and configure providers for your AI engines.
-			</p>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Agents</h3>
+			<p class="text-sm text-slate-600 dark:text-slate-500">Install, sign in, ready.</p>
 		</div>
 	{/if}
 
-	<!-- Engine selector grid -->
-	<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5 mb-6">
+	<!-- Engines: compact chips, like every engine choice — a dot says where each one stands. -->
+	<div class="flex flex-wrap gap-1.5 mb-6" role="tablist" aria-label="Agents">
 		{#each ENGINES as eng (eng.type)}
 			{@const isActive = activeEngine === eng.type}
 			{@const stat =
@@ -241,33 +264,24 @@
 				eng.type === 'pi' ? { installed: piStatus?.installed ?? null, count: piAccounts.length } :
 				eng.type === 'cline' ? { installed: clineStatus?.installed ?? null, count: clineAccounts.length } :
 				{ installed: cursorStatus?.installed ?? null, count: cursorAccounts.length }}
-			{@const countLabel = `${stat.count} account${stat.count === 1 ? '' : 's'}`}
+			{@const ready = stat.installed === true && (stat.count > 0 || eng.type === 'opencode')}
+			{@const state = stat.installed === false ? 'Not installed' : stat.installed === null ? 'Checking' : ready ? (stat.count > 0 ? 'Ready' : 'Ready · free') : 'Sign in'}
 			<button
 				type="button"
-				class="flex items-center gap-2.5 p-3 overflow-hidden border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+				role="tab"
+				aria-selected={isActive}
+				class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors
 					{isActive
-						? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
-						: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
+						? 'border-violet-500 bg-violet-500/10 text-violet-700 dark:text-violet-300'
+						: 'border-slate-200 dark:border-slate-700 bg-transparent text-slate-600 dark:text-slate-300 hover:border-violet-500/40'}"
 				onclick={() => { activeEngine = eng.type; }}
-				title={eng.name}
+				title={`${eng.name} · ${state}`}
 			>
-				<div class="shrink-0 flex items-center justify-center w-5 h-5 [&>svg]:w-5 [&>svg]:h-5">
+				<span class="shrink-0 flex items-center justify-center w-4 h-4 [&>svg]:w-4 [&>svg]:h-4">
 					{@html isDarkMode() ? eng.icon.dark : eng.icon.light}
-				</div>
-				<div class="flex-1 min-w-0">
-					<div class="font-bold text-sm text-slate-900 dark:text-slate-100 truncate">{eng.name}</div>
-					{#if !compact}
-						<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-							{#if stat.installed === false}
-								Not installed
-							{:else if stat.installed === null}
-								—
-							{:else}
-								{countLabel}
-							{/if}
-						</div>
-					{/if}
-				</div>
+				</span>
+				{eng.name}
+				<span class="w-1.5 h-1.5 rounded-full shrink-0 {ready ? 'bg-emerald-500' : stat.installed === false ? 'bg-slate-300 dark:bg-slate-600' : stat.installed === null ? 'bg-slate-200 dark:bg-slate-700' : 'bg-amber-500'}" aria-label={state}></span>
 			</button>
 		{/each}
 	</div>
@@ -275,23 +289,9 @@
 	<!-- Active engine pane -->
 	<div class="space-y-6">
 		{#if activeStatus && activeStatus.installed === false}
-			<div class="flex items-start gap-3 p-4 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10">
-				<svg viewBox="0 0 24 24" fill="none" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" aria-hidden="true">
-					<path d="M12 9v4M12 17h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-				</svg>
-				<div class="flex-1 min-w-0">
-					<p class="text-sm text-amber-900 dark:text-amber-100">
-						Engine "{activeEngine}" is not installed. Open Settings → Stack to install it before using this engine.
-					</p>
-					<button
-						type="button"
-						class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-						onclick={() => (onOpenStack ? onOpenStack() : setActiveSection('stack'))}
-					>
-						Open Stack
-					</button>
-				</div>
-			</div>
+			<!-- Install here, then sign in below — no detour through a separate list. -->
+			{@const engine = ENGINES.find((entry) => entry.type === activeEngine)}
+			<ToolInstallCard tool={INSTALL_TOOL[activeEngine]} title={engine?.name ?? activeEngine} description="Install it, then sign in here." />
 		{:else if activeEngine === 'claude-code'}
 			<ClaudeCodePanel status={claudeCodeStatus} isLoading={isLoadingClaudeCodeStatus} />
 		{:else if activeEngine === 'copilot'}

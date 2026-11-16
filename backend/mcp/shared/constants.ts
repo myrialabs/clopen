@@ -75,8 +75,14 @@ export function slugifyRegistryName(name: string): string {
 		.replace(/[^a-z0-9]+/g, '-')
 		.replace(/^-+|-+$/g, '');
 	if (!slug) slug = 'server';
-	if (slug === INTERNAL_PREFIX || slug.startsWith(`${INTERNAL_PREFIX}-`) || slug.startsWith(INTERNAL_PREFIX)) {
+	if (slug === INTERNAL_PREFIX || slug.startsWith(`${INTERNAL_PREFIX}-`) || slug.startsWith(INTERNAL_PREFIX) || RESERVED_INTERNAL_NAMES.has(slug)) {
 		slug = `x-${slug}`;
 	}
 	return slug;
 }
+
+/**
+ * Names of Clopen's own servers. Claude Code addresses an in-process server by
+ * its name, so an external server with the same slug would shadow one of ours.
+ */
+export const RESERVED_INTERNAL_NAMES: ReadonlySet<string> = new Set(['browser', 'memory', 'control']);

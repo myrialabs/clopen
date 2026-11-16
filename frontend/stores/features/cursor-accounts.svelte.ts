@@ -3,7 +3,7 @@
  *
  * Shared reactive store for Cursor accounts (one API key per account).
  * Used by AIEnginesSettings (and any future Cursor-aware UI) to stay in sync.
- * Fetches from backend via `engine:cursor-accounts-list`.
+ * Fetches from backend via `agents:cursor-accounts-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -58,7 +58,7 @@ export const cursorAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:cursor-accounts-list', {});
+	const result = await ws.http('agents:cursor-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Cursor accounts loaded: ${accounts.length}`);
 }

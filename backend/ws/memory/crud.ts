@@ -1,5 +1,5 @@
 /**
- * Memory Graph handlers (the Memory modal + Settings → Infrastructure → Memory).
+ * Memory Graph handlers (the Memory modal + Settings → Memory).
  *
  *   - memory:graph        — nodes/edges for the visualization, with communities
  *   - memory:node         — one node plus its neighbourhood, for the inspector

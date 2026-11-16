@@ -3,7 +3,7 @@
  *
  * Shared reactive store for Pi accounts. Each account is tied to a pi-ai
  * provider (Anthropic, OpenAI, …) and an auth type (api_key or oauth).
- * Fetches from backend via `engine:pi-accounts-list`.
+ * Fetches from backend via `agents:pi-accounts-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -62,7 +62,7 @@ export const piAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:pi-accounts-list', {});
+	const result = await ws.http('agents:pi-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Pi accounts loaded: ${accounts.length}`);
 }

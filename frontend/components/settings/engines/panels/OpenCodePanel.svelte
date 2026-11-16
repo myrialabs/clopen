@@ -4,7 +4,7 @@
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
 	import { debug } from '$shared/utils/logger';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openAgentsInstall } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import { opencodeProvidersStore, type OpenCodeProviderItem, type OpenCodeAccountItem, type ModelsDevProviderItem } from '$frontend/stores/features/opencode-providers.svelte';
 	import { settings, togglePinnedModel } from '$frontend/stores/features/settings.svelte';
@@ -262,7 +262,7 @@
 		if (!ocEditingProviderId || !ocEditBaseUrl.trim()) return;
 		ocEditFetching = true;
 		try {
-			const result = await ws.http('engine:opencode-provider-fetch-models', {
+			const result = await ws.http('agents:opencode-provider-fetch-models', {
 				id: ocEditingProviderId,
 			}) as { models: { id: string; name?: string }[] };
 			if (result.models.length === 0) throw new Error('No models returned');
@@ -463,7 +463,7 @@
 	}
 
 	function openStackSection() {
-		setActiveSection('stack');
+		openAgentsInstall();
 	}
 </script>
 

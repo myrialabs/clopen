@@ -23,8 +23,8 @@ import { debug } from '$shared/utils/logger';
 import { requireProjectAccess } from '../access';
 import { runProjectCleanups } from '../../projects/project-cleanup-registry';
 import '../../projects/project-cleanup';
-import { ensureHomeProject } from '../../projects/home';
-import { homeFirst, isHomeProject } from '$shared/utils/home-project';
+import { ensureAssistantProject } from '../../assistant/project';
+import { assistantFirst, isAssistantProject } from '$shared/utils/assistant-project';
 
 export const crudHandler = createRouter()
 	// List projects in the workspace
@@ -35,8 +35,8 @@ export const crudHandler = createRouter()
 		await initializeDatabase();
 		// Home is always there, listed first — the place a chat with no project
 		// selected lives, and where a fresh install lands.
-		ensureHomeProject();
-		return homeFirst(projectQueries.getListed());
+		ensureAssistantProject();
+		return assistantFirst(projectQueries.getListed());
 	})
 
 	// Create new project (or re-list an existing project at the same path)
@@ -57,7 +57,7 @@ export const crudHandler = createRouter()
 		const existing = projectQueries.getByPath(path);
 		// Home is already listed, as Home; a second entry for its folder would
 		// be the same workspace twice.
-		if (existing && isHomeProject(existing)) throw new Error('That folder is the Home workspace and cannot be added as a project');
+		if (existing && isAssistantProject(existing)) throw new Error('That folder is the Home workspace and cannot be added as a project');
 		if (existing) {
 			projectQueries.list(existing.id);
 			return existing;
@@ -104,7 +104,7 @@ export const crudHandler = createRouter()
 		})
 	}, async ({ data }) => {
 		const target = requireProjectAccess(data.id);
-		if (isHomeProject(target)) throw new Error('Home cannot be removed');
+		if (isAssistantProject(target)) throw new Error('Home cannot be removed');
 
 		const mode = data.mode ?? 'remove';
 

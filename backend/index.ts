@@ -41,6 +41,7 @@ import { securityMiddleware } from './middleware/security';
 // Database initialization
 import { initializeDatabase, closeDatabase } from './database';
 import { bootstrapAfterDbInit } from './bootstrap';
+import { startAssistant, stopAssistant } from './assistant';
 import { startEngineConfigWatcher } from './engine/config-revision';
 import { startEngineHotReload } from './engine/hot-reload';
 import { pruneStaleChromeBuilds } from './engine/install-recipes';
@@ -73,13 +74,16 @@ import { pushRoute } from './http/push';
 // HTTP routes for SFTP transfer — same reason as the file upload route above.
 import { sshSftpRoute } from './http/ssh-sftp';
 import { notesImagesRoute } from './http/notes-images';
+import { assistantFilesRoute } from './http/assistant-files';
+import { taskHooksRoute } from './http/task-hooks';
 import { integrationHooksRoute } from './http/integration-hooks';
 
 // Import browser preview manager for graceful shutdown
 import { browserPreviewServiceManager } from './preview';
 
 // MCP remote server for Open Code custom tools
-import { handleMcpRequest, handleExternalMcpRequest, handleProjectMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
+import { handleMcpRequest, handleExternalMcpRequest, handleProjectMcpRequest, closeMcpServer } from './mcp';
+import { handleOAuthCallback } from './mcp/external/oauth-callback';
 
 // Auth middleware
 import { checkRouteAccess, PUBLIC_ROUTES } from './auth/permissions';
@@ -98,9 +102,13 @@ import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
 import { flushEpisodicIngest, stopExtractionRunner } from './memory/extract';
 import { stopMemoryMaintenance } from './memory/maintenance';
+import { installDataSync } from './ws/system/data-sync';
 
 /** How often (ms) the auth gate re-confirms a connection's session against the DB. */
 const SESSION_REVALIDATE_MS = 15_000;
+
+// Announce data changes to every open device after each write (auto-sync)
+installDataSync(wsRouter);
 
 // Register auth gate on WebSocket router — blocks unauthenticated access
 wsRouter.setAuthMiddleware(async (conn, action) => {
@@ -210,23 +218,7 @@ const app = new Elysia()
 	// redirected here after the user consents; we exchange the code for tokens
 	// (stored against the server) and show a self-closing confirmation page. The
 	// Settings panel polls `mcp:status` to pick up the new connected state.
-	.get('/api/mcp/oauth/callback', async ({ query }) => {
-		const { code, state, error } = query as { code?: string; state?: string; error?: string };
-		const page = (title: string, body: string) =>
-			new Response(
-				`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}div{text-align:center;max-width:28rem;padding:2rem}h1{font-size:1.1rem}p{color:#94a3b8;font-size:.9rem}</style></head><body><div><h1>${title}</h1><p>${body}</p><script>setTimeout(()=>window.close(),2500)</script></div></body></html>`,
-				{ headers: { 'Content-Type': 'text/html' } }
-			);
-		if (error) return page('Sign-in failed', `The authorization server returned: ${error}. You can close this tab and try again.`);
-		if (!code || !state) return page('Sign-in failed', 'Missing authorization code. You can close this tab and try again.');
-		try {
-			await completeAuthorization(state, code);
-			return page('Connected', 'Sign-in complete. You can close this tab and return to Clopen.');
-		} catch (err) {
-			const message = err instanceof Error ? err.message : 'Unknown error';
-			return page('Sign-in failed', `${message}. You can close this tab and try again.`);
-		}
-	})
+	.get('/api/mcp/oauth/callback', ({ query }) => handleOAuthCallback(query as { code?: string; state?: string; error?: string }))
 
 	// HTTP file transfer — mounted before the WS plugin so /api/files/* stays
 	// on the HTTP path through the Vite dev proxy.
@@ -245,6 +237,8 @@ const app = new Elysia()
 
 	// Notes images
 	.use(notesImagesRoute)
+	.use(assistantFilesRoute)
+	.use(taskHooksRoute)
 
 	// Inbound third-party events. Unauthenticated by necessity — it verifies a
 	// per-provider signature over the raw bytes instead of a session.
@@ -336,6 +330,10 @@ async function startServer() {
 		// machine. Idle-cheap too — a machine with no runtime is remembered as
 		// having none, so the tick costs a cached lookup and no command at all.
 		containerMonitor.start();
+		// The Clopen assistant: missions react to finished turns, the learning
+		// loop watches for repetition, and the job scheduler starts its clock.
+		// Long-lived like the monitors above, so not in bootstrapAfterDbInit().
+		startAssistant();
 	} catch (error) {
 		console.error('❌ Database initialization failed — refusing to start:', error);
 		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);
@@ -428,6 +426,7 @@ async function gracefulShutdown() {
 		// own — and the queue is a table, so whatever is left is picked up on the next
 		// start rather than lost.
 		stopMemoryMaintenance();
+		stopAssistant();
 		stopExtractionRunner();
 		await flushEpisodicIngest();
 		// Close database connection

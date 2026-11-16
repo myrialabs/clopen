@@ -27,7 +27,7 @@
 
 	const TYPE_META: { type: ProfileItemType; label: string; icon: IconName }[] = [
 		{ type: 'skill', label: 'Skills', icon: 'lucide:graduation-cap' },
-		{ type: 'subagent', label: 'Subagents', icon: 'lucide:bot' },
+		{ type: 'subagent', label: 'Specialists', icon: 'lucide:bot' },
 		{ type: 'mcp', label: 'Integrations', icon: 'lucide:plug' }
 	];
 
@@ -242,9 +242,9 @@
 	<div class="flex items-start justify-between gap-3">
 		{#if showHeader}
 			<div>
-				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Profiles</h3>
+				<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Toolsets</h3>
 				<p class="text-sm text-slate-600 dark:text-slate-500">
-					Reusable tool bundles. Pick one per session to scope what's active.
+					Bundles of skills, subagents, MCP tools and permissions. Pick one per chat to choose what the agent can use.
 				</p>
 			</div>
 		{:else}
@@ -344,8 +344,7 @@
 			<Input label="Description" type="text" placeholder="What this profile is for" bind:value={edDescription} />
 
 			<p class="text-xs text-slate-500 dark:text-slate-400">
-				Pick the artifacts this profile activates. An item stays active even if globally disabled;
-				a type left empty is not restricted.
+				What this profile turns on. An empty type is not restricted.
 			</p>
 
 			{#each TYPE_META as tm}
@@ -389,8 +388,7 @@
 				</button>
 				{#if showPerms}
 					<p class="text-xs text-slate-500 dark:text-slate-400 mt-2">
-						Extra per-engine allow/deny applied while this profile is active. Deny always adds a
-						restriction (unioned with global/project rules).
+						Extra allow/deny rules while this profile is on.
 					</p>
 					<!-- Engine tabs -->
 					<div class="flex flex-wrap gap-1 mt-3">

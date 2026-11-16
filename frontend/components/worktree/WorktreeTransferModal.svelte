@@ -38,8 +38,8 @@
 	let resolutions = $state<Record<string, MergeResolution>>({});
 	let expandedPaths = $state<Set<string>>(new Set());
 
-	const sourceLabel = $derived(direction === 'apply' ? worktree?.name ?? 'worktree' : 'Main');
-	const targetLabel = $derived(direction === 'apply' ? 'Main' : worktree?.name ?? 'worktree');
+	const sourceLabel = $derived(direction === 'apply' ? worktree?.name ?? 'copy' : 'Main');
+	const targetLabel = $derived(direction === 'apply' ? 'Main' : worktree?.name ?? 'copy');
 	const title = $derived(direction === 'apply' ? 'Apply to Main' : 'Sync from Main');
 
 	const cleanChanges = $derived(preview?.changes.filter((change) => !change.conflict) ?? []);

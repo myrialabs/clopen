@@ -130,7 +130,7 @@
 		updateCheckState = 'idle';
 		latestVersion = null;
 		try {
-			const res = await ws.http('stack:status', { tool });
+			const res = await ws.http('agents:install-status', { tool });
 			status = res.status;
 			recipe = res.recipe;
 			if (res.activeSession && res.activeSession.status === 'running' && !sessionId) {
@@ -196,7 +196,7 @@
 
 	onMount(() => {
 		cleanups.push(
-			ws.on('stack:install-started', (payload) => {
+			ws.on('agents:install-started', (payload) => {
 				if (payload.tool !== tool) return;
 				expanded = true;
 				sessionId = payload.sessionId;
@@ -206,11 +206,11 @@
 				pendingBuffer = '';
 				viewer?.clear();
 			}),
-			ws.on('stack:install-stream', (payload) => {
+			ws.on('agents:install-stream', (payload) => {
 				if (payload.sessionId !== sessionId) return;
 				writeToTerminal(payload.line + '\r\n');
 			}),
-			ws.on('stack:install-finished', (payload) => {
+			ws.on('agents:install-finished', (payload) => {
 				if (payload.sessionId !== sessionId) return;
 				sessionStatus = payload.status;
 				exitCode = payload.exitCode;
@@ -244,7 +244,7 @@
 		if (!status?.installed) return;
 		updateCheckState = 'checking';
 		try {
-			const res = await ws.http('stack:check-update', {
+			const res = await ws.http('agents:install-check-update', {
 				tool,
 				installedVersion: status.version
 			});
@@ -271,7 +271,7 @@
 		viewer?.clear();
 		await tick();
 		try {
-			const res = await ws.http('stack:install-start', { tool });
+			const res = await ws.http('agents:install-start', { tool });
 			sessionId = res.sessionId;
 		} catch (err: unknown) {
 			errorMessage = err instanceof Error ? err.message : 'Failed to start install';
@@ -287,7 +287,7 @@
 	async function doCancel() {
 		if (!sessionId) return;
 		try {
-			await ws.http('stack:install-cancel', { sessionId });
+			await ws.http('agents:install-cancel', { sessionId });
 		} catch {
 			// Ignore — status will update via stream event
 		}
@@ -378,7 +378,7 @@
 				{#if status.needsUpdate && status.requiredVersion}
 					<div class="flex items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
 						<Icon name="lucide:circle-alert" class="w-3.5 h-3.5 shrink-0" />
-						<span>Update to <span class="font-mono font-medium">{status.requiredVersion}</span> required before this engine can be used.</span>
+						<span>Update to <span class="font-mono font-medium">{status.requiredVersion}</span> needed before this agent works.</span>
 					</div>
 				{/if}
 				{#if status.source}

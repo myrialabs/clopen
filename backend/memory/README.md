@@ -244,7 +244,7 @@ is never overwritten.
 Failures retry with backoff (15s → 45s → 2m → 6m → 15m). A checksum mismatch or
 an unpublished release stop instead, because waiting cannot turn the wrong bytes
 into the right ones. `MemorySetupBanner.svelte` reports what is missing and
-Settings → Infrastructure → Memory has a manual install.
+Settings → Memory has a manual install.
 
 ---
 
@@ -283,7 +283,7 @@ Split across two settings screens on purpose:
 
 - **Settings → Model → Memory** — which model writes memories. The only place
   memory uses a model at all.
-- **Settings → Infrastructure → Memory** — what memory does: master switch,
+- **Settings → Memory** — what memory does: master switch,
   record memories, auto-recall.
 
 Stored in the `settings` table via `config.ts`. Mutations are admin-only

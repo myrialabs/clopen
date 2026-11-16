@@ -30,7 +30,7 @@ export function handleStreamError(error: unknown): void {
 		|| lower.includes('no auth')
 		|| lower.includes('invalid api key')
 	) {
-		throw new Error('Pi is not authenticated for the selected provider. Add or re-authenticate the account in Settings → Engines → Pi.');
+		throw new Error('Pi is not authenticated for the selected provider. Add or re-authenticate the account in Settings → Agents → Pi.');
 	}
 
 	if (lower.includes('quota') || lower.includes('insufficient_quota') || lower.includes('429') || lower.includes('rate limit')) {

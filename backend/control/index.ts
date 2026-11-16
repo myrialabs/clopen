@@ -19,12 +19,13 @@ import { Value } from '@sinclair/typebox/value';
 import type { AuthUser } from '$backend/auth/auth-service';
 import { callRouteAs } from './invoke';
 import { CONTROL_GROUP_LABELS, type ControlAction, type ControlContext, type ControlGroup, type ControlResult, type ControlTarget } from './types';
-import { browseFolders, createProject, deleteFolder, goHome, listProjects, makeFolder, openProject, renameFolder } from './actions/projects';
+import { browseFolders, createProject, deleteFolder, goToAssistant, listProjects, makeFolder, openProject, renameFolder } from './actions/projects';
 import { deleteSession, dropQueued, listSessions, newSession, openSession, runningSessions, searchSessions, sessionStatus, showQueue, stopSession } from './actions/sessions';
 import { listSkills, runSkill } from './actions/skills';
 import { getFile, turnDiff } from './actions/files';
 import { listEngines, listModels, listReasoning, setModel, setReasoning } from './actions/models';
 import { listAccounts, switchAccount } from './actions/accounts';
+import { ASSISTANT_CONTROL_ACTIONS } from './actions/assistant';
 
 export type { ControlAction, ControlChoice, ControlContext, ControlFile, ControlGroup, ControlResult, ControlTarget, ControlCommand } from './types';
 export { CONTROL_GROUP_LABELS } from './types';
@@ -51,7 +52,7 @@ export const CONTROL_ACTIONS: readonly ControlAction[] = [
 	runSkill,
 	listProjects,
 	openProject,
-	goHome,
+	goToAssistant,
 	browseFolders,
 	makeFolder,
 	renameFolder,
@@ -63,7 +64,8 @@ export const CONTROL_ACTIONS: readonly ControlAction[] = [
 	listReasoning,
 	setReasoning,
 	listAccounts,
-	switchAccount
+	switchAccount,
+	...ASSISTANT_CONTROL_ACTIONS
 ] as unknown as ControlAction[];
 
 const byId = new Map(CONTROL_ACTIONS.map((action) => [action.id, action]));
@@ -150,7 +152,12 @@ export interface CommandEntry {
 	hint: string | null;
 	description: string;
 	group: string;
+	/** In the short `/` menu; the rest are under "More". */
+	menu: boolean;
 }
+
+/** The order of the everyday menu — what a chat app shows when "/" is typed. */
+export const MENU_ORDER = ['chats', 'tasks', 'stop', 'clear', 'help'];
 
 /**
  * Every command that can be typed, in one order: a surface's own commands
@@ -159,13 +166,14 @@ export interface CommandEntry {
  * they can never disagree about what exists.
  */
 export function commandReference(
-	extra: Array<{ command: string; description: string; hint?: string | null }> = []
+	extra: Array<{ command: string; description: string; hint?: string | null; menu?: boolean }> = []
 ): CommandEntry[] {
 	const own = extra.map((entry) => ({
 		command: entry.command,
 		hint: entry.hint ?? null,
 		description: entry.description,
-		group: CONTROL_GROUP_LABELS.conversation
+		group: CONTROL_GROUP_LABELS.conversation,
+		menu: Boolean(entry.menu)
 	}));
 	const byGroup = new Map<ControlGroup, ControlAction[]>();
 	for (const action of commandActions()) {
@@ -178,25 +186,29 @@ export function commandReference(
 			command: action.command!.name,
 			hint: action.command!.argument?.hint ?? null,
 			description: action.description,
-			group: CONTROL_GROUP_LABELS[group]
+			group: CONTROL_GROUP_LABELS[group],
+			menu: Boolean(action.command!.menu)
 		}))
 	);
 	return [...own, ...catalog];
 }
 
-/** Help as Markdown, grouped — `commandReference()` written out. */
-export function controlHelp(extra: Array<{ command: string; description: string; hint?: string | null }> = []): string {
-	const lines: string[] = [];
-	let group: string | null = null;
-	for (const entry of commandReference(extra)) {
-		if (entry.group !== group) {
-			if (group !== null) lines.push('');
-			lines.push(`**${entry.group}**`);
-			group = entry.group;
-		}
-		lines.push(`/${entry.command}${entry.hint ? ` ${entry.hint}` : ''}: ${entry.description}`);
-	}
-	return lines.join('\n');
+/** The everyday commands, in menu order. */
+export function menuCommands(extra: Array<{ command: string; description: string; hint?: string | null; menu?: boolean }> = []): CommandEntry[] {
+	const rank = (command: string) => {
+		const index = MENU_ORDER.indexOf(command);
+		return index < 0 ? MENU_ORDER.length : index;
+	};
+	return commandReference(extra)
+		.filter((entry) => entry.menu)
+		.sort((a, b) => rank(a.command) - rank(b.command));
+}
+
+/** Help as Markdown: the everyday menu first, then everything else under "More". */
+export function controlHelp(extra: Array<{ command: string; description: string; hint?: string | null; menu?: boolean }> = []): string {
+	const line = (entry: CommandEntry) => `/${entry.command}${entry.hint ? ` ${entry.hint}` : ''}: ${entry.description}`;
+	const more = commandReference(extra).filter((entry) => !entry.menu);
+	return [...menuCommands(extra).map(line), '', '**More**', ...more.map(line)].join('\n');
 }
 
 /** The catalog as data — what an MCP server will publish as its tool schema. */

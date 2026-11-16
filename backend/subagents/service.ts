@@ -1,6 +1,6 @@
 /**
  * Subagent service — keeps the `subagents` table and the on-disk canonical store
- * in lockstep for Settings → Subagents. Skills-shaped, plus a per-engine tool
+ * in lockstep for Library → Subagents. Skills-shaped, plus a per-engine tool
  * allowlist and per-engine model override (JSON maps keyed by EngineType). The
  * canonical `.md` holds only name/description/body; model & tools are injected
  * per engine at sync time.

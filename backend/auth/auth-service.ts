@@ -5,7 +5,8 @@
  * signs in from any number of devices; every device is an auth session.
  */
 
-import { authQueries } from '$backend/database/queries';
+import { authQueries, settingsQueries } from '$backend/database/queries';
+import { ONBOARDING_VERSION } from '$shared/constants/onboarding';
 import { readSystemSettings, writeSystemSettings } from '$backend/settings/system-settings';
 import { generateSessionToken, generatePAT, generateDeviceCode, hashToken, getTokenType } from './tokens';
 import { generateColorFromString, getInitials } from '$backend/utils/user-helpers';
@@ -92,11 +93,15 @@ export function needsSetup(): boolean {
 /**
  * Onboarding (setup wizard) state.
  *
- * `pending` is only ever reported when we positively know the wizard is
- * unfinished — a fresh install, or a run that recorded the marker and has not
- * completed yet. Everything else resolves to `complete`, because sending a
- * working instance back through the wizard is destructive: it re-asks for the
- * auth mode and lets the user overwrite live settings.
+ * The wizard is versioned (`ONBOARDING_VERSION`). An install is onboarded once
+ * it completed the CURRENT version; an install that completed an older one —
+ * every v0.4 upgrade — goes through the wizard once more, which pre-fills what
+ * it already chose, so re-running it changes nothing the owner does not change.
+ *
+ * The completed version lives in its own settings row, written only by
+ * `markOnboardingComplete()`. It used to live in the system-settings blob, where
+ * a stray full-blob write could drop it and flap a working install back into
+ * the wizard; a row nobody else writes cannot be dropped that way.
  *
  * `getOnboardingState()` deliberately does NOT catch read failures. A database
  * error must surface to the caller instead of being reported as "never
@@ -105,42 +110,40 @@ export function needsSetup(): boolean {
  */
 export type OnboardingState = 'pending' | 'complete';
 
+/** The settings row holding the wizard version this install last completed. */
+export const ONBOARDING_VERSION_KEY = 'system:onboarding-version';
+
+export function completedOnboardingVersion(): number {
+	const raw = settingsQueries.get(ONBOARDING_VERSION_KEY)?.value;
+	const version = raw === undefined || raw === null ? 0 : Number(raw);
+	return Number.isFinite(version) ? version : 0;
+}
+
 export function getOnboardingState(): OnboardingState {
-	const stored = readSystemSettings();
-
-	// `onboarding` is the current marker; `onboardingComplete` is the legacy
-	// boolean, still read (and written) so a downgrade keeps working.
-	if (stored.onboarding === 'complete' || stored.onboardingComplete === true) return 'complete';
-	if (stored.onboarding === 'pending') return 'pending';
-
-	// No marker at all. An install that already has an owner has, by
-	// definition, been through setup — the wizard is what created it. Record that so a
-	// single missing key can never flap the whole instance back to setup.
-	if (!needsSetup()) {
-		markOnboardingComplete();
-		debug.log('auth', 'Onboarding marker missing but the owner exists — recorded as complete');
-		return 'complete';
-	}
-
+	if (completedOnboardingVersion() >= ONBOARDING_VERSION) return 'complete';
+	// Read for its failure mode as much as its value: an unreadable blob throws
+	// here instead of being mistaken for an install that never onboarded.
+	readSystemSettings();
 	return 'pending';
 }
 
-/** True when the setup wizard has been completed. */
+/** True when the current setup wizard has been completed. */
 export function isOnboardingComplete(): boolean {
 	return getOnboardingState() === 'complete';
 }
 
 /**
- * Record that a fresh install has entered the wizard, so a refresh mid-setup
- * resumes it instead of being mistaken for a completed install.
+ * Record that the wizard is in progress, so a refresh mid-setup resumes it.
+ * The legacy markers are kept in step for a downgrade onto the same database.
  */
 export function markOnboardingPending(): void {
 	writeSystemSettings({ onboarding: 'pending', onboardingComplete: false });
 }
 
-/** Record that the wizard finished. Writes both the current and legacy markers. */
+/** Record that the current wizard finished. */
 export function markOnboardingComplete(): void {
-	writeSystemSettings({ onboarding: 'complete', onboardingComplete: true });
+	settingsQueries.set(ONBOARDING_VERSION_KEY, String(ONBOARDING_VERSION));
+	writeSystemSettings({ onboarding: 'complete', onboardingComplete: true, onboardingVersion: ONBOARDING_VERSION });
 }
 
 /**

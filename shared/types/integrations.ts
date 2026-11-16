@@ -2,7 +2,7 @@
  * Third-party integrations — shared vocabulary.
  *
  * A connected account is NOT a feature. It is a credential with capabilities.
- * Settings → Integrations is where you connect; what an integration DOES lives
+ * Library → Integrations is where you connect; what an integration DOES lives
  * in the surface that owns that kind of work. These types are the contract
  * between the two, and they are shared because the hub renders provider
  * metadata the backend registry declares.

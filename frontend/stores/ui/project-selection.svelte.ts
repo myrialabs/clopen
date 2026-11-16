@@ -25,7 +25,7 @@ import {
 } from '$frontend/utils/project-list';
 import { debug } from '$shared/utils/logger';
 import type { Project } from '$shared/types/database/schema';
-import { isHomeProject } from '$shared/utils/home-project';
+import { isAssistantProject } from '$shared/utils/assistant-project';
 
 interface ProjectSelectionState {
 	active: boolean;
@@ -182,12 +182,12 @@ export function pruneProject(projectId: string | undefined): void {
  */
 export function visibleProjects(projects: Project[]): Project[] {
 	return sortPinnedFirst(
-		projects.filter((p) => !isHomeProject(p) && !isProjectArchived(p.id)),
+		projects.filter((p) => !isAssistantProject(p) && !isProjectArchived(p.id)),
 		projectSelectionState.pinnedIds
 	);
 }
 
 /** Archived section content, in stored order. */
 export function archivedProjects(projects: Project[]): Project[] {
-	return projects.filter((p) => !isHomeProject(p) && isProjectArchived(p.id));
+	return projects.filter((p) => !isAssistantProject(p) && isProjectArchived(p.id));
 }

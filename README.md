@@ -5,8 +5,8 @@
 <h1 align="center">Clopen</h1>
 
 <p align="center">
-  <strong>Build more. Switch less.</strong><br />
-  All-in-one workspace for AI coding agents
+  <strong>Tell it what you want. It gets it built.</strong><br />
+  Your AI that runs your AI coding agents
 </p>
 
 <p align="center">
@@ -26,7 +26,7 @@
   <img src="https://clopen.myrialabs.dev/images/workspace.webp" alt="Clopen workspace overview" />
 </p>
 
-All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, and Cursor. Chat, terminal, git, browser preview, database client, and remote access from any device — plus Skills, Subagents, Commands, and MCP connectors to extend every engine.
+Clopen is an AI you talk to. Ask for something — a landing page, a bug hunt, a check that runs every morning — and Clopen hands the work to a coding agent (Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline or Cursor), checks the result itself, and keeps correcting until it is right. It runs on your own computer or server, works with free models out of the box, and does everything in a real workspace you can watch, verify and undo: chat, files, git, terminal, browser preview, databases and remote access from any device.
 
 ---
 
@@ -54,25 +54,40 @@ All-in-one workspace for AI coding agents — Claude Code, OpenCode, Codex, Copi
 
 ## Features
 
-A complete development environment designed around AI-assisted workflows, built to disappear into the background and just work.
+### Clopen, the assistant
 
-- **Multi-Engine Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, Qwen Code, Pi, Cline, and Cursor as your AI engine, per session
-- **Multi-Account Per Engine** — Manage multiple accounts per engine (personal, work, or team) and switch between them instantly per chat session
-- **Reasoning Effort Control** — Dial a model's thinking level right from the chat input, using that engine's own levels. Set a default per model in Settings, and the choice is remembered and synced across your devices
-- **Integrated Terminal** — Multi-tab xterm.js terminal with full keyboard control and complete ANSI/VT support, right inside your workspace
-- **Full Git Management** — Stage, commit, branch, push, pull, stash, log, and resolve conflicts, all from a clean UI
-- **Real Browser Preview** — A live browser preview streams directly into your workspace. Interact with your app manually, or let the AI drive: clicking, typing, and scrolling for autonomous visual testing
-- **Database Client** — Connect to PostgreSQL, MySQL, SQLite, MongoDB, and Redis. Browse schemas, run queries, and inspect data, with optional SSH tunneling for databases behind a bastion
-- **Git-Like Checkpoints** — Multi-branch undo/redo with full file snapshots. Roll back to any point in your AI conversation without touching your actual git history
-- **Remote Access** — Add your phone, tablet, or another computer with a one-time link or QR code. Every device stays in sync live: chats, terminals, and the browser preview
-- **Monaco File Editor** — VS Code's editor right in the browser. Full syntax highlighting, autocomplete, and live file watching, beside your AI chat
-- **Cloudflare Tunnel** — One-click public HTTPS URL for your local dev server. Built-in QR code for instant mobile access. Share your work without deploying
-- **Integrations** — Connect a third-party account once and every engine and project can use it. Credentials are sealed at rest with AES-256-GCM. Includes the full MCP surface: browse the official Model Context Protocol registry, connect with OAuth or custom env/headers, control tool exposure per engine, and sync every connector across all your AI engines
-- **Skills, Commands & Subagents** — Build reusable Skills, slash Commands, delegated Subagents, shared Instructions, and tool Permissions or Profiles once, synced automatically across every engine
-- **Flexible Authentication** — No Login or With Login mode, one-time device pairing links, rate-limited login, and CLI token recovery
-- **Stack** — Install AI engines, Git, Chrome, and Cloudflared (for Public Tunnel) from a one-click panel. Engines install on demand into a clopen-managed directory (`~/.clopen/stack/engines`) — isolated from your global setup, no PATH pollution
-- **Background Processing** — Chat, terminal, and other processes continue running even when you close the browser — come back later and pick up where you left off
-- **Works on Any Device** — Fully responsive across desktop, laptop, tablet, and mobile. Open your workspace from any device and continue exactly where you left off
+- **One conversation, like Telegram** — Clopen's chat is a single timeline with everything said and sent, and a quick first word while it works before the result arrives. Talk to Clopen in plain words, in the app or on Telegram (menu: /tasks, /stop, /clear, /help). Quick things it answers; bigger things become background tasks, so the chat stays free while the work goes on. Messages on another subject, or sent while it is busy, move to a fresh chat on their own — judged by meaning, with the context carried over
+- **Tasks** — A goal with checkable criteria that Clopen drives to done across your projects, handing each part to a specialist (Writer, Developer, Researcher…) and verifying the result itself — in the browser, with tests, in the files. No limit on rounds or time; it stops only when truly stuck. Ask how it is going and you get a progress note with a screenshot of what the agent sees
+- **Your assistant, not a worker** — Clopen does one-off things itself, right away: a screenshot, a lookup, a reminder, a note in Notion, a calendar entry. Project work — building or changing an app, writing a document — goes to agents in a project, and the team is sized to the request: a developer and a tester for a build (a researcher only when facts are needed, a marketer only when you ask for a launch). The tester tries it in a real browser and the developer fixes what was found, until it passes; then you get a link. You hear honestly how it ended — done, needs you, not finished, or impossible as asked. A free model and a flagship follow the same plan, because the plan is run by Clopen, not left to the model
+- **Tasks, once or repeating** — One list for everything Clopen works on. A repeating task starts on its own — on a schedule, once at a time you name, when a page you watch changes, on an event, or with one tap — and is a short recipe of plain steps (do, run a script, call a service, tell me, ask me, wait for my OK) with branches, loops, parallel branches and reviews. Every task's plan is drawn as a canvas (Svelte Flow) showing who does what and how each step went. Repeating tasks learn: a failing step is repaired and the lesson kept, a step that always gives the same answer becomes a free script, and every change is a version you can go back to. Optional daily budget
+- **Never hands you homework** — If something needs a login, an install or a setting, Clopen does it. It asks only for what only you have — a password, a key, a choice — keeps it in the encrypted **Secrets** vault, and carries on
+- **Remembers you** — A journal of what happened across every chat, a profile of who you are and how you work, and long-term memory — so a new chat already knows yesterday
+- **Comes to you, with results only** — Clopen tells you what you got, never how it got there. Questions, approvals, a service to connect and a login arrive as cards where you are — right above the chat input, or in Telegram with buttons — and are answered right there, in your language; a reply like "ok" goes to the question it answers, and "make it realistic" changes the task you just got instead of starting another. Results come once: a screenshot as one photo with its caption, a full-page one as a file. A password typed into a chat is moved to the encrypted vault and removed from the chat. **Needs you** lists only what is waiting on you
+- **Connects services from the chat** — "Connect Notion" gives you one sign-in link (or one field for a key); Clopen installs and sets up the rest. Keys go to the encrypted vault, never to the AI
+- **Live view** — While an agent is in a browser, its screen appears as a card beside the chat (fold it to a pill when you don't need it); when a site needs you — a login, a captcha — you click and type into it there
+- **Connect from anywhere** — "Connect Notion" gives you one sign-in link that works from your phone too: the sign-in returns through a short-lived relay that answers nothing but that callback, so Clopen itself is never exposed. With "No login" set, Clopen refuses to put itself on the internet at all
+- **Short answers** — Clopen replies like a person in a chat: a sentence or two, more only when you ask
+- **Learns as it goes** — Steps that keep being repeated become scripts; requests you keep making become skills; skills Clopen had to correct get improved — every change versioned and revertible
+- **Teach a task** — Record what you do once in the preview browser and save it as a skill an agent can repeat, or a script that replays it
+- **Autonomous by default, safe by design** — Clopen works on its own, while anything irreversible (deleting data, force-pushing, deploying, writing to a database) waits for your approval unless you allow it. Every action is in an audit trail. Prefer to be asked first? One switch. **Stop everything** halts every task, flow, agent and shared link at once
+- **Controls all of Clopen** — The built-in `control` MCP server (its `run` tool) lets the assistant read projects and drive chats, tasks, repeating tasks, scripts, skills, secrets, databases you opened to agents, and the whole Clopen API — batched into a single call. Changes made this way show up on every open screen at once
+- **One model per job** — Settings → Models picks a model for Clopen itself, for the specialists doing the work, for project chats and for background decisions (routing, reviews, commit messages) — the same choice on the web and in Telegram. If a model fails, Clopen retries once on another
+- **Free to start** — Clopen runs on a free model with no account the moment it is installed; add an API key or connect your own Claude, ChatGPT/Codex, Copilot or Cursor account whenever you want more power
+
+### The workspace
+
+- **Multi-Agent Support** — Switch between Claude Code, OpenCode, Codex, GitHub Copilot, Qwen Code, Pi, Cline, and Cursor per chat, with multiple accounts per agent
+- **Reasoning Effort Control** — Dial a model's thinking level right from the chat input, using that agent's own levels
+- **Integrated Terminal** — Multi-tab terminal with full keyboard control and complete ANSI/VT support
+- **Full Git Management** — Stage, commit, branch, push, pull, stash, log, and resolve conflicts from a clean UI
+- **Real Browser Preview** — A live browser preview streams into your workspace. Use it yourself, or let the AI drive it for visual testing
+- **Database Client** — PostgreSQL, MySQL, SQLite, MongoDB, and Redis, with optional SSH tunneling. You decide per connection what an AI agent may do: nothing, see the structure, read, or write
+- **Restore points** — Multi-branch undo/redo with full file snapshots. Go back to any point in a conversation without touching your git history
+- **Remote Access** — Add your phone, tablet, or another computer with a one-time link or QR code. Every device stays in sync live
+- **Library** — Skills, scripts, specialists, rules, toolsets, integrations (including the full MCP registry with OAuth) and secrets, built once and shared by every agent and project
+- **Public Links** — One-click public HTTPS URL for your local dev server, through Cloudflare
+- **Background Processing** — Chats, tasks, automations and terminals keep running when you close the browser
+- **Works on Any Device** — Fully responsive across desktop, laptop, tablet, and mobile
 
 ---
 
@@ -81,7 +96,8 @@ A complete development environment designed around AI-assisted workflows, built 
 ### Prerequisites
 
 - [Bun.js](https://bun.sh/) v1.2.12+
-- At least one supported AI engine — [Claude Code](https://github.com/anthropics/claude-code), [OpenCode](https://opencode.ai), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), [Qwen Code](https://github.com/QwenLM/qwen-code), [Pi](https://github.com/earendil-works/pi), [Cline](https://github.com/cline/cline), or [Cursor](https://cursor.com). All install on demand from **Settings → Stack** after first launch (nothing is bundled into the clopen install), then sign in from **Settings → Engines**
+
+That is all. Clopen installs OpenCode with its free models on first launch, so it works without any account. Other agents — [Claude Code](https://github.com/anthropics/claude-code), [Codex](https://github.com/openai/codex), [GitHub Copilot CLI](https://github.com/github/copilot-cli), [Qwen Code](https://github.com/QwenLM/qwen-code), [Pi](https://github.com/earendil-works/pi), [Cline](https://github.com/cline/cline), [Cursor](https://cursor.com) — install on demand from **Settings → Agents** into Clopen's own folder (nothing global changes): each agent goes Install → Sign in → Ready in place.
 
 ### Installation
 
@@ -101,7 +117,7 @@ Or manually via Bun:
 bun add -g @myrialabs/clopen
 ```
 
-You can also update from the **Settings → Maintenance → Updates** section in the web UI.
+You can also update from **Settings → Maintenance → Updates** in the web UI.
 
 ### Usage
 
@@ -113,25 +129,33 @@ Starts the server on `http://localhost:9141`.
 
 ### First-Time Setup
 
-On first launch, a setup wizard guides you through:
+On first launch — and once after upgrading from 0.4, with everything you already set kept as it is — three short steps:
 
-1. **Authentication mode** — Choose between **No Login** (no authentication required, ideal for personal/local use) or **With Login** (login with a Personal Access Token, recommended when Clopen is reachable from other devices or the internet)
-2. **Account** — If With Login mode is selected, create your account and save the generated PAT
-3. **Stack** — Install Git, Chrome, Cloudflared, and any AI engine you don't have yet — straight from the wizard, no terminal needed
-4. **AI Engines** — Check installation status for every engine and sign in to the ones you'll use. An engine that isn't installed yet links straight back to the Stack step
-5. **Preferences** — Set dark mode, font size, sound notifications, and message layout (Classic cards or Compact lines)
+1. **Access** — **Just this computer** (nothing to sign in to) or **My other devices too** (protected by a sign-in key, shown once)
+2. **AI** — OpenCode with free models installs itself; add an API key (OpenRouter, OpenAI, Anthropic, Google…) or another agent right there
+3. **Preferences** — Ask me before acting, start with this computer, dark mode
 
-You can change the authentication mode anytime in **Settings → Sign-in & Devices**.
+Then you land in the chat with Clopen. Everything can be changed later in **Settings → Clopen** and **Settings → Devices & Access**.
 
 To sign in another of your devices, open **Remote Access → Add a device** and scan the one-time link (valid for 5 minutes).
 
-If you lose your token:
+If you lose your key:
 
 ```bash
 clopen reset-pat
 ```
 
-This regenerates and displays a new PAT.
+### Start with the computer
+
+Repeating tasks run only while Clopen is running. To keep their schedule after a restart, turn on **Settings → Clopen → Start with this computer**, or:
+
+```bash
+clopen service install     # macOS LaunchAgent, Linux systemd user unit, Windows Task Scheduler
+clopen service status
+clopen service uninstall
+```
+
+It uses your own account's startup — no administrator rights — and takes effect at your next log in.
 
 ---
 
@@ -149,9 +173,9 @@ bun run check   # Type checking
 
 When running in development mode, Clopen uses `~/.clopen-dev` instead of `~/.clopen`, keeping dev data separate from any production instance.
 
-Each AI engine's config/state (credentials, sessions, logs) is isolated under `~/.clopen/engine/<engine>/user/` rather than the engine's global location (`~/.codex`, `~/.copilot`, `~/.qwen`, the OpenCode XDG dirs), so Clopen never mixes with — or disturbs — your own standalone CLI usage.
+Each AI agent's config/state (credentials, sessions, logs) is isolated under `~/.clopen/engine/<engine>/user/` rather than the engine's global location (`~/.codex`, `~/.copilot`, `~/.qwen`, the OpenCode XDG dirs), so Clopen never mixes with — or disturbs — your own standalone CLI usage.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [DECISIONS.md](DECISIONS.md) for architectural decisions.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines, [DECISIONS.md](DECISIONS.md) for architectural decisions, and [ROADMAP.md](ROADMAP.md) for what comes next.
 
 ---
 
@@ -165,7 +189,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and [DECISIONS.md](DECISIO
 | Styling | Tailwind CSS v4 |
 | Database | SQLite with migrations |
 | Terminal | bun-pty |
-| AI Engines | Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, Cursor |
+| AI Agents | Claude Code, OpenCode, Codex, Copilot, Qwen Code, Pi, Cline, Cursor |
+| Assistant | Tasks (one-off crews and repeating flows on one recipe engine), cards, journal, secrets, learning loop — driven through the internal `control` MCP server |
 | DB Client | Postgres, MySQL, SQLite, MongoDB, Redis (+ SSH tunnel) |
 
 ---

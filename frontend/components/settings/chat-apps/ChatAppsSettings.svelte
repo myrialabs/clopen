@@ -2,8 +2,9 @@
 	/**
 	 * Chat Apps: control Clopen from a chat app (Telegram first).
 	 *
-	 * The bot is an integration account (one token); chats are linked to it,
-	 * and each one can be switched off or unlinked. What a chat can do is the
+	 * The bot is an integration account (one token); the owner's one Telegram
+	 * account is linked to it — linking another means disconnecting this one
+	 * first — and can be switched off or disconnected. What a chat can do is the
 	 * control catalog on the server, and the command reference below is read
 	 * from it.
 	 *
@@ -40,6 +41,8 @@
 		originSource: 'configured' | 'domain' | 'tunnel' | null;
 		connection: 'connecting' | 'open' | 'closed' | null;
 		error: string | null;
+		retryInSeconds: number | null;
+		attempt: number;
 		control: boolean;
 		links: ChatLink[];
 	}
@@ -60,6 +63,8 @@
 	let connectProvider = $state<IntegrationProviderInfo | null>(null);
 	let busy = $state<string | null>(null);
 	let showCommands = $state(false);
+	/** When the bots were read: a retry countdown counts down from there. */
+	let loadedAt = $state(Date.now());
 
 	const pairingRemaining = $derived(pairing ? Math.max(0, Math.ceil((pairing.expiresAt - now) / 1000)) : 0);
 	const commandGroups = $derived.by(() => {
@@ -85,6 +90,7 @@
 			const result = await ws.http('chat-apps:bots', { requestOrigin: window.location.origin });
 			const before = new Set(bots.flatMap((bot) => bot.links.map((link) => link.id)));
 			bots = result as ChatBot[];
+			loadedAt = Date.now();
 			// The phone just finished pairing: the code on screen has done its job.
 			if (pairing && bots.some((bot) => bot.links.some((link) => !before.has(link.id)))) pairing = null;
 		} catch (error) {
@@ -152,12 +158,12 @@
 
 	async function unlink(link: ChatLink) {
 		const confirmed = await showConfirm({
-			title: 'Unlink this chat?',
-			message: 'The chat stops controlling Clopen. You can link it again any time.',
-			confirmText: 'Unlink',
+			title: 'Disconnect your Telegram?',
+			message: 'It stops reaching Clopen. You can link it — or another account — again any time.',
+			confirmText: 'Disconnect',
 			type: 'warning'
 		});
-		if (confirmed) void act(link.id, 'Could not unlink', () => ws.http('chat-apps:unlink', { linkId: link.id }));
+		if (confirmed) void act(link.id, 'Could not disconnect', () => ws.http('chat-apps:unlink', { linkId: link.id }));
 	}
 
 	async function removeBot(bot: ChatBot) {
@@ -175,8 +181,15 @@
 		connectProvider = integrationsStore.providers.find((provider) => provider.id === 'telegram') ?? null;
 	}
 
+	function retryIn(bot: ChatBot): number | null {
+		if (bot.retryInSeconds === null) return null;
+		return Math.max(0, bot.retryInSeconds - Math.floor((now - loadedAt) / 1000));
+	}
+
 	function deliveryLabel(bot: ChatBot): string {
 		if (!bot.control) return 'Control is switched off for this bot';
+		const wait = retryIn(bot);
+		if (!bot.running && wait !== null) return wait > 0 ? `Reconnecting in ${wait}s (attempt ${bot.attempt + 1})` : 'Reconnecting…';
 		if (!bot.running) return bot.error ? `Not running: ${bot.error}` : 'Starting…';
 		if (bot.connection === 'connecting') return 'Connecting to Telegram…';
 		if (bot.connection === 'closed') return 'Disconnected from Telegram';
@@ -185,9 +198,22 @@
 	}
 
 	function deliveryTone(bot: ChatBot): string {
+		if (!bot.running && bot.retryInSeconds !== null) return 'bg-amber-500 animate-pulse';
 		if (!bot.control || bot.error || bot.connection === 'closed') return 'bg-red-500';
 		if (!bot.running || bot.connection === 'connecting') return 'bg-amber-500 animate-pulse';
 		return 'bg-emerald-500';
+	}
+
+	async function reconnect(bot: ChatBot) {
+		busy = bot.accountId;
+		try {
+			await ws.http('chat-apps:reconnect', { accountId: bot.accountId });
+		} catch (error) {
+			toast('error', 'Reconnect', errorText(error));
+		} finally {
+			busy = null;
+			await load();
+		}
 	}
 
 	function chatName(link: ChatLink): string {
@@ -216,8 +242,8 @@
 </script>
 
 <div class="py-1">
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Chat Apps</h3>
-	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Control Clopen from your phone through a chat app.</p>
+	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Messaging</h3>
+	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Chat with Clopen from your phone. It tells you there when work is done.</p>
 
 	<div class="flex flex-col gap-3.5">
 		<div
@@ -239,7 +265,7 @@
 				{:else if bots.length === 0}
 					<div class="flex flex-col gap-2">
 						<p class="text-xs text-slate-600 dark:text-slate-500">
-							No bot is connected yet. Create one with @BotFather in Telegram and paste its token here, then link your chat to it.
+							No bot yet. Make one with @BotFather, paste its token, then link your chat.
 						</p>
 						<div>
 							<button
@@ -266,6 +292,19 @@
 									</span>
 								</div>
 								<div class="flex items-center gap-1.5 shrink-0">
+									{#if !bot.running || bot.connection === 'closed'}
+										<button
+											type="button"
+											disabled={busy === bot.accountId}
+											class="inline-flex items-center gap-1.5 py-2 px-3.5 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-700 dark:text-slate-200 text-xs font-semibold cursor-pointer transition-colors hover:border-violet-500/40 disabled:opacity-50"
+											onclick={() => reconnect(bot)}
+										>
+											<Icon name="lucide:refresh-cw" class="w-3.5 h-3.5 {busy === bot.accountId ? 'animate-spin' : ''}" />
+											<span>Reconnect</span>
+										</button>
+									{/if}
+									<!-- One Telegram account: linking is offered only while none is linked. -->
+									{#if bot.links.length === 0}
 									<button
 										type="button"
 										disabled={!bot.running || !bot.control || pairingBusy === bot.accountId}
@@ -273,8 +312,9 @@
 										onclick={() => startPairing(bot)}
 									>
 										<Icon name="lucide:link" class="w-3.5 h-3.5" />
-										<span>{bot.links.length > 0 ? 'Link another chat' : 'Link my chat'}</span>
+										<span>Link my Telegram</span>
 									</button>
+									{/if}
 									<button
 										type="button"
 										title="Remove this bot"
@@ -290,7 +330,7 @@
 
 							{#if !bot.control}
 								<p class="text-xs text-amber-700 dark:text-amber-400">
-									Turn on "Control Clopen" for this bot in Settings → Integrations to use it.
+									Turn on "Control Clopen" for this bot in Library → Integrations to use it.
 								</p>
 							{/if}
 
@@ -366,7 +406,7 @@
 											onclick={() => unlink(link)}
 										>
 											<Icon name="lucide:unlink" class="w-3 h-3" />
-											<span>Unlink</span>
+											<span>Disconnect</span>
 										</button>
 									</div>
 								</div>
@@ -394,7 +434,7 @@
 			{#if showCommands}
 				<div class="mt-3 pt-3 border-t border-slate-200 dark:border-slate-800 flex flex-col gap-4">
 					<p class="text-xs text-slate-600 dark:text-slate-500">
-						Type to chat, or send photos and files. Reply to an earlier message to continue from there, or edit one you sent to rewrite it. Going back asks first, because it restores files.
+						Type, or send photos and files. Edit a message to correct it.
 					</p>
 					{#each commandGroups as [group, entries] (group)}
 						<div class="flex flex-col gap-2">
@@ -415,7 +455,7 @@
 	</div>
 </div>
 
-<!-- The hub's own connect dialog, embedded, so connecting never detours through Settings → Integrations. -->
+<!-- The hub's own connect dialog, embedded, so connecting never detours through Library → Integrations. -->
 <ConnectAccountModal
 	provider={connectProvider}
 	onClose={() => (connectProvider = null)}

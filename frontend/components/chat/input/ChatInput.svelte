@@ -11,6 +11,7 @@
 <script lang="ts">
 	import { sessionState } from '$frontend/stores/core/sessions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { isAssistantProject } from '$shared/utils/assistant-project';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { onDestroy, untrack } from 'svelte';
 	import { ChatService } from '$frontend/services/chat';
@@ -23,10 +24,12 @@
 	import { takeQueued, type QueuedMessage } from '$frontend/stores/ui/message-queue.svelte';
 	import { chatInputState, takeReturned } from '$frontend/stores/ui/chat-input.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
+	import { focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 
 	// Components
+	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import AiChangesSummary from './components/AiChangesSummary.svelte';
 	import FileAttachmentPreview from './components/FileAttachmentPreview.svelte';
 	import EditModeIndicator from './components/EditModeIndicator.svelte';
@@ -62,7 +65,9 @@
 
 	// Initialize composables
 	const fileHandling = useFileHandling();
-	const placeholderAnimation = usePlaceholderAnimation(ChatService.placeholderTexts);
+	const placeholderAnimation = usePlaceholderAnimation(() =>
+		isAssistantProject(projectState.currentProject) ? ChatService.assistantPlaceholderTexts : ChatService.placeholderTexts
+	);
 	const loadingTextAnimation = useLoadingTextAnimation(ChatService.loadingTexts);
 	const textareaResize = useTextareaResize();
 
@@ -101,11 +106,11 @@
 	const blockedPlaceholder = $derived.by(() => {
 		switch (chatBlockedReason) {
 			case 'no-claude-account':
-				return 'No Claude Code account connected. Configure it in Settings → Engines → Claude Code → Accounts.';
+				return 'Claude Code needs an account before it can chat.';
 			case 'no-model':
-				return 'No model selected. Please select a model to start chatting.';
+				return 'Pick a model above to start chatting.';
 			case 'model-missing':
-				return 'The selected model is no longer available. Please select another model.';
+				return 'The model you picked is no longer available. Pick another one above.';
 			default:
 				return null;
 		}
@@ -316,12 +321,14 @@
 		});
 	});
 
-	// Reactive effect for placeholder animation
+	// Reactive effect for placeholder animation — restarted when the project
+	// changes between Clopen and a project, whose examples differ.
 	$effect(() => {
+		const home = isAssistantProject(projectState.currentProject);
 		if (isWelcomeState) {
 			placeholderAnimation.startAnimation();
 		} else {
-			placeholderAnimation.setStaticPlaceholder('Continue the conversation...');
+			placeholderAnimation.setStaticPlaceholder(home ? 'Ask Clopen anything…' : 'Continue the conversation...');
 		}
 	});
 
@@ -593,6 +600,15 @@
 
 				<!-- Edit Mode Indicator (own edit, or who else is editing) -->
 				<EditModeIndicator onCancel={handleCancelEdit} />
+
+				<!-- Why this chat cannot send yet — with the one action that fixes it -->
+				{#if chatBlockedReason === 'no-claude-account'}
+					<div class="flex items-center gap-2 mx-1 mb-2 px-3 py-2 rounded-lg border border-amber-300/60 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 text-xs text-amber-900 dark:text-amber-100">
+						<Icon name="lucide:key-round" class="w-4 h-4 shrink-0" />
+						<span class="flex-1">Claude Code needs an account. Connect one, or switch to a free model in the picker below.</span>
+						<button type="button" class="shrink-0 px-2.5 py-1 rounded-md bg-amber-600 hover:bg-amber-700 text-white font-semibold border-none cursor-pointer" onclick={() => focusEngineSection('claude-code')}>Connect account</button>
+					</div>
+				{/if}
 
 				<!-- Engine/Model Picker -->
 				<EngineModelPicker />

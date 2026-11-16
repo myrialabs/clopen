@@ -125,6 +125,9 @@ export interface McpActivityEvent {
 	timestamp: number;
 }
 
+/** The pseudo-session the owner holds a tab under while they take over from the agent. */
+export const OWNER_HOLD_PREFIX = 'owner:';
+
 export class BrowserMcpControl extends EventEmitter {
 	/** Tab → ownership info (which chat session controls it) */
 	private tabOwnership = new Map<string, TabOwnershipInfo>();
@@ -209,6 +212,8 @@ export class BrowserMcpControl extends EventEmitter {
 
 	/** Whether a chat session is still streaming (true when no probe is set). */
 	isSessionLive(chatSessionId: string): boolean {
+		// The owner holding a tab (live view → Take over) is not a stream; it stays until handed back.
+		if (chatSessionId.startsWith(OWNER_HOLD_PREFIX)) return true;
 		return this.livenessProbe ? this.livenessProbe(chatSessionId) : true;
 	}
 
@@ -331,6 +336,11 @@ export class BrowserMcpControl extends EventEmitter {
 	isTabControlledBySession(browserTabId: string, chatSessionId: string): boolean {
 		const ownership = this.tabOwnership.get(browserTabId);
 		return ownership?.chatSessionId === chatSessionId;
+	}
+
+	/** Every tab an agent controls right now — what Clopen's live view shows. */
+	listControlledTabs(): Array<{ tabId: string; chatSessionId: string; projectId: string; acquiredAt: number }> {
+		return [...this.tabOwnership.entries()].map(([tabId, info]) => ({ tabId, chatSessionId: info.chatSessionId, projectId: info.projectId, acquiredAt: info.acquiredAt }));
 	}
 
 	/**

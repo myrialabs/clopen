@@ -59,7 +59,7 @@
 		qwenAddStep = 'saving';
 		qwenAddError = '';
 		try {
-			await ws.http('engine:qwen-accounts-add', {
+			await ws.http('agents:qwen-accounts-add', {
 				name: qwenAddName.trim(),
 				apiKey: qwenAddApiKey.trim(),
 				preset: qwenAddPreset,
@@ -84,7 +84,7 @@
 
 	async function switchQwenAccount(id: number) {
 		try {
-			await ws.http('engine:qwen-accounts-switch', { id });
+			await ws.http('agents:qwen-accounts-switch', { id });
 			await qwenAccountsStore.refresh();
 			await refreshQwenStatus();
 			await modelStore.refreshModels('qwen');
@@ -101,7 +101,7 @@
 	async function deleteQwenAccount() {
 		if (qwenDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:qwen-accounts-delete', { id: qwenDeleteTargetId });
+			await ws.http('agents:qwen-accounts-delete', { id: qwenDeleteTargetId });
 			await qwenAccountsStore.refresh();
 			await refreshQwenStatus();
 		} catch {
@@ -120,10 +120,10 @@
 		if (qwenRenamingId === null || !qwenRenameValue.trim()) return;
 		const id = qwenRenamingId;
 		try {
-			await ws.http('engine:qwen-accounts-rename', { id, name: qwenRenameValue.trim() });
+			await ws.http('agents:qwen-accounts-rename', { id, name: qwenRenameValue.trim() });
 			// Update key/preset in one call — omit apiKey when blank to keep the stored one.
 			const apiKey = qwenRenameApiKey.trim();
-			await ws.http('engine:qwen-accounts-update', { id, preset: qwenRenamePreset, ...(apiKey ? { apiKey } : {}) });
+			await ws.http('agents:qwen-accounts-update', { id, preset: qwenRenamePreset, ...(apiKey ? { apiKey } : {}) });
 			qwenRenamingId = null;
 			qwenRenameValue = '';
 			qwenRenameApiKey = '';

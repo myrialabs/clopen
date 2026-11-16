@@ -11,7 +11,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const openCodeStatusHandler = createRouter()
-	.http('engine:opencode-status', {
+	.http('agents:opencode-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

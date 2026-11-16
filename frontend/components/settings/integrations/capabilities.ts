@@ -26,10 +26,10 @@ export const CAPABILITY_SURFACES: Record<IntegrationCapability, string> = {
 	'agent-tools': 'Available to every engine as MCP tools',
 	work: 'More Tools → Issues & PRs',
 	deployments: 'More Tools → Deployments',
-	database: 'DB Client',
+	database: 'Databases',
 	'worktree-branching': 'The worktree switcher → Database branching',
 	notifications: 'Notification channels',
-	control: 'Pair a chat in Settings → Chat Apps, then control Clopen from it',
+	control: 'Pair a chat in Settings → Messaging, then control Clopen from it',
 	'inbound-events': 'Inbound webhook gateway'
 };
 

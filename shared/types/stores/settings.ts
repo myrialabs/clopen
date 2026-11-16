@@ -1,5 +1,6 @@
 import type { EngineType } from '$shared/types/unified';
 import type { CommitMessageFormat } from '$shared/types/git';
+import type { AssistantSettings } from '$shared/types/assistant';
 
 export interface CommitMessageConfig {
 	style: 'concise' | 'technical' | 'descriptive';
@@ -39,7 +40,7 @@ export interface CommitGeneratorSettings {
  * purpose sentence. Optional — when absent (or `useCustomModel` false), the
  * assistant model (selectedEngine/selectedModel) is used.
  */
-export interface ArtifactGeneratorSettings {
+export interface LibraryGeneratorSettings {
 	useCustomModel: boolean;
 	engine: EngineType;
 	/** See `CommitGeneratorSettings.provider` — write via `modelFieldsOf()`. */
@@ -86,8 +87,8 @@ export interface AppSettings {
 	diffChangesOnly: boolean;
 	/** AI commit message generator configuration */
 	commitGenerator: CommitGeneratorSettings;
-	/** AI authoring model for artifact generation (optional; falls back to assistant model) */
-	artifactGenerator?: ArtifactGeneratorSettings;
+	/** AI authoring model for Library generation (optional; falls back to the chat model) */
+	libraryGenerator?: LibraryGeneratorSettings;
 	/** Pinned model IDs — shown at top of provider group in model picker */
 	pinnedModels: string[];
 	/**
@@ -134,4 +135,14 @@ export interface SystemSettings {
 	publicBaseUrl?: string;
 	/** Latest version the "What's New" preview dialog has been dismissed for. Default: '' (never dismissed). */
 	lastSeenReleaseNotesVersion?: string;
+	/**
+	 * The setup wizard version this install last completed. When it is below
+	 * `ONBOARDING_VERSION`, every install — fresh or upgraded — goes through the
+	 * wizard once more, with its current choices pre-filled.
+	 */
+	onboardingVersion?: number;
+	/** How the Clopen assistant works: autonomy and whether irreversible actions need approval. */
+	assistant?: AssistantSettings;
+	/** Where the app opens: the Clopen assistant, or the last project's workspace. Default: 'assistant'. */
+	startView?: 'assistant' | 'workspace';
 }

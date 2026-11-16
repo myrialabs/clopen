@@ -7,7 +7,7 @@
  *   - out of the user's global bun store (no PATH pollution, no version clashes),
  *   - out of the user's projects (never touches their package.json/node_modules),
  *   - isolated to clopen and surviving clopen reinstalls.
- * This is the runtime half of the "Stack" concept (Settings → Stack).
+ * This is the runtime half of the "Stack" concept (Settings → Agents → Install).
  *
  * package.json (devDependencies) remains the single source of truth for the
  * exact pinned version each engine installs; this module only resolves and
@@ -63,9 +63,9 @@ export class EngineNotReadyError extends Error {
 	) {
 		const detail = reason === 'needs-update'
 			? `needs an update (installed ${installedVersion ?? 'unknown'}, ` +
-			  `required ${requiredVersion ?? 'unknown'}). Open Settings → Stack to ` +
+			  `required ${requiredVersion ?? 'unknown'}). Open Settings → Agents → Install to ` +
 			  `update it before using this engine.`
-			: `is not installed. Open Settings → Stack to install it.`;
+			: `is not installed. Open Settings → Agents → Install to install it.`;
 		super(`Engine "${engine}" ${detail}`);
 		this.name = 'EngineNotReadyError';
 		this.engine = engine;

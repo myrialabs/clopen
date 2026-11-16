@@ -36,7 +36,7 @@
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { workStore, type WorkTab } from '$frontend/stores/features/work.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
-	import { openIntegrationConnect, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openIntegrationConnect, openLibrary } from '$frontend/stores/ui/library-modal.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 
 	interface Props {
@@ -277,7 +277,7 @@
 					class="text-xs text-slate-500 dark:text-slate-500 bg-transparent border-none cursor-pointer underline underline-offset-2 hover:text-slate-700 dark:hover:text-slate-300"
 					onclick={() => {
 						onClose();
-						openSettingsModal('integrations');
+						openLibrary('integrations');
 					}}
 				>
 					Or see every integration

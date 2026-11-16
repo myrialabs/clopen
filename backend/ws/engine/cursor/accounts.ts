@@ -49,7 +49,7 @@ async function validateApiKey(apiKey: string): Promise<void> {
 
 export const cursorAccountsHandler = createRouter()
 
-	.http('engine:cursor-accounts-list', {
+	.http('agents:cursor-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -73,7 +73,7 @@ export const cursorAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:cursor-accounts-add', {
+	.http('agents:cursor-accounts-add', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			apiKey: t.String({ minLength: 1 })
@@ -111,7 +111,7 @@ export const cursorAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:cursor-accounts-switch', {
+	.http('agents:cursor-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -120,7 +120,7 @@ export const cursorAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:cursor-accounts-delete', {
+	.http('agents:cursor-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -130,7 +130,7 @@ export const cursorAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:cursor-accounts-rename', {
+	.http('agents:cursor-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -140,7 +140,7 @@ export const cursorAccountsHandler = createRouter()
 
 	// Replace the stored API key for an account. When the edited account is the
 	// active one, drop engine instances so the next stream picks up the key.
-	.http('engine:cursor-accounts-update-key', {
+	.http('agents:cursor-accounts-update-key', {
 		data: t.Object({ id: t.Number(), apiKey: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {

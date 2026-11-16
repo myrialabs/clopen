@@ -1,7 +1,7 @@
 /**
  * Subagent Queries
  *
- * CRUD for user-managed custom Subagents (Settings → Subagents). Subagents are
+ * CRUD for user-managed custom Subagents (Library → Subagents). Subagents are
  * Skills-shaped (a Markdown document with frontmatter) plus a per-engine tool
  * allowlist and per-engine model override (stored as JSON maps keyed by
  * EngineType). The `subagents` table holds metadata + the enable toggle; the

@@ -1,5 +1,5 @@
 /**
- * Subagent CRUD Handlers (Settings → Subagents)
+ * Subagent CRUD Handlers (Library → Subagents)
  *
  *   - subagents:list / get / create / update / parse-import / import / toggle / delete
  *   - subagents:detect — on-disk subagents (managed + adoptable) per engine

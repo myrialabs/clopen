@@ -80,10 +80,10 @@
 					// as an actionable card with a one-click button. These are only
 					// ever surfaced as a synthetic assistant message prefixed with
 					// "**Error:**" (see stream-manager). Requiring that prefix keeps
-					// plain assistant prose that merely *mentions* "Settings → Stack /
+					// plain assistant prose that merely *mentions* "Settings → Agents → Install /
 					// Engines" from being misdetected as an error — it stays text.
 					const isSyntheticError = typeof text === 'string' && /^\s*\*\*Error:\*\*/.test(text);
-					if (isSyntheticError && (text.includes('Settings → Stack') || text.includes('Settings → Engines'))) {
+					if (isSyntheticError && (text.includes('Settings → Agents → Install') || text.includes('Settings → Agents'))) {
 						elements.push({ type: 'error', content: text.replace(/^\s*\*\*Error:\*\*\s*/, '') });
 					} else {
 						elements.push({ type: 'text', content: text });

@@ -14,7 +14,7 @@
 
 	onMount(async () => {
 		try {
-			const res = await ws.http('engine:cline-status', {});
+			const res = await ws.http('agents:cline-status', {});
 			installed = res.installed;
 			version = res.version;
 		} catch {
@@ -64,7 +64,7 @@
 				<span class="font-mono truncate">@cline/sdk</span>
 			</div>
 			<p class="text-xs text-slate-500 dark:text-slate-400">
-				Cline runs in-process as a library dependency, so there is nothing to install or update here — its version tracks Clopen's bundled package.
+				Built into Clopen; nothing to install.
 			</p>
 		{/if}
 	</div>

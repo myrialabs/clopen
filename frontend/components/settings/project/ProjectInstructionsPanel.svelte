@@ -5,7 +5,7 @@
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import EngineCoverage from './EngineCoverage.svelte';
 	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { projectArtifactsStore } from '$frontend/stores/features/project-artifacts.svelte';
 	import { instructionsStore } from '$frontend/stores/features/instructions.svelte';
 
@@ -119,7 +119,7 @@
 		<ArtifactGenerateBar
 			artifactType="instruction"
 			placeholder={'Describe the instructions, e.g. "run bun test before committing"'}
-			onNavigateArtifacts={() => setActiveSection('artifacts')}
+			onNavigateArtifacts={() => openSettingsModal('models')}
 			onGenerated={(f) => { if (typeof f.content === 'string') block = block.trim() ? `${block.trimEnd()}\n\n${f.content}` : f.content; }}
 		/>
 		<textarea
@@ -147,7 +147,7 @@
 		<ArtifactGenerateBar
 			artifactType="instruction"
 			placeholder={'Describe the instructions, e.g. "the staging database is read-only"'}
-			onNavigateArtifacts={() => setActiveSection('artifacts')}
+			onNavigateArtifacts={() => openSettingsModal('models')}
 			onGenerated={(f) => { if (typeof f.content === 'string') privateContent = f.content; }}
 		/>
 		<textarea

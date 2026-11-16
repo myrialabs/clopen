@@ -274,7 +274,7 @@ class BrowserPool {
 		// via the distro package manager (Linux).
 		const executablePath = getChromeExecutablePath();
 		if (!executablePath) {
-			throw new Error('Chrome not installed. Go to Settings → Stack and click Install.');
+			throw new Error('Chrome not installed. Go to Settings → Agents → Install and click Install.');
 		}
 
 		const userDataDir = profileDir(profileKey);

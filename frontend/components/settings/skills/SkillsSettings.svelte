@@ -12,7 +12,7 @@
 		type ParsedSkillPreview,
 		type SkillTrigger
 	} from '$frontend/stores/features/skills.svelte';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	interface Props {
@@ -574,8 +574,7 @@
 			<div class="pt-2 border-t border-slate-200 dark:border-slate-800 space-y-2">
 				<p class="text-xs font-semibold text-slate-500 dark:text-slate-400">Detected on disk</p>
 				<p class="text-[11px] text-slate-400">
-					Skills already on this machine that Clopen doesn't manage. Linking one makes it
-					take effect for that engine without moving your file.
+					Skills already on this machine. Link one to use it without moving it.
 				</p>
 				{#each detected as group (group.engine)}
 					<div class="space-y-1.5">
@@ -689,7 +688,7 @@
 			<ArtifactGenerateBar
 				artifactType={edIsSlash && !edIsAuto ? 'command' : 'skill'}
 				placeholder={'Describe the skill, e.g. "extract tables from PDF files"'}
-				onNavigateArtifacts={() => { closeEditor(); setActiveSection('artifacts'); }}
+				onNavigateArtifacts={() => { closeEditor(); openSettingsModal('models'); }}
 				onGenerated={(f) => {
 					if (typeof f.name === 'string') edName = f.name;
 					if (typeof f.description === 'string') edDescription = f.description;

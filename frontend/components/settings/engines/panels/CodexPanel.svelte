@@ -5,7 +5,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/utils/theme';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openAgentsInstall } from '$frontend/stores/ui/settings-modal.svelte';
 	import { ENGINES } from '$shared/constants/engines';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
 	import { modelStore } from '$frontend/stores/features/models.svelte';
@@ -104,32 +104,32 @@
 		// Filtering by setupId on these per-user broadcasts isn't necessary;
 		// the backend already serializes one login at a time per user.
 		cleanups.push(
-			ws.on('engine:codex-account-setup-url', (data: { setupId: string; authUrl: string }) => {
+			ws.on('agents:codex-account-setup-url', (data: { setupId: string; authUrl: string }) => {
 				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
 				codexSetupId = data.setupId;
 				codexAuthUrl = data.authUrl;
 				codexAddStep = 'chatgpt-waiting';
 			}),
-			ws.on('engine:codex-account-setup-device-code', (data: { setupId: string; code: string; verificationUrl: string }) => {
+			ws.on('agents:codex-account-setup-device-code', (data: { setupId: string; code: string; verificationUrl: string }) => {
 				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
 				codexSetupId = data.setupId;
 				codexDeviceCode = { code: data.code, verificationUrl: data.verificationUrl };
 				codexAddStep = 'chatgpt-waiting';
 			}),
-			ws.on('engine:codex-account-setup-complete', async (data: { setupId: string; accountId: number }) => {
+			ws.on('agents:codex-account-setup-complete', async (data: { setupId: string; accountId: number }) => {
 				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
 				codexSetupId = data.setupId;
 				codexAddStep = 'success';
 				await codexAccountsStore.refresh();
 				await refreshCodexStatus();
 			}),
-			ws.on('engine:codex-account-setup-error', (data: { setupId: string; message: string }) => {
+			ws.on('agents:codex-account-setup-error', (data: { setupId: string; message: string }) => {
 				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
 				codexSetupId = data.setupId;
 				codexAddError = data.message;
 				codexAddStep = 'error';
 			}),
-			ws.on('engine:codex-account-setup-stream-data', (data: { setupId: string; data: string }) => {
+			ws.on('agents:codex-account-setup-stream-data', (data: { setupId: string; data: string }) => {
 				if (codexAddStep !== 'chatgpt-loading' && codexAddStep !== 'chatgpt-waiting') return;
 				codexSetupId = data.setupId;
 				hasCodexDebugData = true;
@@ -183,7 +183,7 @@
 		codexAddStep = 'saving';
 		codexAddError = '';
 		try {
-			await ws.http('engine:codex-accounts-add-api-key', {
+			await ws.http('agents:codex-accounts-add-api-key', {
 				name: codexAddName.trim(),
 				apiKey: codexAddApiKey.trim(),
 			});
@@ -216,7 +216,7 @@
 		// The backend generates the canonical setupId — we capture it from
 		// the first inbound event (device-code / stream-data).
 		codexSetupId = null;
-		ws.emit('engine:codex-account-setup-start', {
+		ws.emit('agents:codex-account-setup-start', {
 			name: codexAddName.trim(),
 			deviceAuth: codexLoginMethod === 'device',
 			...(codexReauthAccountId != null ? { reauthAccountId: codexReauthAccountId } : {}),
@@ -226,7 +226,7 @@
 	function cancelCodexAdd() {
 		const inFlight = codexAddStep === 'chatgpt-loading' || codexAddStep === 'chatgpt-waiting';
 		if (codexSetupId && inFlight) {
-			ws.emit('engine:codex-account-setup-cancel', { setupId: codexSetupId });
+			ws.emit('agents:codex-account-setup-cancel', { setupId: codexSetupId });
 		}
 		codexAddStep = 'idle';
 		codexSetupId = null;
@@ -260,7 +260,7 @@
 
 	async function switchCodexAccount(id: number) {
 		try {
-			await ws.http('engine:codex-accounts-switch', { id });
+			await ws.http('agents:codex-accounts-switch', { id });
 			await codexAccountsStore.refresh();
 			await refreshCodexStatus();
 			await modelStore.refreshModels('codex');
@@ -277,7 +277,7 @@
 	async function deleteCodexAccount() {
 		if (codexDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:codex-accounts-delete', { id: codexDeleteTargetId });
+			await ws.http('agents:codex-accounts-delete', { id: codexDeleteTargetId });
 			await codexAccountsStore.refresh();
 			await refreshCodexStatus();
 		} catch {
@@ -295,10 +295,10 @@
 		if (codexRenamingId === null || !codexRenameValue.trim()) return;
 		const id = codexRenamingId;
 		try {
-			await ws.http('engine:codex-accounts-rename', { id, name: codexRenameValue.trim() });
+			await ws.http('agents:codex-accounts-rename', { id, name: codexRenameValue.trim() });
 			// api_key accounts may also replace their key; blank keeps the stored one.
 			const apiKey = codexRenameApiKey.trim();
-			if (apiKey) await ws.http('engine:codex-accounts-update-api-key', { id, apiKey });
+			if (apiKey) await ws.http('agents:codex-accounts-update-api-key', { id, apiKey });
 			codexRenamingId = null;
 			codexRenameValue = '';
 			codexRenameApiKey = '';
@@ -327,7 +327,7 @@
 	}
 
 	function openStackSection() {
-		setActiveSection('stack');
+		openAgentsInstall();
 	}
 </script>
 

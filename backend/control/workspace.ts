@@ -9,9 +9,9 @@ import type { EngineType } from '$shared/types/unified';
 import type { ChatSession, Project } from '$shared/types/database/schema';
 import { engineQueries, projectQueries, sessionQueries, settingsQueries } from '$backend/database/queries';
 import { streamManager } from '$backend/chat/stream-manager';
-import { ensureHomeProject } from '$backend/projects/home';
+import { ensureAssistantProject } from '$backend/assistant/project';
 import { ws } from '$backend/utils/ws';
-import { isHomeProject, HOME_PROJECT_NAME } from '$shared/utils/home-project';
+import { isAssistantProject, ASSISTANT_NAME } from '$shared/utils/assistant-project';
 import { debug } from '$shared/utils/logger';
 import type { ControlTarget } from './types';
 
@@ -83,7 +83,7 @@ export function latestSession(projectId: string): ChatSession | null {
 }
 
 export function projectLabel(project: Project): string {
-	return isHomeProject(project) ? HOME_PROJECT_NAME : project.name;
+	return isAssistantProject(project) ? ASSISTANT_NAME : project.name;
 }
 
 export function isSessionBusy(session: ChatSession): boolean {
@@ -109,11 +109,11 @@ export function createSession(project: Project, model: ModelChoice): ChatSession
 
 /**
  * Resolve a target to rows that can be acted on. A project that was removed
- * falls back to Home; a session outside the project is dropped.
+ * falls back to Clopen's own workspace; a session outside the project is dropped.
  */
 export function resolveTarget(target: Partial<ControlTarget> | null): { project: Project; session: ChatSession | null } {
 	let project = target?.projectId ? projectQueries.getById(target.projectId) : null;
-	if (!project || !projectQueries.isListed(project.id)) project = ensureHomeProject();
+	if (!project || !projectQueries.isListed(project.id)) project = ensureAssistantProject();
 	const session = target?.sessionId ? sessionQueries.getById(target.sessionId) : null;
 	return { project, session: session && session.project_id === project.id ? session : null };
 }

@@ -7,7 +7,7 @@
  *
  *   - A plain message (text, photos, files, an album) continues the active
  *     session (queued if it is busy), or starts one if the chat has none
- *     yet. With no project picked, the chat is in the user's Home: chatting
+ *     yet. With no project picked, the chat talks to Clopen itself: chatting
  *     never requires choosing a project.
  *   - A reply to an earlier message continues from THAT point. If it is the
  *     latest point that is just the next turn; if it is an older one, Clopen
@@ -33,6 +33,10 @@
  * about the same way.
  */
 
+import { activeChat, attachSession, ensureChatSession, nameChatFrom } from '$backend/assistant/chats';
+import { editOwnerMessage, receiveOwnerMessage, sessionForNextMessage, type OwnerAttachment } from '$backend/assistant/timeline';
+import { mirrorOwnerMessage } from './outbound';
+import { isAssistantProject } from '$shared/utils/assistant-project';
 import { readFileSync } from 'fs';
 import { markdownToRuns, type TextRun, type UniversalMessage } from '@myrialabs/chatkit';
 import type { StreamRequest } from '$shared/types/unified';
@@ -142,7 +146,7 @@ export async function sendPrompt(
 	target: { project: Project; session: ChatSession | null },
 	text: string,
 	attachments: PromptAttachment[],
-	options: { platformMessageId: string | null }
+	options: { platformMessageId: string | null; promptMessageId?: string; quietQueue?: boolean }
 ): Promise<void> {
 	const { channel, message, link, user } = conversation;
 	if (!composer) {
@@ -178,7 +182,7 @@ export async function sendPrompt(
 		model: { id: model.modelId, name: model.modelName },
 		account: account ?? { id: 0, name: '' }
 	};
-	const promptMessageId = crypto.randomUUID();
+	const promptMessageId = options.promptMessageId ?? crypto.randomUUID();
 	const request: StreamRequest = {
 		projectPath: target.project.path,
 		projectId: target.project.id,
@@ -214,7 +218,9 @@ export async function sendPrompt(
 		const { outcome, queueId } = await composer.submit({ request });
 		if (outcome === 'queued') {
 			setExpectedQueueId(session.id, promptMessageId, queueId);
-			await replyText(channel, message, REPLIES.queued);
+			// Clopen gives a quick word of its own instead of the canned line.
+			if (options.quietQueue) void import('$backend/assistant/ack').then(({ ackNow }) => ackNow(session.id, text, promptMessageId)).catch(() => {});
+			else await replyText(channel, message, REPLIES.queued);
 		}
 	} catch (error) {
 		forgetExpectedTurn(session.id, promptMessageId);
@@ -223,11 +229,120 @@ export async function sendPrompt(
 	}
 }
 
-/** A plain message: continue the active target. */
+/**
+/**
+ * People send a thought in pieces — "check the weather", "in Semarang", "for
+ * tomorrow" within a few seconds. To Clopen those are one message: pieces
+ * that arrive close together are held briefly and sent as one turn, instead
+ * of three turns (and three chats) answering a third of the question each.
+ */
+const BURST_MS = 2500;
+
+interface Burst {
+	conversation: Conversation;
+	texts: string[];
+	/** Each piece's words by its chat message, so an edit inside the window replaces just that piece. */
+	pieces: Array<{ platformId: string | null; text: string }>;
+	attachments: PromptAttachment[];
+	/** The row in Clopen's chat this burst is, from its first piece on. */
+	rowId: string;
+	sessionId: string;
+	kept: OwnerAttachment[];
+	/** Every chat message the burst is made of — an edit to any of them finds the row. */
+	platformIds: string[];
+	timer: ReturnType<typeof setTimeout>;
+}
+
+const bursts = new Map<string, Burst>();
+
 export async function continueActive(conversation: Conversation, text: string, attachments: PromptAttachment[]): Promise<void> {
 	if (!(await requireControl(conversation))) return;
-	const target = activeTarget(reload(conversation.link));
-	await sendPrompt(conversation, target, text, attachments, { platformMessageId: conversation.message.platform_message_id ?? null });
+	const link = reload(conversation.link);
+	const target = activeTarget(link);
+	if (!isAssistantProject(target.project)) {
+		await continueNow(conversation, text, attachments, null);
+		return;
+	}
+	// Clopen: the message is recorded at once, as one row the web shows from its first piece —
+	// the photos of an album and a thought sent in pieces grow that same row.
+	const key = link.id;
+	let burst = bursts.get(key);
+	if (burst) clearTimeout(burst.timer);
+	if (!burst) {
+		const session = await ensureChatSession(activeChat());
+		if (!session) {
+			await replyText(conversation.channel, conversation.message, REPLIES.noModel);
+			return;
+		}
+		burst = { conversation, texts: [], pieces: [], attachments: [], rowId: crypto.randomUUID(), sessionId: session.id, kept: [], platformIds: [], timer: setTimeout(() => {}, 0) };
+	}
+	if (text.trim()) burst.texts.push(text.trim());
+	burst.pieces.push({ platformId: conversation.message.platform_message_id ?? null, text: text.trim() });
+	burst.attachments.push(...attachments);
+	if (conversation.message.platform_message_id) burst.platformIds.push(conversation.message.platform_message_id);
+	const received = receiveOwnerMessage({ id: burst.rowId, sessionId: burst.sessionId, text: burst.texts.join('\n'), attachments, kept: burst.kept, source: 'telegram' });
+	burst.kept = received.kept;
+	const current = burst;
+	current.timer = setTimeout(() => {
+		bursts.delete(key);
+		void continueNow(current.conversation, current.texts.join('\n'), current.attachments, current).catch((error) => debug.warn('chat-apps', 'Sending a message burst failed:', error));
+	}, BURST_MS);
+	bursts.set(key, current);
+}
+
+async function continueNow(conversation: Conversation, text: string, attachments: PromptAttachment[], burst: Burst | null): Promise<void> {
+	const link = reload(conversation.link);
+	const target = activeTarget(link);
+	if (!isAssistantProject(target.project) || !burst) {
+		await sendPrompt(conversation, target, text, attachments, { platformMessageId: conversation.message.platform_message_id ?? null });
+		return;
+	}
+	// The active chat's current session — the same one the web uses — under the row's id.
+	const chatId = activeChat();
+	const session = sessionForNextMessage(chatId, text);
+	await sendPrompt(conversation, { project: target.project, session }, text, attachments, {
+		platformMessageId: burst.platformIds[0] ?? conversation.message.platform_message_id ?? null,
+		promptMessageId: burst.rowId,
+		quietQueue: true
+	});
+	const used = reload(link).active_session_id;
+	if (used) attachSession(chatId, used);
+	for (const platformId of burst.platformIds.slice(1)) {
+		channelMessageQueries.create({ linkId: link.id, kind: 'user', chatSessionId: used, clopenMessageId: burst.rowId, platformMessageId: platformId });
+	}
+	void nameChatFrom(chatId, text);
+}
+
+/**
+ * An edit in Clopen's chat is a correction — nothing is rewound or branched.
+ * Still in the burst window: that piece's words change. Waiting behind a busy
+ * turn: the queued words change. Otherwise Clopen hears the change and acts
+ * on it (see editOwnerMessage).
+ */
+async function editInClopen(conversation: Conversation, platformMessageId: string, text: string): Promise<void> {
+	const { link } = conversation;
+	for (const burst of bursts.values()) {
+		const piece = burst.pieces.find((entry) => entry.platformId === platformMessageId);
+		if (!piece) continue;
+		piece.text = text.trim();
+		burst.texts = burst.pieces.map((entry) => entry.text).filter(Boolean);
+		receiveOwnerMessage({ id: burst.rowId, sessionId: burst.sessionId, text: burst.texts.join('\n'), kept: burst.kept, source: 'telegram' });
+		return;
+	}
+	const row = channelMessageQueries.getByMessage(link.id, platformMessageId);
+	const rowId = row?.kind === 'user' ? row.clopen_message_id : null;
+	if (!rowId) {
+		await replyText(conversation.channel, conversation.message, REPLIES.notEditable);
+		return;
+	}
+	const queued = queuedPromptFor(link.id, platformMessageId);
+	if (queued && composer?.replaceQueued(queued.chatSessionId, queued.prompt.queueId!, promptContent(text, []))) {
+		await editOwnerMessage({ id: rowId, text, from: 'telegram', recordOnly: true });
+		return;
+	}
+	await editOwnerMessage({ id: rowId, text, from: 'telegram' }).catch(async () => {
+		await replyText(conversation.channel, conversation.message, REPLIES.notEditable);
+	});
 }
 
 // ── Confirmations ───────────────────────────────────────────────────────────
@@ -368,6 +483,10 @@ export async function editSent(conversation: Conversation, text: string, attachm
 		return;
 	}
 	if (!(await requireControl(conversation))) return;
+	if (isAssistantProject(activeTarget(reload(link)).project)) {
+		await editInClopen(conversation, platformMessageId, text);
+		return;
+	}
 
 	const queued = queuedPromptFor(link.id, platformMessageId);
 	if (queued && composer?.replaceQueued(queued.chatSessionId, queued.prompt.queueId!, promptContent(text, attachments))) {

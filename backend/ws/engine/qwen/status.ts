@@ -13,7 +13,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const qwenStatusHandler = createRouter()
-	.http('engine:qwen-status', {
+	.http('agents:qwen-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

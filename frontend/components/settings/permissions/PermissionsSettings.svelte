@@ -139,7 +139,7 @@
 	{#if showHeader}
 		<div>
 			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Permissions</h3>
-			<p class="text-sm text-slate-600 dark:text-slate-500">Allow or deny tools per engine.</p>
+			<p class="text-sm text-slate-600 dark:text-slate-500">Allow or block tools per agent.</p>
 		</div>
 	{/if}
 

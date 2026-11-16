@@ -42,6 +42,8 @@ export type LogLabel =
 	| 'notification'
 	| 'control'
 	| 'chat-apps'
+	| 'assistant'
+	| 'jobs'
 	| 'rate-limit'
 	
 	// Configuration

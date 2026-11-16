@@ -3,7 +3,7 @@
  *
  * Shared reactive store for Claude Code accounts.
  * Used by both AIEnginesSettings and EngineModelPicker to stay in sync.
- * Fetches from backend via `engine:claude-accounts-list`.
+ * Fetches from backend via `agents:claude-accounts-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -58,7 +58,7 @@ export const claudeAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:claude-accounts-list', {});
+	const result = await ws.http('agents:claude-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Claude accounts loaded: ${accounts.length}`);
 }

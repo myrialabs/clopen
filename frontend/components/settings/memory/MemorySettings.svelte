@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Settings → Infrastructure → Memory — what memory does, not which model writes it.
+	 * Settings → Memory — what memory does, not which model writes it.
 	 *
 	 * Three switches under one master, a recall budget, and what is actually
 	 * stored. Grouped rather than listed: the earlier flat wall of toggles and
@@ -70,14 +70,14 @@
 						value: config.recordMemories,
 						title: 'Record what is decided',
 						description:
-							'As soon as a turn finishes, summarise what it established — decisions, preferences, failures, facts — into memories.'
+							'After each turn, keep its decisions, preferences and facts.'
 					},
 					{
 						key: 'autoRecall',
 						value: config.autoRecall,
 						title: 'Recall automatically',
 						description:
-							'Hand the agent whatever is relevant at the start of each turn, with no prompting. It can always search deeper itself.'
+							'Give each turn what is relevant, without asking.'
 					}
 				]
 			: []
@@ -120,23 +120,9 @@
 <div class="py-1">
 	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Memory</h3>
 	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">
-		What this workspace remembers, shared by every engine.
+		What Clopen remembers, shared by every agent. Recalling costs nothing.
 	</p>
 
-	<!--
-		Mirrors the card on Settings → Model → Memory. This page and that one answer
-		different questions — what memory does, versus which model writes it — and
-		splitting them was right, but a split with no link between the halves just
-		makes each one harder to find from the other.
-	-->
-	<div class="flex items-start gap-2.5 p-3 mb-4 rounded-xl bg-slate-500/5 dark:bg-slate-400/5 border border-slate-200 dark:border-slate-700/60">
-		<Icon name="lucide:info" class="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
-		<p class="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-			Recording happens on its own after every turn, using a model you pick once under
-			<button type="button" class="text-violet-600 dark:text-violet-400 hover:underline cursor-pointer font-medium" onclick={() => (settingsModalState.activeSection = 'memory')}>Settings → Model → Memory</button>.
-			Recalling costs no model call at all, so it runs on every turn for free.
-		</p>
-	</div>
 
 	{#if error}
 		<div class="mb-4 px-3 py-2 rounded-lg bg-red-50 dark:bg-red-900/20 text-xs text-red-600 dark:text-red-400">
@@ -162,7 +148,7 @@
 						<Icon name="lucide:brain" class="w-5 h-5 text-violet-600 dark:text-violet-400" />
 					</div>
 					<div class="min-w-0">
-						<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Remember across sessions</div>
+						<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Remember across chats</div>
 						<p class="text-xs text-slate-500 dark:text-slate-400">
 							When off, nothing is recorded and no memory reaches any agent. What is already stored is kept.
 						</p>
@@ -310,8 +296,7 @@
 									</p>
 								{:else}
 									<p class="text-amber-600 dark:text-amber-400">
-										Recall is off until the local search model is installed. Recording continues, so
-										nothing said in the meantime is lost.
+										Recall starts once the local search model is installed. Recording already runs.
 									</p>
 									{#if embedding?.error}
 										<p class="mt-1 font-mono text-[10px] break-all opacity-70">{embedding.error}</p>

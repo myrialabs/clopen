@@ -39,7 +39,7 @@ const defaultSettings: AppSettings = {
 	pushNotifications: false,
 	layoutPresetVisibility: createDefaultPresetVisibility(),
 	fontSize: 13,
-	chatAppearance: 'classic',
+	chatAppearance: 'compact',
 	gitDiffSideBySide: true,
 	workDiffSideBySide: false,
 	diffChangesOnly: true,
@@ -196,6 +196,24 @@ function saveSettings(): void {
 	ws.http('user:save-state', { key: 'settings', value: { ...settings } }).catch(err => {
 		debug.error('settings', 'Failed to save settings to server:', err);
 	});
+}
+
+/**
+ * Set by the setup wizard when the owner allowed notifications there: settings
+ * are not loaded yet at that point, so the switch is turned on once they are.
+ */
+export const PENDING_PUSH_KEY = 'clopen:pending-push';
+
+/** Apply what the wizard decided before settings were loaded. Call after hydration. */
+export function applyPendingWizardSettings(): void {
+	try {
+		if (sessionStorage.getItem(PENDING_PUSH_KEY) === '1') {
+			sessionStorage.removeItem(PENDING_PUSH_KEY);
+			updateSettings({ pushNotifications: true });
+		}
+	} catch {
+		// No storage: nothing pending.
+	}
 }
 
 // Export functions directly

@@ -52,7 +52,7 @@
 		copilotAddStep = 'saving';
 		copilotAddError = '';
 		try {
-			await ws.http('engine:copilot-accounts-add', {
+			await ws.http('agents:copilot-accounts-add', {
 				name: copilotAddName.trim(),
 				token: copilotAddToken.trim()
 			});
@@ -74,7 +74,7 @@
 
 	async function switchCopilotAccount(id: number) {
 		try {
-			await ws.http('engine:copilot-accounts-switch', { id });
+			await ws.http('agents:copilot-accounts-switch', { id });
 			await copilotAccountsStore.refresh();
 			await refreshCopilotStatus();
 		} catch {
@@ -90,7 +90,7 @@
 	async function deleteCopilotAccount() {
 		if (copilotDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:copilot-accounts-delete', { id: copilotDeleteTargetId });
+			await ws.http('agents:copilot-accounts-delete', { id: copilotDeleteTargetId });
 			await copilotAccountsStore.refresh();
 			await refreshCopilotStatus();
 		} catch {
@@ -108,9 +108,9 @@
 		if (copilotRenamingId === null || !copilotRenameValue.trim()) return;
 		const id = copilotRenamingId;
 		try {
-			await ws.http('engine:copilot-accounts-rename', { id, name: copilotRenameValue.trim() });
+			await ws.http('agents:copilot-accounts-rename', { id, name: copilotRenameValue.trim() });
 			const token = copilotRenameToken.trim();
-			if (token) await ws.http('engine:copilot-accounts-update-token', { id, token });
+			if (token) await ws.http('agents:copilot-accounts-update-token', { id, token });
 			copilotRenamingId = null;
 			copilotRenameValue = '';
 			copilotRenameToken = '';

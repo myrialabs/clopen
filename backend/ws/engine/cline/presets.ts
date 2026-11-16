@@ -12,7 +12,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { getClineProviderPresets } from '../../../engine/adapters/cline/presets';
 
 export const clinePresetsHandler = createRouter()
-	.http('engine:cline-presets-list', {
+	.http('agents:cline-presets-list', {
 		data: t.Object({}),
 		response: t.Object({
 			presets: t.Array(t.Object({

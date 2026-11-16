@@ -5,7 +5,7 @@
  * Mistral, the Cline account, OpenAI-compatible, …). Rather than hardcode them,
  * we enumerate the catalog from `@cline/llms` (`getAllProviders`) and derive each
  * provider's auth shape from `getProviderConfigFields` + `isOAuthProvider`, then
- * expose the result to the login picker via `engine:cline-presets-list`.
+ * expose the result to the login picker via `agents:cline-presets-list`.
  *
  * The wire types (`ClineProviderPreset`, `ClineAuthMode`, `ClineCredentialField`)
  * live in `shared/types/unified/engine.ts` so the frontend stays typed without

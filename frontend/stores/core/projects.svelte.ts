@@ -8,7 +8,7 @@
 
 import ws from '$frontend/utils/ws';
 import type { Project } from '$shared/types/database/schema';
-import { homeFirst, isHomeProject } from '$shared/utils/home-project';
+import { assistantFirst, isAssistantProject } from '$shared/utils/assistant-project';
 
 import { debug } from '$shared/utils/logger';
 import { cleanupProjectState } from '$frontend/utils/project-state-cleanup';
@@ -378,7 +378,7 @@ function persistProjectOrder() {
  * stored order moves it.
  */
 function applyProjectOrder(projects: Project[], order: string[]): Project[] {
-	return homeFirst(applyStoredOrder(projects, order));
+	return assistantFirst(applyStoredOrder(projects, order));
 }
 
 function applyStoredOrder(projects: Project[], order: string[]): Project[] {
@@ -422,7 +422,7 @@ export function reorderProjects(sourceProjectId: string, targetProjectId: string
 	const [movedProject] = projects.splice(sourceIndex, 1);
 	projects.splice(targetIndex, 0, movedProject);
 
-	projectState.projects = homeFirst(projects);
+	projectState.projects = assistantFirst(projects);
 	projectState.projectOrder = projects.map((project) => project.id);
 	persistProjectOrder();
 	updateRecentProjects();
@@ -503,8 +503,8 @@ export async function loadProjects(restoreProjectId?: string | null) {
 			// Nothing to restore and nothing else to open: land in Home, so the
 			// first screen is a chat that works rather than "No project selected".
 			if (!projectState.currentProject) {
-				const home = projectState.projects.find(isHomeProject);
-				const hasOtherProjects = projectState.projects.some((project) => !isHomeProject(project));
+				const home = projectState.projects.find(isAssistantProject);
+				const hasOtherProjects = projectState.projects.some((project) => !isAssistantProject(project));
 				if (home && !hasOtherProjects) {
 					debug.log('project', 'No projects yet — opening Home');
 					await setCurrentProject(home);
@@ -572,4 +572,26 @@ export function searchProjects(query: string): Project[] {
 
 export async function initializeProjects(restoreProjectId?: string | null) {
 	await loadProjects(restoreProjectId);
+}
+
+/**
+ * Refetch the project list quietly — after another device, an agent or a chat
+ * app added, renamed or removed a project. Keeps the order and the open
+ * project; never shows a loading state.
+ */
+export async function refreshProjectList(): Promise<void> {
+	try {
+		const projects = await ws.http('projects:list');
+		if (!projects) return;
+		projectState.projects = applyProjectOrder(projects, projectState.projectOrder);
+		projectState.projectOrder = projectState.projects.map((project) => project.id);
+		const current = projectState.currentProject;
+		if (current) {
+			const fresh = projectState.projects.find((project) => project.id === current.id);
+			if (fresh) projectState.currentProject = withRootOverride(fresh);
+		}
+		updateRecentProjects();
+	} catch (error) {
+		debug.warn('project', 'Refreshing the project list failed:', error);
+	}
 }

@@ -6,6 +6,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
+import { recordPreviewNavigation } from '$backend/assistant/recordings';
 import { debug } from '$shared/utils/logger';
 import { requireBrowserPreviewAccess, requireBrowserTabAccess } from '../access';
 import { LaunchCancelledError } from '../../../preview/browser/browser-tab-manager';
@@ -143,6 +144,7 @@ export const tabPreviewHandler = createRouter()
 		const finalUrl = await previewService.navigateTab(tab.id, url);
 
 		debug.log('preview', `✅ Navigation completed - final URL: ${finalUrl}`);
+		recordPreviewNavigation(projectId, finalUrl);
 
 		return {
 			tabId: tab.id,

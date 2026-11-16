@@ -13,7 +13,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const clineStatusHandler = createRouter()
-	.http('engine:cline-status', {
+	.http('agents:cline-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

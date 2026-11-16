@@ -77,7 +77,7 @@ describe('resolveGenerationTarget', () => {
 			GENERATION_SETTINGS.artifact
 		);
 		// "Pick a model again" would be useless advice when there is nothing to pick.
-		await expect(promise).rejects.toThrow(/no models available.*Settings → Engines/s);
+		await expect(promise).rejects.toThrow(/no models available.*Settings → Agents/s);
 	});
 
 	test('a model the catalog no longer offers is rejected, not passed through', async () => {

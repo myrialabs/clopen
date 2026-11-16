@@ -3,8 +3,8 @@
  *
  * Before an engine streams, verify it is actually usable and, when it is not,
  * return an actionable message that routes the user to the right place:
- *   - SDK missing or version-mismatched → Settings → Stack (install / update)
- *   - required account not set up        → Settings → Engines (sign in)
+ *   - SDK missing or version-mismatched → Settings → Agents → Install (install / update)
+ *   - required account not set up        → Settings → Agents (sign in)
  *
  * SDK readiness is checked first, so a not-installed engine is fixed before an
  * account is asked for. Engines that also need an external CLI binary (Open
@@ -12,7 +12,7 @@
  * them, and waving them through would send the user off to sign in for an engine
  * that fails at spawn.
  *
- * The message text embeds the literal "Settings → Stack" / "Settings → Engines"
+ * The message text embeds the literal "Settings → Agents → Install" / "Settings → Agents"
  * phrases; the chat error renderer
  * (`frontend/components/chat/formatters/ErrorMessage.svelte`) turns those into
  * clickable buttons that open the matching settings section.
@@ -74,7 +74,7 @@ export async function checkEngineSetup(engine: EngineType, accountId: number): P
 	if (installed === null) {
 		return {
 			reason: 'not-installed',
-			message: `Engine "${engine}" is not installed. Open Settings → Stack to install it before using this engine.`
+			message: `Engine "${engine}" is not installed. Open Settings → Agents → Install to install it before using this engine.`
 		};
 	}
 	if (required !== null && installed !== required) {
@@ -82,7 +82,7 @@ export async function checkEngineSetup(engine: EngineType, accountId: number): P
 			reason: 'needs-update',
 			message:
 				`Engine "${engine}" needs an update (installed ${installed}, required ${required}). ` +
-				`Open Settings → Stack to update it before using this engine.`
+				`Open Settings → Agents → Install to update it before using this engine.`
 		};
 	}
 
@@ -95,14 +95,14 @@ export async function checkEngineSetup(engine: EngineType, accountId: number): P
 			reason: 'not-installed',
 			message:
 				`Engine "${engine}" is missing its CLI. ` +
-				`Open Settings → Stack to install it before using this engine.`
+				`Open Settings → Agents → Install to install it before using this engine.`
 		};
 	}
 
 	if (!ENGINES_WITHOUT_ACCOUNT.has(engine) && accountId === 0) {
 		return {
 			reason: 'needs-account',
-			message: `Engine "${engine}" has no account set up. Open Settings → Engines to sign in before using this engine.`
+			message: `Engine "${engine}" has no account set up. Open Settings → Agents to sign in before using this engine.`
 		};
 	}
 	return null;

@@ -16,7 +16,7 @@
 
 import { tunnelKit, portFromService } from './tunnel-config';
 import { SERVER_ENV } from '../utils/env';
-import { readSystemSetting } from '$backend/settings/system-settings';
+import { getAuthMode, readSystemSetting } from '$backend/settings/system-settings';
 import { debug } from '$shared/utils/logger';
 
 export type PublicOriginSource = 'configured' | 'domain' | 'tunnel';
@@ -71,6 +71,23 @@ export function getClopenPublicPort(): number {
 	return SERVER_ENV.isDevelopment ? SERVER_ENV.PORT_FRONTEND : SERVER_ENV.PORT;
 }
 
+/** The ports Clopen itself listens on (backend, and the dev frontend). */
+export function isClopenPort(port: number): boolean {
+	return port === SERVER_ENV.PORT || port === SERVER_ENV.PORT_FRONTEND;
+}
+
+/**
+ * Refuse to put Clopen itself on the internet while it has no login. With
+ * "No login" anyone who reaches the URL has the whole machine — files, shell,
+ * every connected account — so a tunnel to Clopen's own port is only allowed
+ * once a login is set. Other ports (an app being built) are not Clopen.
+ */
+export function assertMayExpose(port: number): void {
+	if (isClopenPort(port) && getAuthMode() === 'none') {
+		throw new Error('Clopen has no login, so it cannot be opened from the internet. Set a login first (Settings → Devices & Access).');
+	}
+}
+
 /**
  * The public origin that already exists, if any — never starts anything.
  *
@@ -110,6 +127,7 @@ export async function resolvePublicOrigin(requestOrigin?: string): Promise<Publi
 	// Vite on PORT_FRONTEND (which proxies to the backend), so tunnel that; in
 	// production frontend and backend share PORT.
 	const port = getClopenPublicPort();
+	assertMayExpose(port);
 
 	debug.log('tunnel', `[remote-access] Starting quick tunnel for Clopen port ${port}`);
 	await tunnelKit.bin.ensure();

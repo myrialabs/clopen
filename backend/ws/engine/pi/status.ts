@@ -14,7 +14,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const piStatusHandler = createRouter()
-	.http('engine:pi-status', {
+	.http('agents:pi-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

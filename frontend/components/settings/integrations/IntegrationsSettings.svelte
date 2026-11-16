@@ -1,6 +1,6 @@
 <script lang="ts">
 	/**
-	 * Settings → Integrations.
+	 * Library → Integrations.
 	 *
 	 * ONE list of everything Clopen can use, whatever it came from: built-in
 	 * tools, connected accounts, and hand-installed MCP servers. This section
@@ -25,7 +25,7 @@
 	import { getProviderIcon } from '$shared/constants/tool-icons';
 	import ws from '$frontend/utils/ws';
 	import { isDarkMode } from '$frontend/stores/ui/theme.svelte';
-	import { settingsModalState } from '$frontend/stores/ui/settings-modal.svelte';
+	import { libraryModalState } from '$frontend/stores/ui/library-modal.svelte';
 	import type { IntegrationAccountInfo, IntegrationProviderInfo } from '$shared/types/integrations';
 	import type { IconName } from '$shared/types/ui/icons';
 
@@ -202,13 +202,13 @@
 	 * so it cannot fire again the next time Integrations is opened.
 	 */
 	$effect(() => {
-		const wanted = settingsModalState.integrationFocusProvider;
+		const wanted = libraryModalState.integrationFocusProvider;
 		if (!wanted) return;
 
 		const providers = integrationsStore.providers;
 		if (providers.length === 0) return;
 
-		settingsModalState.integrationFocusProvider = null;
+		libraryModalState.integrationFocusProvider = null;
 
 		const provider = providers.find((candidate) => candidate.id === wanted);
 		if (!provider) return;

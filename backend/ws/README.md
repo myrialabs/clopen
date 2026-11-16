@@ -210,6 +210,33 @@ module/
 └── helpers.ts     # Shared utilities
 ```
 
+**Namespaces renamed in v0.5.** Only the terms Clopen invented were renamed, so
+the route names read like the UI: `engine:*` → `agents:*`; `stack:*` →
+`agents:install-*` (`agents:install-status`, `agents:install-status-all`,
+`agents:install-start`, `agents:install-cancel`, `agents:install-session`,
+`agents:install-check-update`, and the `agents:install-started/-stream/-finished`
+events); `project-artifacts:*` → `library:project-*`; `artifacts:generate` →
+`library:generate`; `profiles:*` → `toolsets:*`; `instructions:*` → `rules:*`.
+The module folders keep their old names. The Clopen assistant's routes live in
+`assistant/` (`assistant:*` — overview, tasks (`assistant:task*`), flows
+(`assistant:flow*`, `assistant:recipe-check`), cards (`assistant:inbox-*`,
+`assistant:card-*`), the live view (`assistant:live-*`), models per purpose
+(`assistant:models-*`), scripts, recordings, secrets (incl.
+`assistant:secret-reveal`), profile, journal, message routing
+(`assistant:route`), per-connection database access for agents,
+start-with-the-computer, settings) and announce every change
+with one `assistant:changed { scope, id }` event.
+
+**Auto-sync.** After any successful write request (risk not `read`) in a shared
+namespace, the router's after-request hook emits `data:changed { namespace }`
+(`system/data-sync.ts`, coalesced per namespace). It fires for browser requests
+and for in-process `invoke` calls alike — an agent, a chat app or an automation
+changing something updates every open screen. A new namespace the frontend
+caches goes into `SYNCED_NAMESPACES` and `frontend/services/data-sync.ts`;
+don't add a bespoke "changed" event for it. Agents reach these routes through `api.call` only when they are not on
+the blocklist in `backend/control/agent/risk.ts`, so a route's name is part of
+the agent's interface: name new routes by what they do.
+
 ### Data Flow
 
 ```

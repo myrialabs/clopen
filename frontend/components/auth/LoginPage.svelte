@@ -52,7 +52,7 @@
 		}
 
 		if (!trimmed.startsWith('clp_pat_')) {
-			error = 'Invalid token format. Use your Personal Access Token (clp_pat_...)';
+			error = 'That is not a sign-in key. It starts with clp_pat_.';
 			return;
 		}
 

@@ -6,7 +6,7 @@
  * inside the managed stack dir — never on PATH — which is where clopen kept
  * getting this wrong. Code that needed one reached for `Bun.which`, found
  * nothing on a machine without a global install, and reported an engine as
- * missing that Settings → Stack had just installed:
+ * missing that Settings → Agents → Install had just installed:
  *
  *   - Open Code: `@opencode-ai/sdk` is an HTTP client with no binary at all, so
  *     the adapter could not spawn `opencode serve` and NO model could be picked.

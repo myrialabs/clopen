@@ -8,6 +8,8 @@
  */
 
 import { t } from 'elysia';
+import { saveModelChoice } from '$backend/assistant/model';
+import { isAssistantProject } from '$shared/utils/assistant-project';
 import type { EngineModel, EngineType } from '$shared/types/unified';
 import { ENGINES } from '$shared/constants/engines';
 import { engineQueries, sessionQueries } from '$backend/database/queries';
@@ -69,7 +71,7 @@ export const listEngines = defineAction({
 	title: 'Model',
 	description: 'Pick the model for this session',
 	args: t.Object({ engine: t.Optional(t.String()), query: t.Optional(t.String()) }),
-	command: { name: 'model', argument: { keys: ['engine', 'query'], hint: '[engine] [search]' } },
+	command: { name: 'model', argument: { keys: ['engine', 'query'], hint: '[agent] [search]' } },
 	async run(ctx, args) {
 		if (args.engine?.trim()) return modelsOf(ctx, { engine: args.engine, query: args.query });
 		const { session } = resolveTarget(ctx.target);
@@ -81,7 +83,7 @@ export const listEngines = defineAction({
 		);
 		const ready = ENGINES.filter((_, index) => !issues[index]).length;
 		const header = current ? `🤖 Now: \`${current.modelName}\` on ${engineName(current.engine)}.\n\n` : '';
-		const note = ready < ENGINES.length ? `\n_⚠️ marks an engine that is not set up yet. Set it up in Clopen → Settings → Engines._` : '';
+		const note = ready < ENGINES.length ? `\n_⚠️ marks an engine that is not set up yet. Set it up in Clopen → Settings → Agents._` : '';
 		return {
 			text: `${header}**🤖 Pick an engine**${note}`,
 			choices: ENGINES.map((engine, index) => ({
@@ -124,6 +126,8 @@ export const setModel = defineAction({
 	async run(ctx, args) {
 		const { project, session } = resolveTarget(ctx.target);
 		const model = { engine: args.engine as EngineType, provider: args.provider, modelId: args.modelId, modelName: args.modelName };
+		// In Clopen's own chat this IS the Clopen model (Settings → Models) — one choice, everywhere.
+		if (isAssistantProject(project)) saveModelChoice('assistant', model);
 		if (session) {
 			const switchedEngine = session.engine !== model.engine;
 			sessionQueries.updateEngineModel(session.id, model.engine, model.provider, model.modelId, model.modelName);

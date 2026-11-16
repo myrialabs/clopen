@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { fade } from 'svelte/transition';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import HomeProjectEntry from './HomeProjectEntry.svelte';
+	import AssistantEntry from './AssistantEntry.svelte';
+	import { isAssistantProject } from '$shared/utils/assistant-project';
 	import {
 		projectState,
 		setCurrentProject,
@@ -9,7 +10,9 @@
 		addProject,
 		reorderProjects
 	} from '$frontend/stores/core/projects.svelte';
-	import { workspaceState, toggleNavigator } from '$frontend/stores/ui/workspace.svelte';
+	import { workspaceState, toggleNavigator, setNavigatorWidth } from '$frontend/stores/ui/workspace.svelte';
+	import { assistantStore } from '$frontend/stores/features/assistant.svelte';
+	import { openNeedsYou } from '$frontend/stores/ui/assistant-view.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { projectStatusService } from '$frontend/services/project';
@@ -19,9 +22,11 @@
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import FolderBrowser from '$frontend/components/common/form/FolderBrowser.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
+	import { openLibrary } from '$frontend/stores/ui/library-modal.svelte';
 	import ViewMenu from '$frontend/components/workspace/ViewMenu.svelte';
 	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
 	import WorktreeSwitcher from '$frontend/components/worktree/WorktreeSwitcher.svelte';
+	import { projectAvatars, statusMeaning } from '$frontend/utils/project-avatar';
 	import QuickSearchButton from '$frontend/components/workspace/QuickSearchButton.svelte';
 	import TunnelModal from '$frontend/components/tunnel/TunnelModal.svelte';
 	import RemoteAccessPanel from '$frontend/components/remote-access/RemoteAccessPanel.svelte';
@@ -89,7 +94,6 @@
 	let bulkDeleting = $state(false);
 	let showProjectInfo = $state(false);
 	let projectInfoProject = $state<Project | null>(null);
-	let searchQuery = $state('');
 	let hoveredProject = $state<Project | null>(null);
 	let tooltipY = $state(0);
 	let tooltipX = $state(0);
@@ -106,35 +110,30 @@
 	// Derived
 	const isCollapsed = $derived(workspaceState.navigatorCollapsed);
 	const currentProjectId = $derived(projectState.currentProject?.id);
+	const assistantProject = $derived(projectState.projects.find(isAssistantProject) ?? null);
+	const assistantIsCurrent = $derived(Boolean(assistantProject) && currentProjectId === assistantProject?.id);
 	const navigatorWidth = $derived(
 		workspaceState.navigatorCollapsed ? 48 : Math.round(workspaceState.navigatorWidth * (settings.fontSize / 13))
 	);
 	const selectionActive = $derived(projectSelectionState.active);
 	const selectionCount = $derived(projectSelectionState.selectedIds.length);
 
-	function matchesSearch(p: Project): boolean {
-		if (!searchQuery.trim()) return true;
-		const query = searchQuery.toLowerCase();
-		return p.name.toLowerCase().includes(query) || p.path.toLowerCase().includes(query);
-	}
-
 	// Main list: archived projects are excluded, pinned stay on top.
 	const filteredProjects = $derived(() => {
-		return visibleProjects(projectState.projects.filter(matchesSearch));
+		return visibleProjects(projectState.projects);
 	});
 
-	// Archived section content (same search applies).
+	// Archived section content.
 	const archivedList = $derived(() => {
-		return archivedProjects(projectState.projects.filter(matchesSearch));
+		return archivedProjects(projectState.projects);
 	});
 
 	const allVisibleSelected = $derived(
 		filteredProjects().length > 0 && areAllSelected(filteredProjects().map((p) => p.id))
 	);
 
-	// Searching narrows the list the toolbar counts against, so drop picks that
-	// scrolled out of reach — otherwise the counter reads "4/1" and a bulk
-	// action would hit projects the user can no longer see.
+	// Archiving or deleting shrinks the list the toolbar counts against, so drop
+	// picks that are gone — otherwise the counter reads "4/1".
 	$effect(() => {
 		retainSelection(filteredProjects().map((p) => p.id));
 	});
@@ -386,16 +385,48 @@
 		});
 	}
 
-	// Get project initials (max 2 characters)
-	function getProjectInitials(name: string): string {
-		const words = name.trim().split(/[\s-_]+/);
-		if (words.length >= 2) {
-			// Multiple words: take first letter of first 2 words
-			return (words[0][0] + words[1][0]).toUpperCase();
-		}
-		// Single word: take first 2 letters
-		return name.substring(0, 2).toUpperCase();
+	// ── Width: drag the edge; narrow enough and it becomes the icon rail ──
+	let asideEl = $state<HTMLElement>();
+	let resizing = $state(false);
+	const RAIL_BELOW = 150;
+
+	/** Drag the edge to resize; a click on it folds the sidebar to the icon rail, or opens it again. */
+	function startResize(event: PointerEvent) {
+		if (!asideEl) return;
+		event.preventDefault();
+		const left = asideEl.getBoundingClientRect().left;
+		const startX = event.clientX;
+		const scale = settings.fontSize / 13;
+		let dragged = false;
+		const move = (moved: PointerEvent) => {
+			if (!dragged && Math.abs(moved.clientX - startX) < 4) return;
+			dragged = true;
+			resizing = true;
+			const width = moved.clientX - left;
+			const rail = width < RAIL_BELOW;
+			if (rail !== workspaceState.navigatorCollapsed) toggleNavigator();
+			if (!rail) setNavigatorWidth(Math.round(width / scale), 13);
+		};
+		const up = () => {
+			resizing = false;
+			window.removeEventListener('pointermove', move);
+			window.removeEventListener('pointerup', up);
+			if (!dragged) toggleNavigator();
+		};
+		window.addEventListener('pointermove', move);
+		window.addEventListener('pointerup', up);
 	}
+
+	const needsYou = $derived(assistantStore.needsYou.length);
+	// Projects Clopen made for its tasks sit apart from the owner's own.
+	const createdIds = $derived(new Set(assistantStore.overview?.createdProjectIds ?? []));
+	let byClopenExpanded = $state(false);
+	const iconButton =
+		'relative flex items-center justify-center w-9 h-9 shrink-0 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-colors hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100';
+
+	// Two unique letters and a colour per project — the same wide or narrow.
+	const avatars = $derived(projectAvatars(projectState.projects));
+	const avatarOf = (project: Project) => avatars.get(project.id) ?? { initials: '?', colour: 'bg-slate-500/15 text-slate-600' };
 
 	function showProjectTooltip(project: Project, event: MouseEvent) {
 		const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
@@ -410,7 +441,7 @@
 
 	function canReorderProjects() {
 		if (selectionActive) return false;
-		return !searchQuery.trim() && projectState.projects.length > 1;
+		return projectState.projects.length > 1;
 	}
 
 	function handleProjectDragStart(event: DragEvent, projectId: string) {
@@ -454,72 +485,71 @@
 	}
 </script>
 
+{#snippet footerIcons()}
+	<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
+	<ToolsMenu
+		collapsed={true}
+		onRemoteAccess={openRemoteAccessDialog}
+		onPublicTunnel={openTunnelDialog}
+		onDbClient={openDbClientDialog}
+		onSshClient={openSshClientDialog}
+		onPorts={openPortsDialog}
+		onContainers={openContainersDialog}
+		onMemory={openMemoryDialog}
+		onNotes={openNotesDialog}
+		onWork={() => openWorkDialog()}
+		onDeployments={() => openDeploymentsDialog()}
+	/>
+	<button type="button" class={iconButton} onclick={() => openLibrary()} title="Library" aria-label="Library">
+		<Icon name="lucide:library" class="w-5 h-5" />
+	</button>
+	<QuickSearchButton collapsed={true} />
+{/snippet}
+
 <!-- Project Navigator Sidebar -->
 <aside
-	class="shrink-0 h-full bg-white dark:bg-slate-900/95 border-r border-slate-200 dark:border-slate-800 transition-[width] duration-200 z-20"
+	bind:this={asideEl}
+	class="relative shrink-0 h-full bg-white dark:bg-slate-900/95 border-r border-slate-200 dark:border-slate-800 z-20 {resizing ? '' : 'transition-[width] duration-200'}"
 	style="width: {navigatorWidth}px"
 	aria-label="Project Navigator"
 >
+	<!--
+		The gutter between the sidebar and the workspace, like the one between
+		panels: drag to resize (narrow enough becomes the icon rail); click to
+		fold or open. It fills the workspace's own left padding, so its grip sits
+		in the middle of the gap.
+	-->
+	<div
+		class="absolute top-0 -right-3 w-3 h-full z-30 flex items-center justify-center cursor-col-resize transition-colors duration-150 {resizing ? 'bg-violet-500/10' : 'hover:bg-violet-500/5'}"
+		role="separator"
+		aria-orientation="vertical"
+		aria-label="Resize sidebar"
+		title={isCollapsed ? 'Open sidebar' : 'Fold sidebar'}
+		onpointerdown={startResize}
+	>
+		<div class="w-0.5 h-12 rounded bg-violet-500/20 transition-all duration-150 {resizing ? 'bg-violet-600 scale-110' : ''}"></div>
+	</div>
 	<nav
 		class="flex flex-col h-full bg-white dark:bg-slate-900/95 transition-all duration-200 {isCollapsed
 			? 'items-center'
 			: ''}"
 	>
-		<!-- Header -->
-		<header
-			class="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-800 {isCollapsed
-				? 'justify-center px-2'
-				: ''}"
-		>
+		<!-- Brand: a mark, not a control. The same place wide or narrow; only the word hides. -->
+		<header class="flex items-center gap-2.5 h-14 shrink-0 border-b border-slate-200 dark:border-slate-800 {isCollapsed ? 'justify-center px-2' : 'pl-4 pr-2'}">
+			<img src="/favicon.svg" alt="Clopen" class="w-8 h-8 rounded-lg shrink-0" />
 			{#if !isCollapsed}
-				<div class="flex items-center gap-2.5" in:fade={{ duration: 150 }}>
-					<img src="/favicon.svg" alt="Clopen" class="w-8 h-8 rounded-lg" />
-					<span class="text-base font-semibold text-slate-900 dark:text-slate-100">Clopen</span>
-				</div>
+				<span class="flex-1 text-base font-semibold text-slate-900 dark:text-slate-100" in:fade={{ duration: 150 }}>Clopen</span>
+				<button type="button" class={iconButton} onclick={openNeedsYou} title="Needs you" aria-label="Needs you{needsYou ? ` (${needsYou})` : ''}">
+					<Icon name="lucide:bell" class="w-5 h-5" />
+					{#if needsYou > 0}<span class="absolute -top-0.5 -right-0.5 min-w-4.5 h-4.5 px-1 rounded-full bg-amber-500 text-white text-2xs font-bold flex items-center justify-center">{needsYou}</span>{/if}
+				</button>
 			{/if}
-
-			<button
-				type="button"
-				class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-				onclick={toggleNavigator}
-				aria-label={isCollapsed ? 'Expand navigator' : 'Collapse navigator'}
-				title={isCollapsed ? 'Expand' : 'Collapse'}
-			>
-				<Icon
-					name={isCollapsed ? 'lucide:panel-left-open' : 'lucide:panel-left-close'}
-					class="w-5 h-5"
-				/>
-			</button>
 		</header>
 
 		{#if !isCollapsed}
-			<!-- Search -->
-			<div
-				class="flex items-center gap-2 mx-4 my-3 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-colors focus-within:border-violet-400/60 focus-within:bg-white dark:focus-within:bg-slate-800 focus-within:ring-2 focus-within:ring-violet-500/15"
-				in:fade={{ duration: 150 }}
-			>
-				<Icon name="lucide:search" class="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
-				<input
-					type="text"
-					bind:value={searchQuery}
-					placeholder="Search projects..."
-					class="flex-1 min-w-0 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
-				/>
-				{#if searchQuery}
-					<button
-						type="button"
-						class="flex items-center justify-center w-5 h-5 shrink-0 bg-slate-500/10 hover:bg-slate-500/20 border-none rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer transition-colors"
-						onclick={() => (searchQuery = '')}
-						aria-label="Clear search"
-					>
-						<Icon name="lucide:x" class="w-3 h-3" />
-					</button>
-				{/if}
-			</div>
-
-			<!-- Home: chat without a project. Always first, never part of the list below. -->
-			<div class="px-3 pb-1" in:fade={{ duration: 150 }}>
-				<HomeProjectEntry onSelect={selectProject} />
+			<!-- Chat and Tasks: always first, never part of the list below. -->
+			<div class="px-3 pt-3 pb-2 border-b border-slate-200/70 dark:border-slate-800" in:fade={{ duration: 150 }}>
+				<AssistantEntry withNeedsYou={false} withLibrary={false} onSelect={selectProject} />
 			</div>
 
 			<!-- Projects List -->
@@ -605,10 +635,10 @@
 				{/if}
 
 				<div class="flex-1 overflow-y-auto flex flex-col" bind:this={expandedListEl}>
-					{#each filteredProjects() as project (project.id)}
+					{#each filteredProjects().filter((entry) => !createdIds.has(entry.id)) as project (project.id)}
 						<div
 							data-project-id={project.id}
-							class="flex items-center gap-2.5 py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 text-sm text-left cursor-pointer transition-all duration-150 relative group
+							class="flex items-center gap-2.5 py-1.5 px-2 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 text-sm text-left cursor-pointer transition-all duration-150 relative group
 								hover:bg-violet-500/10
 								{draggedProjectId === project.id ? 'opacity-50' : ''}
 								{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60 bg-violet-500/10' : ''}
@@ -616,8 +646,9 @@
 								? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100'
 								: ''}"
 							role="button"
-							title={project.path}
 							tabindex="0"
+							onmouseenter={(e) => showProjectTooltip(project, e)}
+							onmouseleave={hideProjectTooltip}
 							draggable={canReorderProjects()}
 							ondragstart={(event) => handleProjectDragStart(event, project.id)}
 							ondragover={(event) => handleProjectDragOver(event, project.id)}
@@ -644,29 +675,29 @@
 									aria-label="Select {project.name}"
 								/>
 							{:else}
-								<div class="relative shrink-0">
-									<Icon
-										name="lucide:folder"
-										class="w-4 h-4 {canReorderProjects() ? 'group-hover:hidden' : ''}"
-									/>
+								<div class="relative shrink-0" title={statusMeaning(getProjectStatusColor(project.id ?? '')) || undefined}>
+									<span class="flex items-center justify-center w-7 h-7 rounded-md text-xs font-semibold {avatarOf(project).colour} {canReorderProjects() ? 'group-hover:hidden' : ''}">{avatarOf(project).initials}</span>
 									{#if canReorderProjects()}
-										<Icon
-											name="lucide:grip-vertical"
-											class="hidden w-4 h-4 group-hover:block"
-										/>
+										<span class="hidden w-7 h-7 items-center justify-center group-hover:flex"><Icon name="lucide:grip-vertical" class="w-4 h-4" /></span>
 									{/if}
-									<span
-										class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-50 dark:border-slate-900/95 {canReorderProjects() ? 'group-hover:hidden' : ''} {getProjectStatusColor(project.id ?? '')}"
-									></span>
+									{#if statusMeaning(getProjectStatusColor(project.id ?? ''))}
+										<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {getProjectStatusColor(project.id ?? '')}"></span>
+									{/if}
 								</div>
 							{/if}
 
 							<div class="flex-1 flex items-center justify-between gap-2 min-w-0">
 								<div class="flex-1 min-w-0">
 									<span class="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
-									<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
+									<!-- The open project's own: its workspace copies and panel layouts. -->
+									{#if !selectionActive && currentProjectId === project.id}
+										<div class="flex items-center" onclick={(event) => event.stopPropagation()} onkeydown={(event) => event.stopPropagation()}>
+											<WorktreeSwitcher collapsed inline />
+											<ViewMenu collapsed inline />
+										</div>
+									{/if}
 									<!-- Fixed-size pin slot keeps the ⋮ button position stable. -->
 									<span class="flex h-3.5 w-3.5 items-center justify-center shrink-0" aria-hidden="true">
 										{#if isProjectPinned(project.id)}
@@ -702,6 +733,44 @@
 							</button>
 						</div>
 					{/each}
+					{#if !selectionActive && filteredProjects().some((entry) => createdIds.has(entry.id))}
+						{@const made = filteredProjects().filter((entry) => createdIds.has(entry.id))}
+						<div class="mt-1 border-t border-slate-200 dark:border-slate-800 pt-1">
+							<button
+								type="button"
+								class="flex items-center gap-1.5 w-full py-2 px-1 bg-transparent border-none text-xs font-semibold text-slate-600 dark:text-slate-500 uppercase tracking-wider cursor-pointer hover:text-slate-900 dark:hover:text-slate-300"
+								onclick={() => (byClopenExpanded = !byClopenExpanded)}
+								aria-expanded={byClopenExpanded}
+							>
+								<Icon name={byClopenExpanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3.5 h-3.5" />
+								<span>By Clopen</span>
+								<span class="ml-auto text-3xs font-medium normal-case tracking-normal">({made.length})</span>
+							</button>
+							{#if byClopenExpanded}
+								{#each made as project (project.id)}
+									<div
+										class="flex items-center gap-2.5 py-1.5 px-2 rounded-lg text-slate-600 dark:text-slate-400 text-sm cursor-pointer transition-colors hover:bg-violet-500/10 group
+											{currentProjectId === project.id ? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100' : ''}"
+										role="button"
+										tabindex="0"
+										onmouseenter={(e) => showProjectTooltip(project, e)}
+										onmouseleave={hideProjectTooltip}
+										onclick={() => selectProject(project)}
+										oncontextmenu={(event) => openProjectContextMenu(project, event)}
+										onkeydown={(e) => e.key === 'Enter' && selectProject(project)}
+									>
+										<span class="relative flex items-center justify-center w-7 h-7 rounded-md text-xs font-semibold shrink-0 {avatarOf(project).colour}">
+											{avatarOf(project).initials}
+											{#if statusMeaning(getProjectStatusColor(project.id ?? ''))}
+												<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {getProjectStatusColor(project.id ?? '')}"></span>
+											{/if}
+										</span>
+										<span class="flex-1 min-w-0 truncate">{project.name}</span>
+									</div>
+								{/each}
+							{/if}
+						</div>
+					{/if}
 					{#if !selectionActive && archivedList().length > 0}
 						<div class="mt-1 border-t border-slate-200 dark:border-slate-800 pt-1">
 							<button
@@ -741,7 +810,6 @@
 										<div class="flex-1 flex items-center justify-between gap-2 min-w-0">
 											<div class="flex-1 min-w-0">
 												<span class="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
-												<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
 											</div>
 											<div class="flex items-center gap-1 shrink-0">
 												<button
@@ -763,53 +831,35 @@
 				</div>
 			</div>
 
-			<!-- Footer Actions -->
-			<footer class="flex flex-col p-3 border-t border-slate-200 dark:border-slate-800" in:fade={{ duration: 150 }}>
-				<WorktreeSwitcher />
-				<ToolsMenu
-					onRemoteAccess={openRemoteAccessDialog}
-					onPublicTunnel={openTunnelDialog}
-					onDbClient={openDbClientDialog}
-					onSshClient={openSshClientDialog}
-					onPorts={openPortsDialog}
-					onContainers={openContainersDialog}
-					onMemory={openMemoryDialog}
-					onNotes={openNotesDialog}
-					onWork={() => openWorkDialog()}
-					onDeployments={() => openDeploymentsDialog()}
-				/>
-				<QuickSearchButton />
-				<SettingButton onClick={() => openSettingsModal()} />
-				<ViewMenu />
+			<!-- One row of icons: settings, tools, library, search. A project's own (copies, layout) sit on its row. -->
+			<footer class="flex items-center justify-between gap-1 px-2 py-2 border-t border-slate-200 dark:border-slate-800" in:fade={{ duration: 150 }}>
+				{@render footerIcons()}
 			</footer>
 		{:else}
-			<!-- Collapsed State: Icon Buttons -->
-			<div class="flex flex-col items-center pt-4 px-2 shrink-0">
-				<button
-					type="button"
-					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 relative hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
-					onclick={openNewProjectDialog}
-					title="Add Project"
-				>
-					<Icon name="lucide:folder-plus" class="w-5 h-5" />
-				</button>
-
-				<div class="w-6 h-px bg-violet-500/10 my-1"></div>
+			<!-- Collapsed: the same rows in the same order, words hidden. -->
+			<div class="flex flex-col items-center pt-3 pb-2 px-2 shrink-0 border-b border-slate-200/70 dark:border-slate-800 w-full">
+				<AssistantEntry collapsed withLibrary={false} onSelect={selectProject} />
 			</div>
 
-			<div class="flex-1 flex flex-col items-center gap-2 px-2 pb-4 min-h-0 overflow-y-auto" bind:this={collapsedListEl}>
-				<HomeProjectEntry collapsed onSelect={selectProject} />
+			<div class="flex-1 flex flex-col items-center gap-1.5 px-2 py-2 min-h-0 overflow-y-auto" bind:this={collapsedListEl}>
+				<button
+					type="button"
+					class="flex items-center justify-center w-9 h-9 shrink-0 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-colors hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+					onclick={openNewProjectDialog}
+					title="Add project"
+					aria-label="Add project"
+				>
+					<Icon name="lucide:plus" class="w-4 h-4" />
+				</button>
 				<!-- Same pinned-first order as the expanded list: width never reorders. -->
 				{#each visibleProjects(projectState.projects) as project (project.id)}
 					<button
 						type="button"
 						data-project-id={project.id}
-						class="flex items-center justify-center w-9 h-9 shrink-0 border-none rounded-lg cursor-pointer transition-all duration-150 relative font-semibold text-sm
+						class="flex items-center justify-center w-9 h-9 shrink-0 border-none rounded-lg cursor-pointer transition-all duration-150 relative bg-transparent p-0
 							{draggedProjectId === project.id ? 'opacity-50' : ''}
 							{dragOverProjectId === project.id ? 'ring-1 ring-inset ring-violet-400/60' : ''}
-							{currentProjectId === project.id
-							? 'bg-violet-500/10 dark:bg-violet-500/20 text-violet-700 dark:text-violet-300'
-							: 'bg-slate-200/50 dark:bg-slate-800/50 text-slate-600 dark:text-slate-400 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}"
+							{currentProjectId === project.id ? 'ring-2 ring-violet-500/60' : 'hover:ring-2 hover:ring-violet-500/20'}"
 						draggable={canReorderProjects()}
 						ondragstart={(event) => handleProjectDragStart(event, project.id)}
 						ondragover={(event) => handleProjectDragOver(event, project.id)}
@@ -821,38 +871,28 @@
 						onmouseenter={(e) => showProjectTooltip(project, e)}
 						onmouseleave={hideProjectTooltip}
 					>
-						<span>{getProjectInitials(project.name)}</span>
-						<span
-							class="absolute bottom-1 right-1 w-2.5 h-2.5 rounded-full border-2 border-slate-50 dark:border-slate-900/95 {getProjectStatusColor(project.id ?? '')}"
-						></span>
+						<span class="flex items-center justify-center w-9 h-9 rounded-lg text-xs font-semibold {avatarOf(project).colour}">{avatarOf(project).initials}</span>
+						{#if statusMeaning(getProjectStatusColor(project.id ?? ''))}
+							<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {getProjectStatusColor(project.id ?? '')}"></span>
+						{/if}
 					</button>
+					{#if currentProjectId === project.id}
+						<div class="flex flex-col items-center gap-0.5 py-0.5 rounded-lg bg-violet-500/5">
+							<WorktreeSwitcher collapsed inline />
+							<ViewMenu collapsed inline />
+						</div>
+					{/if}
 				{/each}
 			</div>
 
-			<footer class="flex flex-col gap-2 py-3 px-2 border-t border-slate-200 dark:border-slate-800">
-				<WorktreeSwitcher collapsed={true} />
-				<ToolsMenu
-					collapsed={true}
-					onRemoteAccess={openRemoteAccessDialog}
-					onPublicTunnel={openTunnelDialog}
-					onDbClient={openDbClientDialog}
-					onSshClient={openSshClientDialog}
-					onPorts={openPortsDialog}
-					onContainers={openContainersDialog}
-					onMemory={openMemoryDialog}
-					onNotes={openNotesDialog}
-					onWork={() => openWorkDialog()}
-					onDeployments={() => openDeploymentsDialog()}
-				/>
-				<QuickSearchButton collapsed={true} />
-				<SettingButton collapsed={true} onClick={() => openSettingsModal()} />
-				<ViewMenu collapsed={true} />
+			<footer class="flex flex-col items-center gap-1 py-2 px-2 border-t border-slate-200 dark:border-slate-800">
+				{@render footerIcons()}
 			</footer>
 		{/if}
 	</nav>
 </aside>
 
-<!-- Collapsed project tooltip (fixed position to avoid overflow clipping) -->
+<!-- Project helper on hover, wide or narrow (fixed position to avoid overflow clipping) -->
 {#if hoveredProject}
 	<div
 		class="fixed z-50 pointer-events-none flex flex-col py-1.5 px-2.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 shadow-lg whitespace-nowrap"
@@ -860,6 +900,11 @@
 	>
 		<span class="text-xs font-semibold text-slate-900 dark:text-slate-100">{hoveredProject.name}</span>
 		<span class="text-3xs font-mono text-slate-500 dark:text-slate-400">{hoveredProject.path}</span>
+		{#if statusMeaning(getProjectStatusColor(hoveredProject.id ?? ''))}
+			<span class="mt-0.5 flex items-center gap-1 text-3xs text-slate-600 dark:text-slate-300">
+				<span class="w-1.5 h-1.5 rounded-full {getProjectStatusColor(hoveredProject.id ?? '')}"></span>{statusMeaning(getProjectStatusColor(hoveredProject.id ?? ''))}
+			</span>
+		{/if}
 	</div>
 {/if}
 
@@ -910,7 +955,7 @@
 				<Icon name="lucide:trash-2" class="w-5 h-5 text-slate-500 shrink-0" />
 				<div class="flex-1 min-w-0">
 					<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Delete with all data</p>
-					<p class="text-xs text-slate-500 dark:text-slate-400">Delete all sessions, snapshots, and related data.</p>
+					<p class="text-xs text-slate-500 dark:text-slate-400">Delete all chats and restore points.</p>
 				</div>
 			</button>
 			<button

@@ -173,7 +173,7 @@ export const mcpServersStore = {
 
 	/**
 	 * Map of MCP server key → human title, used by the Chat tool renderer to
-	 * show "Browser Automation" instead of the raw `browser-automation` key.
+	 * show "Browser" instead of the raw `browser` key.
 	 * Keyed by both namespace and slug so either form resolves.
 	 */
 	get serverTitles(): Record<string, string> {

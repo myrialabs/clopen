@@ -143,7 +143,7 @@ export const up = (db: DatabaseConnection): void => {
 			debug.warn(
 				'migration',
 				`Command "${command.slug}" has no body to migrate — ${legacyPath} is missing or empty. ` +
-				`The skill is created so it still appears in Settings → Skills, but its instructions must be re-entered.`
+				`The skill is created so it still appears in Library → Skills, but its instructions must be re-entered.`
 			);
 		}
 

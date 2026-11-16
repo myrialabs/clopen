@@ -169,7 +169,7 @@
 			const suffix = result.branch ? ` It has its own database ${noun}.` : '';
 			addNotification({
 				type: 'success',
-				title: 'Worktree created',
+				title: 'Workspace copy created',
 				message: `"${result.worktree.name}" is ready — an isolated copy of ${projectName}.${suffix}`,
 				duration: 4000
 			});
@@ -184,7 +184,7 @@
 		} catch (error) {
 			addNotification({
 				type: 'error',
-				title: 'Could not create worktree',
+				title: 'Could not create the copy',
 				message: error instanceof Error ? error.message : String(error),
 				duration: 5000
 			});

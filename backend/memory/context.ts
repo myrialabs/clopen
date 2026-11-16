@@ -335,11 +335,11 @@ export function buildMemoryContext(input: MemoryContextInput): MemoryContextResu
 			'One memory, shared by every engine and every project. Recording is automatic:',
 			'you never write to it, including when the user says "remember this". Do not use',
 			'engine-specific memory files or native memory tools — nothing else can read them.',
-			'Use the memory-graph `memory` tool only to look something up mid-task, to ask',
+			'Use the memory `remember` tool only to look something up mid-task, to ask',
 			'about another project, or to correct what is stored.'
 		);
 	} else {
-		block.push('Shared memory: recording is automatic. Use the memory-graph `memory` tool to look up or correct.');
+		block.push('Shared memory: recording is automatic. Use the memory `remember` tool to look up or correct.');
 	}
 
 	if (standing.length > 0) {

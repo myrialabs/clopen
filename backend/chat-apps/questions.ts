@@ -19,7 +19,26 @@ import { REPLIES, answerFromSelection, questionAnsweredCard, questionCard, textC
 
 export async function replyText(channel: ActiveChannel, message: UniversalMessage, text: string): Promise<void> {
 	const replyTo = message.content.type !== 'postback' ? message.platform_message_id ?? null : null;
-	await channelRuntime.send(channel.accountId, message.address.conversation_id, textCard(text), replyTo).catch(() => {});
+	await channelRuntime.send(channel.accountId, message.address.conversation_id, textCard(await inOwnersWords(text)), replyTo).catch(() => {});
+}
+
+/** Fixed replies in the owner's language, worded once per text and kept. */
+const worded = new Map<string, string>();
+
+async function inOwnersWords(text: string): Promise<string> {
+	const known = worded.get(text);
+	if (known) return known;
+	if (!/[a-z]{3,}/i.test(text)) return text;
+	try {
+		const { inOwnersLanguage, ownerSample } = await import('$backend/assistant/think');
+		const sample = ownerSample(null);
+		if (!sample) return text;
+		const result = await inOwnersLanguage(text, sample);
+		worded.set(text, result);
+		return result;
+	} catch {
+		return text;
+	}
 }
 
 /** A tap on a question's button. */

@@ -1,7 +1,7 @@
 /**
  * Project Artifacts Store
  *
- * The "This project" side of Settings → Artifacts & Access: what the active
+ * The "This project" side of Settings → Models & Access: what the active
  * repository carries in `.agents/`, `.claude/`, `AGENTS.md` and friends, which
  * engines read each item (natively, through Clopen, or not at all), and the
  * in-place edits Clopen makes under `.agents/` and in the managed block of
@@ -97,7 +97,7 @@ export const projectArtifactsStore = {
 		loading = true;
 		error = null;
 		try {
-			const result = await ws.http('project-artifacts:scan', { projectId });
+			const result = await ws.http('library:project-scan', { projectId });
 			scan = result as ProjectScan;
 			scanProjectId = projectId;
 			return scan;
@@ -116,59 +116,59 @@ export const projectArtifactsStore = {
 	},
 
 	async read(projectId: string, path: string): Promise<string> {
-		const result = await ws.http('project-artifacts:read', { projectId, path });
+		const result = await ws.http('library:project-read', { projectId, path });
 		return result.content;
 	},
 
 	async saveSkill(projectId: string, input: { originalSlug?: string; name: string; description: string; body: string }) {
-		const saved = await ws.http('project-artifacts:save-skill', { projectId, ...input });
+		const saved = await ws.http('library:project-save-skill', { projectId, ...input });
 		await this.refresh(projectId);
 		return saved;
 	},
 
 	async deleteSkill(projectId: string, slug: string): Promise<void> {
-		await ws.http('project-artifacts:delete-skill', { projectId, slug });
+		await ws.http('library:project-delete-skill', { projectId, slug });
 		await this.refresh(projectId);
 	},
 
 	async saveSubagent(projectId: string, input: { originalSlug?: string; name: string; description: string; tools?: string; model?: string; body: string }) {
-		const saved = await ws.http('project-artifacts:save-subagent', { projectId, ...input });
+		const saved = await ws.http('library:project-save-subagent', { projectId, ...input });
 		await this.refresh(projectId);
 		return saved;
 	},
 
 	async deleteSubagent(projectId: string, slug: string): Promise<void> {
-		await ws.http('project-artifacts:delete-subagent', { projectId, slug });
+		await ws.http('library:project-delete-subagent', { projectId, slug });
 		await this.refresh(projectId);
 	},
 
 	async copyToAgents(projectId: string, kind: 'skill' | 'subagent', path: string) {
-		const saved = await ws.http('project-artifacts:copy-to-agents', { projectId, kind, path });
+		const saved = await ws.http('library:project-copy-to-agents', { projectId, kind, path });
 		await this.refresh(projectId);
 		return saved;
 	},
 
 	async getAgentsMd(projectId: string): Promise<AgentsMdState> {
-		return ws.http('project-artifacts:get-agents-md', { projectId });
+		return ws.http('library:project-get-agents-md', { projectId });
 	},
 
 	async saveAgentsMd(projectId: string, content: string): Promise<AgentsMdState> {
-		const state = await ws.http('project-artifacts:save-agents-md', { projectId, content });
+		const state = await ws.http('library:project-save-agents-md', { projectId, content });
 		await this.refresh(projectId);
 		return state;
 	},
 
 	async getMcp(projectId: string): Promise<{ path: string; content: string }> {
-		return ws.http('project-artifacts:get-mcp', { projectId });
+		return ws.http('library:project-get-mcp', { projectId });
 	},
 
 	async saveMcp(projectId: string, content: string): Promise<void> {
-		await ws.http('project-artifacts:save-mcp', { projectId, content });
+		await ws.http('library:project-save-mcp', { projectId, content });
 		await this.refresh(projectId);
 	},
 
 	async approveMcp(projectId: string, hash: string): Promise<void> {
-		await ws.http('project-artifacts:approve-mcp', { projectId, hash });
+		await ws.http('library:project-approve-mcp', { projectId, hash });
 		await this.refresh(projectId);
 	},
 

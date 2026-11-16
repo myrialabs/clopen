@@ -12,7 +12,13 @@ import { onDestroy } from 'svelte';
 // PLACEHOLDER ANIMATION
 // ============================================================================
 
-export function usePlaceholderAnimation(placeholderTexts: string[]) {
+/**
+ * `texts` may be a getter, read each time the animation starts or rotates —
+ * so one input can show Clopen's examples on Clopen's screen and coding
+ * examples in a project without being rebuilt.
+ */
+export function usePlaceholderAnimation(texts: string[] | (() => string[])) {
+	const textsNow = () => (typeof texts === 'function' ? texts() : texts);
 	let currentPlaceholderIndex = $state(0);
 	let placeholderText = $state('');
 	// The text being typed out, whole. Sizing the box from it (not from each
@@ -47,7 +53,8 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 	}
 
 	function updatePlaceholder() {
-		const fullText = placeholderTexts[currentPlaceholderIndex];
+		const placeholderTexts = textsNow();
+		const fullText = placeholderTexts[currentPlaceholderIndex % placeholderTexts.length];
 
 		if (deleteTimeout) clearTimeout(deleteTimeout);
 		if (deleteInterval) clearInterval(deleteInterval);
@@ -75,12 +82,13 @@ export function usePlaceholderAnimation(placeholderTexts: string[]) {
 		stopPlaceholderAnimation();
 		destroyed = false;
 
+		const placeholderTexts = textsNow();
 		currentPlaceholderIndex = Math.floor(Math.random() * placeholderTexts.length);
 		typewritePlaceholder(placeholderTexts[currentPlaceholderIndex]);
 
 		rotationInterval = window.setInterval(() => {
 			if (destroyed) { clearInterval(rotationInterval!); rotationInterval = null; return; }
-			currentPlaceholderIndex = (currentPlaceholderIndex + 1) % placeholderTexts.length;
+			currentPlaceholderIndex = (currentPlaceholderIndex + 1) % textsNow().length;
 			updatePlaceholder();
 		}, 7000);
 	}

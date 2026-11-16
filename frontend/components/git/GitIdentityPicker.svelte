@@ -154,7 +154,7 @@
 					class="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400"
 					onclick={() => {
 						open = false;
-						openSettingsModal('git-identities');
+						openSettingsModal('git');
 					}}
 				>
 					Manage accounts…

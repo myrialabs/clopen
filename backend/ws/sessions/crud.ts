@@ -100,11 +100,16 @@ export const crudHandler = createRouter()
 			}))
 		})
 	}, async ({ conn }) => {
-		const { projectId } = requireCurrentProjectAccess(conn);
-		const sessions = sessionQueries.getByProjectId(projectId);
-
+		const { projectId, project } = requireCurrentProjectAccess(conn);
 		// The saved current session for this project
 		const currentSessionId = projectQueries.getCurrentSessionId(projectId);
+		// The owner's chat history: not the chats tasks, flows and Clopen opened
+		// for themselves in Clopen's own workspace (they live with their task or
+		// flow), and not chats nobody wrote in — except the one open now.
+		const sessions = sessionQueries
+			.getByProjectId(projectId)
+			.filter((session) => project.kind !== 'home' || (session.origin ?? 'owner') === 'owner' || session.id === currentSessionId)
+			.filter((session) => (session.message_count ?? 0) > 0 || session.id === currentSessionId);
 
 		const unreadRows = sessionQueries.getUnreadSessions(projectId);
 		debug.log('session', `[unread] sessions:list — project=${projectId}, unreadCount=${unreadRows.length}`, unreadRows);

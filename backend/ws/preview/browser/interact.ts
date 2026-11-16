@@ -6,6 +6,7 @@
 
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
+import { recordPreviewInput } from '$backend/assistant/recordings';
 import { ws } from '$backend/utils/ws';
 import type { KeyInput } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
@@ -129,6 +130,10 @@ export const interactPreviewHandler = createRouter()
 
 			// Mark tab activity to prevent automatic cleanup
 			previewService.markActiveTabActivity();
+
+			// Teach a task: while a recording runs for this project, the owner's
+			// inputs become its steps. Fire-and-forget — never delays the input.
+			void recordPreviewInput(projectId, session.page, action);
 
 			// A tab nobody was watching is frozen: its task queues are suspended,
 			// so an input event dispatched now would sit unprocessed until the

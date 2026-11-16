@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { projectAvatars } from '$frontend/utils/project-avatar';
+	import type { Snippet } from 'svelte';
 	import { sessionState, setCurrentSession, createNewChatSession, clearMessages, loadMessagesForSession } from '$frontend/stores/core/sessions.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
@@ -14,10 +16,8 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import { debug } from '$shared/utils/logger';
-	import { isHomeProject } from '$shared/utils/home-project';
-	import { openNewProjectDialog } from '$frontend/stores/ui/quick-panels.svelte';
-	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
-	import HomeMark from '$frontend/components/workspace/HomeMark.svelte';
+	import { isAssistantProject } from '$shared/utils/assistant-project';
+	import AssistantMark from '$frontend/components/workspace/AssistantMark.svelte';
 	import ws from '$frontend/utils/ws';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
@@ -25,9 +25,11 @@
 	// Props
 	interface Props {
 		showMobileHeader?: boolean;
+		/** Shown just above the input, as the newest thing in the conversation (Clopen's cards). */
+		aboveInput?: Snippet;
 	}
 
-	const { showMobileHeader = false }: Props = $props();
+	const { showMobileHeader = false, aboveInput }: Props = $props();
 
 	// Welcome state - don't show during restoration or when session has history (restored to initial)
 	const isWelcomeState = $derived(
@@ -41,7 +43,7 @@
 
 	// Project-aware state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
-	const isHome = $derived(isHomeProject(projectState.currentProject));
+	const isHome = $derived(isAssistantProject(projectState.currentProject));
 
 	// Scroll container
 	const scrollContainer: HTMLElement | undefined = $state();
@@ -181,7 +183,7 @@
 		} else {
 			addNotification({
 				type: 'error',
-				title: 'Failed to Create Session',
+				title: 'Could not start a chat',
 				message: 'Could not create a new chat session',
 				duration: 3000
 			});
@@ -220,54 +222,31 @@
 						<div class="w-full max-w-4xl space-y-6 md:space-y-8 lg:space-y-10">
 							{#if isHome}
 								<!--
-									Home greets differently on purpose: a chat here is about
-									everything rather than one repository, and the way into a
-									repository is one click away.
+									Clopen greets as itself, in one line. Examples rotate in the
+									box's placeholder rather than as chips: they show the range
+									without a wall of buttons to read first.
 								-->
-								<div class="text-center space-y-4 md:space-y-5 px-6">
-									<HomeMark class="mx-auto w-16 h-16 rounded-2xl shadow-lg! shadow-violet-500/25!" />
-									<div class="space-y-2 md:space-y-3">
-										<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">Home</h1>
-										<p class="md:text-lg text-slate-600 dark:text-slate-400 max-w-xl mx-auto">
-											Ask anything, plan across projects, or start something new. No project needed.
-										</p>
-									</div>
-									<div class="flex flex-wrap items-center justify-center gap-2 text-sm">
-										<button
-											type="button"
-											class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-violet-500/25 bg-violet-500/10 text-violet-700 dark:text-violet-300 font-medium cursor-pointer transition-colors hover:bg-violet-500/20"
-											onclick={openNewProjectDialog}
-										>
-											<Icon name="lucide:folder-plus" class="w-4 h-4" />
-											<span>Add a project</span>
-										</button>
-										<button
-											type="button"
-											class="inline-flex items-center gap-1.5 py-2 px-3.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 font-medium cursor-pointer transition-colors hover:bg-slate-100 dark:hover:bg-slate-800"
-											onclick={() => openSettingsModal('chat-apps')}
-										>
-											<Icon name="lucide:send" class="w-4 h-4" />
-											<span>Chat from Telegram</span>
-										</button>
-									</div>
+								<div class="text-center space-y-4 px-6">
+									<AssistantMark class="mx-auto w-14 h-14 rounded-2xl" />
+									<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">What should we get done?</h1>
+									<p class="md:text-lg text-slate-600 dark:text-slate-400">Ask anything. Clopen does the work.</p>
 								</div>
 							{:else}
-								<!-- Modern hero section -->
-								<div class="text-center space-y-3 md:space-y-4 px-6">
-									<div class="space-y-3 md:space-y-4">
-										<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">
-											Build apps & websites with AI
-										</h1>
-										<p class="md:text-lg text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
-											Describe your idea. Get production-ready code.
-										</p>
-									</div>
+								<!-- A project greets like Clopen does: its mark, its name, one line. -->
+								<div class="text-center space-y-4 px-6">
+									{#if projectState.currentProject}
+										{@const avatar = projectAvatars(projectState.projects).get(projectState.currentProject.id)}
+										<span class="mx-auto flex items-center justify-center w-14 h-14 rounded-2xl text-xl font-semibold {avatar?.colour ?? ''}">{avatar?.initials ?? ''}</span>
+									{/if}
+									<h1 class="text-3xl md:text-4xl font-semibold text-slate-900 dark:text-slate-100">{projectState.currentProject?.name ?? 'Your project'}</h1>
+									<p class="md:text-lg text-slate-600 dark:text-slate-400">Build, fix or explain anything here.</p>
 								</div>
 							{/if}
 
 							<!-- Input area integrated in welcome state -->
 							{#if showInput}
 								<div class="w-full px-4 space-y-4" in:fade={{ duration: 200, delay: 100 }}>
+									{#if aboveInput}{@render aboveInput()}{/if}
 									<ChatInput />
 								</div>
 							{/if}
@@ -298,6 +277,7 @@
 					>
 						<div class="flex justify-center">
 							<div class="w-full max-w-5xl px-4 pb-4 pt-2">
+								{#if aboveInput}<div class="mb-2">{@render aboveInput()}</div>{/if}
 								<ChatInput />
 							</div>
 						</div>

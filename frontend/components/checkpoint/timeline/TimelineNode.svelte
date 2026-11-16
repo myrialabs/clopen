@@ -31,7 +31,7 @@
 	onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') onNodeClick(node); }}
 	role="button"
 	tabindex="0"
-	aria-label={`${node.type === 'main' ? 'Checkpoint' : 'Version'} - ${node.checkpoint.messageText}`}
+	aria-label={`${node.type === 'main' ? 'Restore point' : 'Version'} - ${node.checkpoint.messageText}`}
 >
 	<title>{node.checkpoint.messageText}</title>
 

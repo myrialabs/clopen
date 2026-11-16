@@ -3,7 +3,7 @@
  *
  * Shared reactive store for Qwen Code accounts.
  * Used by AIEnginesSettings (and any future Qwen-aware UI) to stay in sync.
- * Fetches from backend via `engine:qwen-accounts-list`.
+ * Fetches from backend via `agents:qwen-accounts-list`.
  *
  * Each account carries its own preset — the preset alone determines which
  * OpenAI-compatible endpoint a stream targets.
@@ -63,7 +63,7 @@ export const qwenAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:qwen-accounts-list', {});
+	const result = await ws.http('agents:qwen-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Qwen accounts loaded: ${accounts.length}`);
 }

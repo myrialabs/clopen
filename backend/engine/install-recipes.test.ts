@@ -14,7 +14,7 @@
  *
  * `readEngineSdkVersion` compounds it: `loadEngineSdk` only enforces a version
  * match when a required version exists, so an unpinned package also loses the
- * "needs update" check that would otherwise surface the drift in Settings → Stack.
+ * "needs update" check that would otherwise surface the drift in Settings → Agents → Install.
  *
  * Engine CLIs (engine-cli.ts) are pinned one step removed — through their SDK's
  * version, since a platform binary has no business in devDependencies — and
@@ -145,7 +145,7 @@ describe('on-demand engine CLIs', () => {
 
 	test('the installer installs a separate CLI alongside the SDK', () => {
 		// Installing the SDK alone is exactly the half-install that reported
-		// "installed" in Settings → Stack and then failed at the first spawn.
+		// "installed" in Settings → Agents → Install and then failed at the first spawn.
 		// CLIs bundled with their SDK need no extra package and must not add one.
 		for (const { tool, spec } of cliEntries) {
 			const args = engineInstallArgs(tool);
@@ -158,7 +158,7 @@ describe('on-demand engine CLIs', () => {
 	});
 
 	test('only an engine-blocking CLI gates the install state', () => {
-		// `required` decides whether a missing binary makes Settings → Stack report
+		// `required` decides whether a missing binary makes Settings → Agents → Install report
 		// the engine as not installed. Marking a bundled CLI required would flip a
 		// working engine to "not installed" the moment our own path guess drifts
 		// from the SDK's; leaving Open Code's optional would restore the original

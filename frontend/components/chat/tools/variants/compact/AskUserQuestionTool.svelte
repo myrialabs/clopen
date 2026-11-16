@@ -124,7 +124,7 @@
 			</div>
 		{/each}
 		<p class="text-sm text-slate-500 dark:text-slate-400 pl-2">
-			{isError && result?.content ? result.content : 'Session ended before question was answered'}
+			{isError && result?.content ? result.content : 'The chat ended before this was answered'}
 		</p>
 	</div>
 

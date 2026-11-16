@@ -3,7 +3,7 @@
 ## 8. Artifacts & the extension layer
 
 The adapters stream chat; **artifacts** are the reusable "extensions" the user
-manages in **Settings → Artifacts & Access** that shape what each engine sees and
+manages in **Settings → Models & Access** that shape what each engine sees and
 may do during that stream — Skills, Subagents, Instructions, Permissions,
 Profiles, and Integrations (MCP).
 

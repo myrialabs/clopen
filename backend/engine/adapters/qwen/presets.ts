@@ -8,7 +8,7 @@
  * The wire-format types (`QwenProviderPresetId`, `QwenProviderPreset`) live in
  * `shared/types/unified/engine.ts` so the frontend stays typed without
  * importing from `$backend`. Runtime values are exposed to the frontend via
- * the `engine:qwen-presets-list` WS endpoint.
+ * the `agents:qwen-presets-list` WS endpoint.
  */
 
 import type {

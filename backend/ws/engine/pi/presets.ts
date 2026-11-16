@@ -11,7 +11,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { getPiProviderPresets } from '../../../engine/adapters/pi/presets';
 
 export const piPresetsHandler = createRouter()
-	.http('engine:pi-presets-list', {
+	.http('agents:pi-presets-list', {
 		data: t.Object({}),
 		response: t.Object({
 			presets: t.Array(t.Object({

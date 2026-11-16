@@ -64,12 +64,12 @@
 
 	onMount(() => {
 		cleanups.push(
-			ws.on('engine:cline-account-login-started', (data: { loginId: string }) => {
+			ws.on('agents:cline-account-login-started', (data: { loginId: string }) => {
 				clineLoginId = data.loginId;
 			}),
 			// Every event is scoped to the login on screen, so a cancelled attempt
 			// still winding down can't paint over the next one.
-			ws.on('engine:cline-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string }) => {
+			ws.on('agents:cline-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string }) => {
 				if (data.loginId !== clineLoginId) return;
 				if (data.kind === 'auth_url' && data.url) {
 					// The browser step explains itself ("Continue … in your browser").
@@ -78,19 +78,19 @@
 					clineLoginMessages = [...clineLoginMessages, data.message];
 				}
 			}),
-			ws.on('engine:cline-account-login-prompt', (data: { loginId: string; message: string; kind: 'text' | 'manual_code'; optional: boolean }) => {
+			ws.on('agents:cline-account-login-prompt', (data: { loginId: string; message: string; kind: 'text' | 'manual_code'; optional: boolean }) => {
 				if (data.loginId !== clineLoginId) return;
 				clineLoginPrompt = { message: data.message, kind: data.kind, optional: data.optional };
 				clineLoginPromptValue = '';
 			}),
-			ws.on('engine:cline-account-login-complete', async (data: { loginId: string; accountId: number }) => {
+			ws.on('agents:cline-account-login-complete', async (data: { loginId: string; accountId: number }) => {
 				if (data.loginId !== clineLoginId) return;
 				clineAddStep = 'success';
 				resetClineLoginState();
 				await refreshClineStatus();
 				await modelStore.refreshModels('cline');
 			}),
-			ws.on('engine:cline-account-login-error', (data: { loginId: string; message: string }) => {
+			ws.on('agents:cline-account-login-error', (data: { loginId: string; message: string }) => {
 				if (data.loginId !== clineLoginId) return;
 				clineAddError = data.message;
 				clineAddStep = 'error';
@@ -157,7 +157,7 @@
 		clineAddStep = 'saving';
 		clineAddError = '';
 		try {
-			await ws.http('engine:cline-accounts-save', { name: clineAddName.trim(), provider: clineAddProvider, values: clineAddValues });
+			await ws.http('agents:cline-accounts-save', { name: clineAddName.trim(), provider: clineAddProvider, values: clineAddValues });
 			clineAddStep = 'success';
 			await refreshClineStatus();
 			await modelStore.refreshModels('cline');
@@ -173,7 +173,7 @@
 	);
 
 	function cancelClineAdd() {
-		if (clineLoginId) ws.emit('engine:cline-account-login-cancel', { loginId: clineLoginId });
+		if (clineLoginId) ws.emit('agents:cline-account-login-cancel', { loginId: clineLoginId });
 		clineAddStep = 'idle';
 		clineAddError = '';
 		clineReauthAccountId = null;
@@ -187,7 +187,7 @@
 		clineAddError = '';
 		clineReauthAccountId = null;
 		resetClineLoginState();
-		ws.emit('engine:cline-account-login-start', { name: clineAddName.trim(), provider: clineAddProvider });
+		ws.emit('agents:cline-account-login-start', { name: clineAddName.trim(), provider: clineAddProvider });
 	}
 
 	/** Re-authenticate an existing OAuth account in place. */
@@ -196,7 +196,7 @@
 		clineAddStep = 'login';
 		clineAddError = '';
 		resetClineLoginState();
-		ws.emit('engine:cline-account-login-start', {
+		ws.emit('agents:cline-account-login-start', {
 			name: account.name,
 			provider: account.provider,
 			reauthAccountId: account.id,
@@ -205,14 +205,14 @@
 
 	function submitClineLoginPrompt(value = clineLoginPromptValue) {
 		if (!clineLoginId || !clineLoginPrompt) return;
-		ws.emit('engine:cline-account-login-submit', { loginId: clineLoginId, value });
+		ws.emit('agents:cline-account-login-submit', { loginId: clineLoginId, value });
 		clineLoginPrompt = null;
 		clineLoginPromptValue = '';
 	}
 
 	async function switchClineAccount(id: number) {
 		try {
-			await ws.http('engine:cline-accounts-switch', { id });
+			await ws.http('agents:cline-accounts-switch', { id });
 			await clineAccountsStore.refresh();
 			await refreshClineStatus();
 			await modelStore.refreshModels('cline');
@@ -229,7 +229,7 @@
 	async function deleteClineAccount() {
 		if (clineDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:cline-accounts-delete', { id: clineDeleteTargetId });
+			await ws.http('agents:cline-accounts-delete', { id: clineDeleteTargetId });
 			await clineAccountsStore.refresh();
 			await refreshClineStatus();
 			await modelStore.refreshModels('cline');
@@ -258,9 +258,9 @@
 		try {
 			if (clineEditAuthMethod === 'oauth') {
 				// OAuth accounts have no editable key fields — only the name.
-				await ws.http('engine:cline-accounts-rename', { id: clineEditingId, name: clineEditName.trim() });
+				await ws.http('agents:cline-accounts-rename', { id: clineEditingId, name: clineEditName.trim() });
 			} else {
-				await ws.http('engine:cline-accounts-save', {
+				await ws.http('agents:cline-accounts-save', {
 					accountId: clineEditingId,
 					name: clineEditName.trim(),
 					provider: clineEditProvider,

@@ -102,7 +102,7 @@
 		{
 			id: 'schema-data',
 			label: 'Schema and data',
-			help: 'The worktree starts as a copy, so the app runs and the fixtures are there.'
+			help: 'Starts as a copy, so the app runs with its data.'
 		},
 		{
 			id: 'schema',
@@ -224,7 +224,7 @@
 			});
 			addNotification({
 				type: 'success',
-				title: 'Worktree databases set up',
+				title: 'Databases ready',
 				message: `New worktrees can get their own ${noun} of ${chosenParent?.name ?? parentRef}.`,
 				duration: 4000
 			});
@@ -348,7 +348,7 @@
 				<div class="py-6 text-center space-y-3">
 					<Icon name="lucide:database" class="w-8 h-8 mx-auto text-slate-400" />
 					<p class="text-sm text-slate-600 dark:text-slate-400 max-w-md mx-auto leading-relaxed">
-						Add a database in DB Client, or connect a provider that branches natively,
+						Add a database in Databases, or connect a provider that branches natively,
 						and every new worktree can get its own copy to migrate against.
 					</p>
 					<Button variant="primary" onclick={openConnect}>Connect an account</Button>

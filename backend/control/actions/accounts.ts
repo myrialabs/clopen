@@ -2,7 +2,7 @@
  * Engine accounts — which account each engine signs in with.
  *
  * Every call goes through the engine's own account routes, so switching here
- * does exactly what switching in Settings → Engines does (credential files,
+ * does exactly what switching in Settings → Agents does (credential files,
  * hot reload, the lot). Accounts are ADDED in Clopen only: a key or a sign-in
  * never goes through a chat.
  */
@@ -29,10 +29,10 @@ function accountSlug(engine: EngineType): string {
 
 async function accountsOf(call: <T>(action: string, data?: Record<string, unknown>) => Promise<T>, engine: EngineType): Promise<Array<AccountRow & { provider?: string }>> {
 	if (engine === 'opencode') {
-		const { providers } = await call<{ providers: Array<{ name: string; isEnabled: boolean; accounts: AccountRow[] }> }>('engine:opencode-providers-list');
+		const { providers } = await call<{ providers: Array<{ name: string; isEnabled: boolean; accounts: AccountRow[] }> }>('agents:opencode-providers-list');
 		return providers.filter((provider) => provider.isEnabled).flatMap((provider) => provider.accounts.map((account) => ({ ...account, provider: provider.name })));
 	}
-	const { accounts } = await call<{ accounts: AccountRow[] }>(`engine:${accountSlug(engine)}-accounts-list`);
+	const { accounts } = await call<{ accounts: AccountRow[] }>(`agents:${accountSlug(engine)}-accounts-list`);
 	return accounts;
 }
 
@@ -52,7 +52,7 @@ export const listAccounts = defineAction({
 			};
 		}
 		const accounts = await accountsOf(ctx.call, engine);
-		const hint = '\n\nAdd accounts in Clopen → Settings → Engines.';
+		const hint = '\n\nAdd accounts in Clopen → Settings → Agents.';
 		if (accounts.length === 0) return { text: `No ${engineName(engine)} accounts yet.${hint}` };
 		return {
 			text: `**🔑 ${engineName(engine)} accounts**${hint}`,
@@ -79,8 +79,8 @@ export const switchAccount = defineAction({
 		const accounts = await accountsOf(ctx.call, engine);
 		const account = accounts.find((row) => row.id === args.accountId);
 		if (!account) throw new Error('That account no longer exists.');
-		if (engine === 'opencode') await ctx.call('engine:opencode-account-switch', { accountId: account.id });
-		else await ctx.call(`engine:${accountSlug(engine)}-accounts-switch`, { id: account.id });
+		if (engine === 'opencode') await ctx.call('agents:opencode-account-switch', { accountId: account.id });
+		else await ctx.call(`agents:${accountSlug(engine)}-accounts-switch`, { id: account.id });
 		// The session pins an account of its own; follow the switch when it runs on this engine.
 		const found = accessibleSession(ctx.target.sessionId);
 		if (found?.session.engine === engine) sessionQueries.updateAccount(found.session.id, account.id, account.name);

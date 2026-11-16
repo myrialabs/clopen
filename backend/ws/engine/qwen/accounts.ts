@@ -37,7 +37,7 @@ async function disposeQwenEngines(): Promise<void> {
 
 export const qwenAccountsHandler = createRouter()
 
-	.http('engine:qwen-accounts-list', {
+	.http('agents:qwen-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -66,7 +66,7 @@ export const qwenAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:qwen-accounts-add', {
+	.http('agents:qwen-accounts-add', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			apiKey: t.String({ minLength: 1 }),
@@ -109,7 +109,7 @@ export const qwenAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:qwen-accounts-switch', {
+	.http('agents:qwen-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -118,7 +118,7 @@ export const qwenAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:qwen-accounts-delete', {
+	.http('agents:qwen-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -128,7 +128,7 @@ export const qwenAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:qwen-accounts-rename', {
+	.http('agents:qwen-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -139,7 +139,7 @@ export const qwenAccountsHandler = createRouter()
 	// Update an account's API key and/or preset. Both are optional — an omitted
 	// (or blank) apiKey keeps the stored one, so the user can re-point the
 	// preset without re-entering the secret, and vice versa.
-	.http('engine:qwen-accounts-update', {
+	.http('agents:qwen-accounts-update', {
 		data: t.Object({
 			id: t.Number(),
 			apiKey: t.Optional(t.String()),

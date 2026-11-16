@@ -23,6 +23,7 @@
  */
 
 import { DEFAULT_ENGINE, getModelsByEngine, pickDefaultModel, registerModels } from '$shared/constants/engines';
+import { sharedMemoryModel } from './shared-model';
 import { debug } from '$shared/utils/logger';
 import { getEngine } from '$backend/engine';
 import type { EngineType } from '$shared/types/unified';
@@ -53,6 +54,18 @@ async function resolve(): Promise<MemoryModelConfig | null> {
 	// Re-read: a concurrent caller may have filled it while this one waited.
 	const current = getMemoryConfig().model;
 	if (current?.modelId) return current;
+	// Not picked for memory: the free model, like every job in Settings → Models —
+	// used, not stored. Found once by asking the engine (loaded only now: the
+	// assistant's module pulls in far more than memory should at startup).
+	const shared = sharedMemoryModel();
+	if (shared) return shared;
+	try {
+		const { freeAssistantModel } = await import('$backend/assistant/model');
+		const free = await freeAssistantModel();
+		if (free) return { engine: free.engine as EngineType, modelId: free.modelId, ...(free.provider ? { providerSlug: free.provider } : {}) };
+	} catch (error) {
+		debug.warn('memory', 'The free model is not available for memory yet:', error);
+	}
 
 	const engineType: EngineType = DEFAULT_ENGINE;
 

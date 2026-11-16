@@ -40,7 +40,7 @@ const STATUS_UNION = t.Union([
 
 export const stackInstallHandler = createRouter()
 
-	.http('stack:install-start', {
+	.http('agents:install-start', {
 		data: t.Object({ tool: TOOL_UNION }),
 		response: t.Object({
 			sessionId: t.String(),
@@ -69,7 +69,7 @@ export const stackInstallHandler = createRouter()
 		}
 	})
 
-	.http('stack:install-cancel', {
+	.http('agents:install-cancel', {
 		data: t.Object({ sessionId: t.String() }),
 		response: t.Object({ cancelled: t.Boolean() })
 	}, async ({ data }) => {
@@ -77,7 +77,7 @@ export const stackInstallHandler = createRouter()
 		return { cancelled };
 	})
 
-	.http('stack:install-session', {
+	.http('agents:install-session', {
 		data: t.Object({ sessionId: t.String() }),
 		response: t.Object({
 			session: t.Union([
@@ -101,21 +101,21 @@ export const stackInstallHandler = createRouter()
 
 	// ═══ Server → client events ═══
 
-	.emit('stack:install-started', t.Object({
+	.emit('agents:install-started', t.Object({
 		sessionId: t.String(),
 		tool: TOOL_UNION,
 		displayCommand: t.String(),
 		startedAt: t.Number()
 	}))
 
-	.emit('stack:install-stream', t.Object({
+	.emit('agents:install-stream', t.Object({
 		sessionId: t.String(),
 		tool: TOOL_UNION,
 		type: t.Union([t.Literal('stdout'), t.Literal('stderr')]),
 		line: t.String()
 	}))
 
-	.emit('stack:install-finished', t.Object({
+	.emit('agents:install-finished', t.Object({
 		sessionId: t.String(),
 		tool: TOOL_UNION,
 		status: STATUS_UNION,

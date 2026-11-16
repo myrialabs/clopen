@@ -11,9 +11,9 @@
 <div class="space-y-6">
 	{#if showHeader}
 		<div>
-			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Stack</h3>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Install</h3>
 			<p class="text-sm text-slate-600 dark:text-slate-500">
-				Install binaries clopen depends on, directly on the server.
+				Agents and tools Clopen uses, installed in its own folder.
 			</p>
 		</div>
 	{/if}

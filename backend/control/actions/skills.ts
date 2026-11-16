@@ -1,5 +1,5 @@
 /**
- * Skills: running one of the user's slash skills (Settings → Skills).
+ * Skills: running one of the user's slash skills (Library → Skills).
  *
  * A skill runs exactly as typing `/<slug> args` in the web composer does:
  * the action hands the surface that text as a prompt, and the stream expands
@@ -58,7 +58,7 @@ export const listSkills = defineAction({
 	command: { name: 'skills' },
 	async run(ctx, args) {
 		const skills = await availableSkills(ctx);
-		if (skills.length === 0) return { text: 'No skills yet. Add them in Clopen → Settings → Skills.' };
+		if (skills.length === 0) return { text: 'No skills yet. Add them in Clopen → Library → Skills.' };
 		const { choices, range } = paged(
 			skills,
 			args.page,

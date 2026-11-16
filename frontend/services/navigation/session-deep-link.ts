@@ -13,6 +13,7 @@ import { projectState, setCurrentProject } from '$frontend/stores/core/projects.
 import { setCurrentSession } from '$frontend/stores/core/sessions.svelte';
 import { setCurrentView } from '$frontend/stores/core/app.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
+import { openNeedsYou } from '$frontend/stores/ui/assistant-view.svelte';
 import { debug } from '$shared/utils/logger';
 
 const SESSION_HASH = /^#session\/([^/]+)\/([^/]+)$/;
@@ -37,26 +38,41 @@ async function waitForProjects(): Promise<void> {
 	}
 }
 
+/**
+ * Open one chat session, switching project first when needed. Shared by links,
+ * the Inbox and a mission's timeline — every "take me to that chat" button.
+ */
+export async function openSession(projectId: string, chatSessionId: string): Promise<boolean> {
+	try {
+		await waitForProjects();
+		const project = projectState.projects.find((entry) => entry.id === projectId);
+		if (!project) {
+			addNotification({ type: 'error', title: 'Session not available', message: 'That project is not one you can open.' });
+			return false;
+		}
+		if (project.id !== projectState.currentProject?.id) await setCurrentProject(project);
+		const { session } = await ws.http('sessions:get', { id: chatSessionId });
+		await setCurrentSession(session);
+		setCurrentView('chat');
+		return true;
+	} catch (error) {
+		debug.warn('session', 'Opening a session failed:', error);
+		addNotification({ type: 'error', title: 'Session not available', message: 'That session no longer exists or you cannot open it.' });
+		return false;
+	}
+}
+
 async function openFromHash(): Promise<void> {
+	// `#inbox` — where a push notification about something that needs the owner lands.
+	if (window.location.hash === '#inbox') {
+		history.replaceState(null, '', window.location.pathname + window.location.search);
+		openNeedsYou();
+		return;
+	}
 	const target = parseSessionHash(window.location.hash);
 	if (!target) return;
 	history.replaceState(null, '', window.location.pathname + window.location.search);
-
-	try {
-		await waitForProjects();
-		const project = projectState.projects.find((entry) => entry.id === target.projectId);
-		if (!project) {
-			addNotification({ type: 'error', title: 'Session not available', message: 'That project is not one you can open.' });
-			return;
-		}
-		if (project.id !== projectState.currentProject?.id) await setCurrentProject(project);
-		const { session } = await ws.http('sessions:get', { id: target.chatSessionId });
-		await setCurrentSession(session);
-		setCurrentView('chat');
-	} catch (error) {
-		debug.warn('session', 'Opening a session from a link failed:', error);
-		addNotification({ type: 'error', title: 'Session not available', message: 'That session no longer exists or you cannot open it.' });
-	}
+	await openSession(target.projectId, target.chatSessionId);
 }
 
 let initialized = false;

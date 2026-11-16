@@ -113,7 +113,7 @@ function emitStream(session: Session, stream: 'stdout' | 'stderr', chunk: string
 	session.pending[stream] = parts.pop() ?? '';
 	for (const line of parts) {
 		pushLine(session.buffer, line);
-		ws.emit.signedIn('stack:install-stream', {
+		ws.emit.signedIn('agents:install-stream', {
 			sessionId: session.id,
 			tool: session.tool,
 			type: stream,
@@ -127,7 +127,7 @@ function flushPending(session: Session): void {
 		const remaining = session.pending[stream];
 		if (remaining) {
 			pushLine(session.buffer, remaining);
-			ws.emit.signedIn('stack:install-stream', {
+			ws.emit.signedIn('agents:install-stream', {
 				sessionId: session.id,
 				tool: session.tool,
 				type: stream,
@@ -191,7 +191,7 @@ function finalizeSession(session: Session, preferredStatus: SessionStatus, exitC
 
 	debug.log('path', `[install:${session.id}] Finished status=${session.status} exit=${exitCode}`);
 
-	ws.emit.signedIn('stack:install-finished', {
+	ws.emit.signedIn('agents:install-finished', {
 		sessionId: session.id,
 		tool: session.tool,
 		status: session.status,
@@ -364,7 +364,7 @@ async function removeStackDependencies(session: Session, cwd: string, env: Recor
 /**
  * Start installing `tool`. Progress streams to every signed-in device, so an
  * install clopen starts itself (startup repair) is as visible and cancellable
- * as one started from Settings → Stack.
+ * as one started from Settings → Agents → Install.
  */
 export async function startInstall(tool: ToolId): Promise<Session> {
 	await refreshProcessPath();
@@ -407,7 +407,7 @@ export async function startInstall(tool: ToolId): Promise<Session> {
 	emitStream(session, 'stdout', banner + '\n');
 
 	// Broadcast the session-started event so clients that subscribe mid-run can attach.
-	ws.emit.signedIn('stack:install-started', {
+	ws.emit.signedIn('agents:install-started', {
 		sessionId: id,
 		tool,
 		displayCommand: recipe.displayCommand ?? '',

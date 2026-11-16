@@ -15,6 +15,17 @@
 	import { presenceState } from '$frontend/stores/core/presence.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { parseSnippet } from '$frontend/utils/fts-snippet';
+	import { assistantStore } from '$frontend/stores/features/assistant.svelte';
+
+	/** Sessions a Clopen task opened or drove, in the current project — labelled "by Clopen". */
+	let missionSessionIds = $state<Set<string>>(new Set());
+	$effect(() => {
+		const projectId = projectState.currentProject?.id;
+		if (!projectId) return;
+		void assistantStore.projectTasks(projectId).then((result) => {
+			missionSessionIds = new Set(result.sessionIds);
+		});
+	});
 
 	// Check if a session has an active stream
 	function isSessionStreaming(chatSessionId: string): boolean {
@@ -188,7 +199,7 @@
 		const projectName = getProjectName(session.project_id);
 
 		const confirmed = await showConfirm({
-			title: 'Resume Session',
+			title: 'Resume chat',
 			message: `Resume session "${title}" from project "${projectName}"?\n\nThis will load the conversation and navigate to the chat view.`,
 			type: 'info',
 			confirmText: 'Resume',
@@ -243,7 +254,7 @@
 		const streaming = isSessionStreaming(session.id);
 
 		const confirmed = await showConfirm({
-			title: 'Delete Session',
+			title: 'Delete chat',
 			message: streaming
 				? `This session "${title}" is currently running. Deleting it will stop the active chat and permanently remove all messages, snapshots, and related data.`
 				: `Are you sure you want to delete session "${title}"? All messages, snapshots, and related data will be permanently removed.`,
@@ -269,7 +280,7 @@
 
 	async function clearHistory() {
 		const confirmed = await showConfirm({
-			title: 'Clear All Session History',
+			title: 'Delete all chats',
 			message: 'Are you sure you want to clear all session history? All messages, snapshots, and related data will be permanently removed. This only affects the current project.',
 			type: 'error',
 			confirmText: 'Clear All',
@@ -293,7 +304,7 @@
 
 			addNotification({
 				type: 'success',
-				title: 'All Sessions Deleted',
+				title: 'All chats deleted',
 				message: `${result.deletedCount} sessions and related data have been deleted`,
 				duration: 3000
 			});
@@ -310,7 +321,7 @@
 </script>
 
 <PageTemplate
-	title="Session History"
+	title="Chat history"
 	description="Previous conversation sessions"
 >
 	{#snippet actions()}
@@ -379,7 +390,7 @@
 						<div class="bg-slate-100 dark:bg-slate-800 rounded-full w-24 h-24 flex items-center justify-center mx-auto mb-6">
 							<Icon name="lucide:clock" class="w-12 h-12 text-slate-400" />
 						</div>
-						<h3 class="text-lg font-bold bg-gradient-to-r from-violet-600 to-violet-600 bg-clip-text text-transparent mb-2">No sessions found</h3>
+						<h3 class="text-lg font-bold bg-gradient-to-r from-violet-600 to-violet-600 bg-clip-text text-transparent mb-2">No chats yet</h3>
 						<p class="text-slate-600 dark:text-slate-400">
 							{searchQuery ? 'Try adjusting your search criteria' : 'Start a new chat session to see it here'}
 						</p>
@@ -402,6 +413,12 @@
 										<h3 class="font-bold text-violet-700 dark:text-violet-500">
 											{title}
 										</h3>
+										{#if missionSessionIds.has(session.id)}
+											<span class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-violet-500/10 text-violet-700 dark:text-violet-300" title="Started by Clopen as part of a mission">
+												<Icon name="lucide:sparkles" class="w-3 h-3" />
+												by Clopen
+											</span>
+										{/if}
 										{#if isActiveSession(session)}
 											<span class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-full bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-700">
 												<Icon name="lucide:circle-check" class="w-3 h-3" />

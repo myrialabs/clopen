@@ -1,5 +1,5 @@
 /**
- * Subagents — public facade. Settings → Subagents manages reusable specialized
+ * Subagents — public facade. Library → Subagents manages reusable specialized
  * agent definitions, materialized into each engine at stream start.
  */
 

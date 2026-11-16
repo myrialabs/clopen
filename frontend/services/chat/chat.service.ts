@@ -89,6 +89,24 @@ class ChatService {
     'connectingdots', 'compilingideas', 'brainstorming', 'schedulingtasks'
   ].map(text => text + '...');
 
+  /**
+   * What Clopen's own box suggests: everyday asks across work and life, from a
+   * quick answer to something it runs on its own — not coding prompts, which
+   * belong to a project's agent.
+   */
+  static assistantPlaceholderTexts: string[] = [
+    'Every morning at 7, send me a summary of my unread email',
+    'Build a landing page for my café with the menu and a contact form',
+    'Watch this product page and tell me when the price drops',
+    'Draft a reply to the last message from my landlord',
+    'Find the five best-rated laptops under $1,000 and compare them',
+    'Turn the notes in my Downloads folder into a tidy report',
+    'Post a weekly update about my project every Friday',
+    'Check that my website is up every hour and tell me if not',
+    'Plan a three-day trip to Bali on a small budget',
+    'What did we decide last week about the newsletter?'
+  ];
+
   static placeholderTexts: string[] = [
     // Creating new projects
     'Create a full-stack e-commerce platform with Next.js, Stripe, and PostgreSQL',

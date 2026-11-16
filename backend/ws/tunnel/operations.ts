@@ -15,6 +15,7 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { tunnelKit, tunnelStore, namedIngress, mapActiveTunnel } from '../../tunnel/tunnel-config';
+import { assertMayExpose } from '../../tunnel/public-origin';
 import { debug } from '$shared/utils/logger';
 import { ws } from '$backend/utils/ws';
 
@@ -43,6 +44,7 @@ export const operationsHandler = createRouter()
 	}, async ({ data }) => {
 		const { port, autoStopMinutes = 60 } = data;
 		debug.log('tunnel', `[WS] Quick tunnel start: port=${port}, autoStop=${autoStopMinutes}`);
+		assertMayExpose(port);
 
 		await tunnelKit.bin.ensure();
 		const { publicUrl, timings } = await tunnelKit.quick.start({ service: port, autoStopMinutes });

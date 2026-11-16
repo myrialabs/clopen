@@ -1,17 +1,17 @@
 /**
  * Regression tests for the setup-wizard gate.
  *
- * These lock in the two properties that stopped a working install from being
- * sent back through onboarding (and having its settings reset by the wizard):
- * the data directory is isolated while testing, and a missing onboarding marker
- * on an install that already has users resolves to "complete" instead of
- * "never onboarded".
+ * These lock in the properties that keep the wizard honest: the data directory
+ * is isolated while testing, the wizard is versioned so an install that only
+ * completed an older one goes through the current one once, and the completed
+ * version survives anything that rewrites the system-settings blob.
  */
 
 import { describe, expect, test, beforeAll, afterAll } from 'bun:test';
 import { randomUUID } from 'node:crypto';
 
-import { getOnboardingState, markOnboardingComplete } from './auth-service';
+import { getOnboardingState, markOnboardingComplete, ONBOARDING_VERSION_KEY } from './auth-service';
+import { ONBOARDING_VERSION } from '$shared/constants/onboarding';
 import { readSystemSettings, writeSystemSettings, SYSTEM_SETTINGS_KEY } from '../settings/system-settings';
 import { getClopenDir } from '../utils/paths';
 import { authQueries, settingsQueries } from '../database/queries';
@@ -19,10 +19,12 @@ import { initializeDatabase, closeDatabase, getDatabase } from '../database';
 
 let testUserId: string;
 let originalSettings: string | null = null;
+let originalVersion: string | null = null;
 
 beforeAll(async () => {
 	await initializeDatabase();
 	originalSettings = settingsQueries.get(SYSTEM_SETTINGS_KEY)?.value ?? null;
+	originalVersion = settingsQueries.get(ONBOARDING_VERSION_KEY)?.value ?? null;
 
 	// The self-heal path is only correct for an install that has users, so make
 	// sure one exists regardless of what else ran before this file.
@@ -43,6 +45,11 @@ afterAll(() => {
 		settingsQueries.delete(SYSTEM_SETTINGS_KEY);
 	} else {
 		settingsQueries.set(SYSTEM_SETTINGS_KEY, originalSettings);
+	}
+	if (originalVersion === null) {
+		settingsQueries.delete(ONBOARDING_VERSION_KEY);
+	} else {
+		settingsQueries.set(ONBOARDING_VERSION_KEY, originalVersion);
 	}
 	closeDatabase();
 });
@@ -72,34 +79,37 @@ describe('system settings writes', () => {
 });
 
 describe('onboarding state', () => {
-	test('is complete once the marker is recorded', () => {
+	test('is complete once the current wizard is recorded', () => {
+		markOnboardingComplete();
+		expect(getOnboardingState()).toBe('complete');
+		expect(readSystemSettings().onboardingVersion).toBe(ONBOARDING_VERSION);
+	});
+
+	test('sends an install that completed an older wizard through the current one once', () => {
+		// A v0.4 install: the legacy markers say complete, but no version is recorded.
+		settingsQueries.delete(ONBOARDING_VERSION_KEY);
+		settingsQueries.set(SYSTEM_SETTINGS_KEY, JSON.stringify({ onboarding: 'complete', onboardingComplete: true }));
+		expect(getOnboardingState()).toBe('pending');
+
 		markOnboardingComplete();
 		expect(getOnboardingState()).toBe('complete');
 	});
 
-	test('respects an explicitly pending wizard so a refresh resumes setup', () => {
-		writeSystemSettings({ onboarding: 'pending', onboardingComplete: false });
+	test('an older recorded version is not enough', () => {
+		settingsQueries.set(ONBOARDING_VERSION_KEY, String(ONBOARDING_VERSION - 1));
 		expect(getOnboardingState()).toBe('pending');
 	});
 
-	test('still honours the legacy onboardingComplete boolean', () => {
-		settingsQueries.set(SYSTEM_SETTINGS_KEY, JSON.stringify({ onboardingComplete: true }));
-		expect(getOnboardingState()).toBe('complete');
-	});
-
-	test('self-heals when the marker is missing but users exist', () => {
+	test('the completed version survives a stray full-blob write', () => {
+		markOnboardingComplete();
 		// Exactly the state a stray full-blob write leaves behind.
 		settingsQueries.set(SYSTEM_SETTINGS_KEY, JSON.stringify({ authMode: 'required' }));
-
 		expect(getOnboardingState()).toBe('complete');
-		// And it is persisted, so the next read cannot flap back to the wizard.
-		expect(readSystemSettings().onboarding).toBe('complete');
 	});
 
-	test('self-heals when the whole settings row is gone', () => {
+	test('the completed version survives the settings row disappearing', () => {
+		markOnboardingComplete();
 		settingsQueries.delete(SYSTEM_SETTINGS_KEY);
-
 		expect(getOnboardingState()).toBe('complete');
-		expect(readSystemSettings().onboarding).toBe('complete');
 	});
 });

@@ -23,7 +23,7 @@
 
 	function goToSignIn() {
 		onClose();
-		openSettingsModal('access');
+		openSettingsModal('devices');
 	}
 
 	// Refresh tunnel status on open so the active-connection list is accurate.
@@ -156,14 +156,14 @@
 
 <Modal {isOpen} {onClose} title="Remote Access" size="md">
 	<div class="space-y-5">
-		<!-- No Login mode warning -->
+		<!-- No sign-in warning -->
 		{#if isNoAuth}
 			<div class="flex gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-xl">
 				<Icon name="lucide:shield-alert" class="w-5 h-5 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
 				<div class="flex-1 text-sm">
-					<p class="font-semibold text-amber-800 dark:text-amber-200 mb-1">No Login mode is active</p>
+					<p class="font-semibold text-amber-800 dark:text-amber-200 mb-1">No sign-in required</p>
 					<p class="text-amber-700 dark:text-amber-300">
-						Anyone with the link gets <span class="font-semibold">full access</span>. Switch to With Login to protect it.
+						Anyone with the link gets <span class="font-semibold">full access</span>.
 					</p>
 					<button
 						type="button"
@@ -171,7 +171,7 @@
 						class="inline-flex items-center gap-1.5 mt-2.5 py-1.5 px-3 bg-amber-500/15 hover:bg-amber-500/25 border border-amber-500/30 rounded-md text-amber-800 dark:text-amber-200 text-xs font-semibold transition-colors"
 					>
 						<Icon name="lucide:shield-check" class="w-3.5 h-3.5" />
-						Switch to With Login in Sign-in & Devices
+						Require a sign-in key
 					</button>
 				</div>
 			</div>
@@ -220,7 +220,7 @@
 						onclick={stopConnection}
 						disabled={stopping}
 						class="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors disabled:opacity-50 shrink-0"
-						title="Stop — also removes it from Public Tunnel"
+						title="Stop — also removes the public link"
 					>
 						<Icon name="lucide:circle-x" class="w-3.5 h-3.5" />
 						Stop

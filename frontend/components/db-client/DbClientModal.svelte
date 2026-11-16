@@ -765,7 +765,7 @@
 				>
 					<Icon name={isMobileMenuOpen ? 'lucide:arrow-left' : 'lucide:menu'} class="w-5 h-5" />
 				</button>
-				<h2 id="db-client-title" class="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100 m-0">DB Client</h2>
+				<h2 id="db-client-title" class="flex items-center gap-2 text-base font-semibold text-slate-900 dark:text-slate-100 m-0">Databases</h2>
 				<button
 					type="button"
 					class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
@@ -788,7 +788,7 @@
 				{#if !isMobile}
 					<header class="flex items-center justify-between py-1.5 px-4 pl-6 border-b border-slate-200 dark:border-slate-800 shrink-0">
 						<div class="flex items-center gap-2.5 text-md font-bold text-slate-900 dark:text-slate-100">
-							<span>DB Client</span>
+							<span>Databases</span>
 						</div>
 						<button
 							type="button"

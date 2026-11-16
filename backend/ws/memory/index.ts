@@ -1,5 +1,5 @@
 /**
- * Memory Router — the Memory Graph panel and Settings → Infrastructure → Memory.
+ * Memory Router — the Memory Graph panel and Settings → Memory.
  */
 
 import { t } from 'elysia';

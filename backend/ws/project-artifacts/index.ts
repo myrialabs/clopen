@@ -1,5 +1,5 @@
 /**
- * Project Artifacts Router — the "This project" side of Settings → Artifacts &
+ * Project Artifacts Router — the "This project" side of Settings → Models &
  * Access: what the repository carries (`.agents/`, `.claude/`, `AGENTS.md`, …),
  * which engines read each item, and in-place edits.
  *
@@ -103,15 +103,15 @@ async function scanFor(projectId: string) {
 }
 
 export const projectArtifactsRouter = createRouter()
-	.http('project-artifacts:scan', {
+	.http('library:project-scan', {
 		data: t.Object({ projectId: t.String() }),
 		response: SCAN
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:scan ${data.projectId}`);
+		debug.log('path', `library:project-scan ${data.projectId}`);
 		return scanFor(data.projectId);
 	})
 
-	.http('project-artifacts:read', {
+	.http('library:project-read', {
 		data: t.Object({ projectId: t.String(), path: t.String() }),
 		response: t.Object({ content: t.String() })
 	}, async ({ data }) => {
@@ -120,7 +120,7 @@ export const projectArtifactsRouter = createRouter()
 	})
 
 	// ── Skills: .agents/skills/<slug>/SKILL.md ─────────────────────────────────
-	.http('project-artifacts:save-skill', {
+	.http('library:project-save-skill', {
 		data: t.Object({
 			projectId: t.String(),
 			originalSlug: t.Optional(t.String()),
@@ -130,22 +130,22 @@ export const projectArtifactsRouter = createRouter()
 		}),
 		response: SAVED
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:save-skill ${data.projectId} ${data.name}`);
+		debug.log('path', `library:project-save-skill ${data.projectId} ${data.name}`);
 		const { root } = projectRoot(data.projectId);
 		return saveProjectSkill(root, data);
 	})
-	.http('project-artifacts:delete-skill', {
+	.http('library:project-delete-skill', {
 		data: t.Object({ projectId: t.String(), slug: t.String() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:delete-skill ${data.projectId} ${data.slug}`);
+		debug.log('path', `library:project-delete-skill ${data.projectId} ${data.slug}`);
 		const { root } = projectRoot(data.projectId);
 		await deleteProjectSkill(root, data.slug);
 		return { success: true };
 	})
 
 	// ── Subagents: .agents/agents/<slug>.md ────────────────────────────────────
-	.http('project-artifacts:save-subagent', {
+	.http('library:project-save-subagent', {
 		data: t.Object({
 			projectId: t.String(),
 			originalSlug: t.Optional(t.String()),
@@ -157,59 +157,59 @@ export const projectArtifactsRouter = createRouter()
 		}),
 		response: SAVED
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:save-subagent ${data.projectId} ${data.name}`);
+		debug.log('path', `library:project-save-subagent ${data.projectId} ${data.name}`);
 		const { root } = projectRoot(data.projectId);
 		return saveProjectSubagent(root, data);
 	})
-	.http('project-artifacts:delete-subagent', {
+	.http('library:project-delete-subagent', {
 		data: t.Object({ projectId: t.String(), slug: t.String() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:delete-subagent ${data.projectId} ${data.slug}`);
+		debug.log('path', `library:project-delete-subagent ${data.projectId} ${data.slug}`);
 		const { root } = projectRoot(data.projectId);
 		await deleteProjectSubagent(root, data.slug);
 		return { success: true };
 	})
 
-	.http('project-artifacts:copy-to-agents', {
+	.http('library:project-copy-to-agents', {
 		data: t.Object({ projectId: t.String(), kind: t.Union([t.Literal('skill'), t.Literal('subagent')]), path: t.String() }),
 		response: SAVED
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:copy-to-agents ${data.projectId} ${data.path}`);
+		debug.log('path', `library:project-copy-to-agents ${data.projectId} ${data.path}`);
 		const { root } = projectRoot(data.projectId);
 		return copyToAgents(root, data.kind, data.path);
 	})
 
 	// ── Instructions: AGENTS.md ───────────────────────────────
-	.http('project-artifacts:get-agents-md', {
+	.http('library:project-get-agents-md', {
 		data: t.Object({ projectId: t.String() }),
 		response: AGENTS_MD
 	}, async ({ data }) => {
 		const { root } = projectRoot(data.projectId);
 		return readAgentsMd(root);
 	})
-	.http('project-artifacts:save-agents-md', {
+	.http('library:project-save-agents-md', {
 		data: t.Object({ projectId: t.String(), content: t.String() }),
 		response: AGENTS_MD
 	}, async ({ data }) => {
-		debug.log('path', `project-artifacts:save-agents-md ${data.projectId}`);
+		debug.log('path', `library:project-save-agents-md ${data.projectId}`);
 		const { root } = projectRoot(data.projectId);
 		return saveAgentsMd(root, data.content);
 	})
 
 	// ── MCP: .agents/mcp.json + trust gate ─────────────────────────────────────
-	.http('project-artifacts:get-mcp', {
+	.http('library:project-get-mcp', {
 		data: t.Object({ projectId: t.String() }),
 		response: t.Object({ path: t.String(), content: t.String() })
 	}, async ({ data }) => {
 		const { root } = projectRoot(data.projectId);
 		return { path: PROJECT_WRITE_PATHS.mcp, content: readProjectMcpFile(root) ?? '' };
 	})
-	.http('project-artifacts:save-mcp', {
+	.http('library:project-save-mcp', {
 		data: t.Object({ projectId: t.String(), content: t.String() }),
 		response: t.Object({ hash: t.String() })
 	}, async ({ data, conn }) => {
-		debug.log('path', `project-artifacts:save-mcp ${data.projectId}`);
+		debug.log('path', `library:project-save-mcp ${data.projectId}`);
 		const { root, projectId } = projectRoot(data.projectId);
 		const hash = await saveProjectMcp(root, data.content);
 		// Writing the file from Settings IS the approval: the owner authored
@@ -218,11 +218,11 @@ export const projectArtifactsRouter = createRouter()
 		else projectMcpTrustQueries.revoke(projectId);
 		return { hash };
 	})
-	.http('project-artifacts:approve-mcp', {
+	.http('library:project-approve-mcp', {
 		data: t.Object({ projectId: t.String(), hash: t.String() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data, conn }) => {
-		debug.log('path', `project-artifacts:approve-mcp ${data.projectId}`);
+		debug.log('path', `library:project-approve-mcp ${data.projectId}`);
 		const { root, projectId } = projectRoot(data.projectId);
 		const raw = readProjectMcpFile(root);
 		// Approve only what was actually reviewed: the hash shown must

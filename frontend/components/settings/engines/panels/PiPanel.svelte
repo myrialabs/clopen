@@ -69,12 +69,12 @@
 	onMount(() => {
 		// Pi interactive/OAuth login event listeners
 		cleanups.push(
-			ws.on('engine:pi-account-login-started', (data: { loginId: string }) => {
+			ws.on('agents:pi-account-login-started', (data: { loginId: string }) => {
 				piLoginId = data.loginId;
 			}),
 			// Every event is scoped to the login on screen, so a cancelled attempt
 			// still winding down can't paint over the next one.
-			ws.on('engine:pi-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string; instructions?: string; userCode?: string; verificationUri?: string; links?: { url: string; label?: string }[] }) => {
+			ws.on('agents:pi-account-login-event', (data: { loginId: string; kind: string; message?: string; url?: string; instructions?: string; userCode?: string; verificationUri?: string; links?: { url: string; label?: string }[] }) => {
 				if (data.loginId !== piLoginId) return;
 				if (data.kind === 'auth_url' && data.url) {
 					// The browser step explains itself; the flow's own instructions
@@ -88,24 +88,24 @@
 				}
 				if (data.links?.length) piLoginLinks = [...piLoginLinks, ...data.links];
 			}),
-			ws.on('engine:pi-account-login-prompt', (data: { loginId: string; kind: string; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[]; optional: boolean }) => {
+			ws.on('agents:pi-account-login-prompt', (data: { loginId: string; kind: string; message: string; placeholder?: string; options?: { id: string; label: string; description?: string }[]; optional: boolean }) => {
 				if (data.loginId !== piLoginId) return;
 				piLoginPrompt = { kind: data.kind, message: data.message, placeholder: data.placeholder, options: data.options, optional: data.optional };
 				piLoginPromptValue = data.options?.[0]?.id ?? '';
 			}),
-			ws.on('engine:pi-account-login-prompt-closed', (data: { loginId: string }) => {
+			ws.on('agents:pi-account-login-prompt-closed', (data: { loginId: string }) => {
 				if (data.loginId !== piLoginId) return;
 				piLoginPrompt = null;
 				piLoginPromptValue = '';
 			}),
-			ws.on('engine:pi-account-login-complete', async (data: { loginId: string; accountId: number }) => {
+			ws.on('agents:pi-account-login-complete', async (data: { loginId: string; accountId: number }) => {
 				if (data.loginId !== piLoginId) return;
 				piAddStep = 'success';
 				resetPiLoginState();
 				await refreshPiStatus();
 				await modelStore.refreshModels('pi');
 			}),
-			ws.on('engine:pi-account-login-error', (data: { loginId: string; message: string }) => {
+			ws.on('agents:pi-account-login-error', (data: { loginId: string; message: string }) => {
 				if (data.loginId !== piLoginId) return;
 				piAddError = data.message;
 				piAddStep = 'error';
@@ -179,7 +179,7 @@
 		piAddStep = 'saving';
 		piAddError = '';
 		try {
-			await ws.http('engine:pi-accounts-save', { name: piAddName.trim(), provider: piAddProvider, values: piAddValues });
+			await ws.http('agents:pi-accounts-save', { name: piAddName.trim(), provider: piAddProvider, values: piAddValues });
 			piAddStep = 'success';
 			await refreshPiStatus();
 			await modelStore.refreshModels('pi');
@@ -194,7 +194,7 @@
 	);
 
 	function cancelPiAdd() {
-		if (piLoginId) ws.emit('engine:pi-account-login-cancel', { loginId: piLoginId });
+		if (piLoginId) ws.emit('agents:pi-account-login-cancel', { loginId: piLoginId });
 		piAddStep = 'idle';
 		piAddError = '';
 		piReauthAccountId = null;
@@ -212,7 +212,7 @@
 		piAddError = '';
 		piReauthAccountId = null;
 		resetPiLoginState();
-		ws.emit('engine:pi-account-login-start', { name: piAddName.trim(), provider: piAddProvider, type });
+		ws.emit('agents:pi-account-login-start', { name: piAddName.trim(), provider: piAddProvider, type });
 	}
 
 	/** Re-authenticate an existing account in place (re-runs its provider's login). */
@@ -223,7 +223,7 @@
 		piAddStep = 'login';
 		piAddError = '';
 		resetPiLoginState();
-		ws.emit('engine:pi-account-login-start', {
+		ws.emit('agents:pi-account-login-start', {
 			name: account.name,
 			provider: account.provider,
 			type: account.authType,
@@ -233,14 +233,14 @@
 
 	function submitPiLoginPrompt(value = piLoginPromptValue) {
 		if (!piLoginId || !piLoginPrompt) return;
-		ws.emit('engine:pi-account-login-submit', { loginId: piLoginId, value });
+		ws.emit('agents:pi-account-login-submit', { loginId: piLoginId, value });
 		piLoginPrompt = null;
 		piLoginPromptValue = '';
 	}
 
 	async function switchPiAccount(id: number) {
 		try {
-			await ws.http('engine:pi-accounts-switch', { id });
+			await ws.http('agents:pi-accounts-switch', { id });
 			await piAccountsStore.refresh();
 			await refreshPiStatus();
 			await modelStore.refreshModels('pi');
@@ -257,7 +257,7 @@
 	async function deletePiAccount() {
 		if (piDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:pi-accounts-delete', { id: piDeleteTargetId });
+			await ws.http('agents:pi-accounts-delete', { id: piDeleteTargetId });
 			await piAccountsStore.refresh();
 			await refreshPiStatus();
 			await modelStore.refreshModels('pi');
@@ -287,9 +287,9 @@
 			if (piEditAuthType === 'oauth') {
 				// OAuth accounts have no editable key fields — only the name. (The
 				// save endpoint would rebuild an api_key credential.)
-				await ws.http('engine:pi-accounts-rename', { id: piEditingId, name: piEditName.trim() });
+				await ws.http('agents:pi-accounts-rename', { id: piEditingId, name: piEditName.trim() });
 			} else {
-				await ws.http('engine:pi-accounts-save', {
+				await ws.http('agents:pi-accounts-save', {
 					accountId: piEditingId,
 					name: piEditName.trim(),
 					provider: piEditProvider,

@@ -1,7 +1,7 @@
 /**
  * Resolves which engine/model an AI-assist feature runs on: the feature's own
- * override (Settings → Models → Git / Artifacts) when enabled, otherwise the
- * assistant model.
+ * model (Settings → Models) when one is picked, otherwise the free model —
+ * the default of every job there — otherwise the project-chat model.
  *
  * One helper for every caller so a new feature can't reinvent — and get wrong —
  * the three fields that must travel together. `providerSlug` is a hint only:
@@ -11,6 +11,7 @@
  */
 
 import { settings } from '$frontend/stores/features/settings.svelte';
+import { assistantStore } from '$frontend/stores/features/assistant.svelte';
 import type { EngineModel, EngineType } from '$shared/types/unified';
 
 /**
@@ -28,7 +29,7 @@ import type { EngineModel, EngineType } from '$shared/types/unified';
  */
 export const GENERATION_TIMEOUT_MS = 3 * 60 * 1000;
 
-/** The model-override shape shared by `commitGenerator` and `artifactGenerator`. */
+/** The model-override shape shared by `commitGenerator` and `libraryGenerator`. */
 export interface ModelOverride {
 	useCustomModel: boolean;
 	engine: EngineType;
@@ -60,7 +61,10 @@ export function modelFieldsOf(model: EngineModel | undefined, fallbackId = ''): 
 	};
 }
 
-/** Resolve an override (or the assistant model when it's off/absent). */
+/**
+ * Resolve an override; when it is off, the free model, then the project-chat
+ * default.
+ */
 export function resolveGenerationModel(override?: ModelOverride | null): ResolvedGenerationModel {
 	if (override?.useCustomModel) {
 		return {
@@ -68,6 +72,10 @@ export function resolveGenerationModel(override?: ModelOverride | null): Resolve
 			providerSlug: override.provider,
 			modelId: override.modelId
 		};
+	}
+	const free = assistantStore.freeModel;
+	if (free) {
+		return { engine: free.engine as EngineType, providerSlug: free.provider, modelId: free.modelId };
 	}
 	return {
 		engine: settings.selectedEngine,

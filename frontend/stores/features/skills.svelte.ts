@@ -1,7 +1,7 @@
 /**
  * Skills Store
  *
- * Reactive store for Settings → Skills. One feature covering both ways a
+ * Reactive store for Library → Skills. One feature covering both ways a
  * reusable prompt gets invoked: by the MODEL (`auto` trigger, chosen from the
  * description) and by the USER (`slash` trigger, typed as `/<slug>` in chat).
  * The separate Commands menu folded in here — see migration 079.

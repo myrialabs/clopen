@@ -1,11 +1,14 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
-	import HomeProjectEntry from './HomeProjectEntry.svelte';
-	import HomeMark from './HomeMark.svelte';
-	import { isHomeProject } from '$shared/utils/home-project';
+	import AssistantEntry from './AssistantEntry.svelte';
+	import { projectAvatars, statusMeaning } from '$frontend/utils/project-avatar';
+	import { assistantStore } from '$frontend/stores/features/assistant.svelte';
+	import { openNeedsYou } from '$frontend/stores/ui/assistant-view.svelte';
+	import AssistantMark from './AssistantMark.svelte';
+	import { isAssistantProject } from '$shared/utils/assistant-project';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
-	import { projectState, removeProject } from '$frontend/stores/core/projects.svelte';
+	import { projectState, removeProject, reorderProjects } from '$frontend/stores/core/projects.svelte';
 	import { getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -82,7 +85,6 @@
 	let projectToDelete = $state<Project | null>(null);
 	let showProjectInfo = $state(false);
 	let projectInfoProject = $state<Project | null>(null);
-	let searchQuery = $state('');
 	let archivedExpanded = $state(false);
 	let contextMenuProject = $state<Project | null>(null);
 	let contextMenuX = $state(0);
@@ -90,7 +92,9 @@
 	let contextMenuArchived = $state(false);
 
 	// Home is always there and listed on its own, so "no projects" means none besides it.
-	const realProjectCount = $derived(projectState.projects.filter((project) => !isHomeProject(project)).length);
+	const avatars = $derived(projectAvatars(projectState.projects));
+	const avatarOf = (project: { id: string }) => avatars.get(project.id) ?? { initials: '?', colour: 'bg-slate-500/15 text-slate-600' };
+	const realProjectCount = $derived(projectState.projects.filter((project) => !isAssistantProject(project)).length);
 	const selectionActive = $derived(projectSelectionState.active);
 	const selectionCount = $derived(projectSelectionState.selectedIds.length);
 
@@ -155,34 +159,43 @@
 		}
 	}
 
-	// Filtered projects based on search query (archived excluded from the main list)
+	// Archived projects are excluded from the main list
 	const filteredProjects = $derived(() => {
-		const base = !searchQuery.trim()
-			? projectState.projects
-			: projectState.projects.filter(
-					(p) =>
-						p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-						p.path.toLowerCase().includes(searchQuery.toLowerCase())
-				);
-		return visibleProjects(base);
+		return visibleProjects(projectState.projects);
 	});
 
 	const archivedList = $derived(() => {
-		const base = !searchQuery.trim()
-			? projectState.projects
-			: projectState.projects.filter(
-					(p) =>
-						p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-						p.path.toLowerCase().includes(searchQuery.toLowerCase())
-				);
-		return archivedProjects(base);
+		return archivedProjects(projectState.projects);
 	});
+
+	// ── Reorder by touch: hold the grip and drag; the row under the finger is where it lands ──
+	// (HTML5 drag-and-drop, the desktop's way, does not fire for touch.)
+	let movingProjectId = $state<string | null>(null);
+	let overProjectId = $state<string | null>(null);
+
+	function startProjectMove(event: PointerEvent, projectId: string) {
+		if (selectionActive || filteredProjects().length < 2) return;
+		event.preventDefault();
+		movingProjectId = projectId;
+		const move = (moved: PointerEvent) => {
+			const row = (document.elementFromPoint(moved.clientX, moved.clientY) as HTMLElement | null)?.closest<HTMLElement>('[data-project-row]');
+			overProjectId = row?.dataset.projectRow ?? null;
+		};
+		const up = () => {
+			window.removeEventListener('pointermove', move);
+			window.removeEventListener('pointerup', up);
+			window.removeEventListener('pointercancel', up);
+			if (movingProjectId && overProjectId && overProjectId !== movingProjectId) reorderProjects(movingProjectId, overProjectId);
+			movingProjectId = null;
+			overProjectId = null;
+		};
+		window.addEventListener('pointermove', move);
+		window.addEventListener('pointerup', up);
+		window.addEventListener('pointercancel', up);
+	}
 
 	function toggleProjectMenu() {
 		showProjectMenu = !showProjectMenu;
-		if (!showProjectMenu) {
-			searchQuery = '';
-		}
 	}
 
 	// Status color for project indicator — uses shared helper from presence store
@@ -194,7 +207,6 @@
 
 	function closeProjectMenu() {
 		showProjectMenu = false;
-		searchQuery = '';
 		exitSelectionMode();
 	}
 
@@ -380,7 +392,7 @@
 		aria-expanded={showProjectMenu}
 		aria-haspopup="menu"
 	>
-		<div class="relative shrink-0">{#if isHomeProject(projectState.currentProject)}<HomeMark class="w-4.5 h-4.5 rounded" />{:else}<Icon name="lucide:folder-open" class="w-4 h-4" />{/if}<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-100 dark:border-slate-800 {getProjectStatusColor(projectState.currentProject?.id ?? '')}"></span></div>
+		<div class="relative shrink-0">{#if isAssistantProject(projectState.currentProject)}<AssistantMark class="w-4.5 h-4.5 rounded" />{:else}<Icon name="lucide:folder-open" class="w-4 h-4" />{/if}<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-slate-100 dark:border-slate-800 {getProjectStatusColor(projectState.currentProject?.id ?? '')}"></span></div>
 		<span class="flex-1 text-left overflow-hidden text-ellipsis whitespace-nowrap">
 			{projectState.currentProject?.name ?? 'No Project'}
 		</span>
@@ -393,7 +405,7 @@
 		role="tablist"
 		aria-label="Action Buttons"
 	>
-		<!-- Tools (Remote Access, Public Tunnel, DB Client) -->
+		<!-- Tools -->
 		<WorktreeSwitcher collapsed={true} mobile={true} />
 		<ToolsMenu
 			collapsed={true}
@@ -409,6 +421,20 @@
 					onWork={() => openWorkDialog()}
 					onDeployments={() => openDeploymentsDialog()}
 		/>
+
+		<!-- Needs you: what Clopen is waiting on -->
+		<button
+			type="button"
+			class="relative flex items-center justify-center w-9 h-8 bg-transparent border-none rounded-md text-slate-500 cursor-pointer transition-all duration-150 active:bg-violet-500/10"
+			onclick={openNeedsYou}
+			aria-label="Needs you{assistantStore.needsYou.length ? ` (${assistantStore.needsYou.length} waiting)` : ''}"
+			title="Needs you"
+		>
+			<Icon name="lucide:bell" class="w-4.5 h-4.5" />
+			{#if assistantStore.needsYou.length > 0}
+				<span class="absolute top-0 right-0.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-white text-3xs font-bold flex items-center justify-center">{assistantStore.needsYou.length}</span>
+			{/if}
+		</button>
 
 		<!-- Quick Search Button -->
 		<button
@@ -451,7 +477,7 @@
 						aria-label="Add project"
 						title="Add project"
 					>
-						<Icon name="lucide:plus" class="w-4 h-4" />
+						<Icon name="lucide:folder-plus" class="w-4 h-4" />
 					</button>
 				{/if}
 				<button
@@ -474,42 +500,17 @@
 	{/snippet}
 
 	{#snippet children()}
-		<!-- Home: chat without a project. Always first, never part of the list below. -->
-		<div class="mb-3">
-			<HomeProjectEntry
+		<!-- Clopen and the Library. Always first, never part of the list below; "Needs you" has its own button in the header. -->
+		<div class="mb-2 pb-2 border-b border-slate-200 dark:border-slate-800">
+			<AssistantEntry
+				withNeedsYou={false}
+				onChat={closeProjectMenu}
 				onSelect={(project) => {
 					import('$frontend/stores/core/projects.svelte').then((m) => m.setCurrentProject(project));
 					closeProjectMenu();
 				}}
 			/>
 		</div>
-
-		<!-- Search Box -->
-		{#if realProjectCount > 0}
-			<div class="mb-3">
-				<div
-					class="flex items-center gap-2 py-2 px-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl transition-colors focus-within:border-violet-400/60 focus-within:bg-white dark:focus-within:bg-slate-800 focus-within:ring-2 focus-within:ring-violet-500/15"
-				>
-					<Icon name="lucide:search" class="w-4 h-4 text-slate-400 dark:text-slate-500 shrink-0" />
-					<input
-						type="text"
-						bind:value={searchQuery}
-						placeholder="Search projects..."
-						class="flex-1 min-w-0 bg-transparent border-none outline-none text-slate-900 dark:text-slate-100 text-sm placeholder:text-slate-400 dark:placeholder:text-slate-500"
-					/>
-					{#if searchQuery}
-						<button
-							type="button"
-							class="flex items-center justify-center w-5 h-5 shrink-0 bg-slate-500/10 hover:bg-slate-500/20 border-none rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 cursor-pointer transition-colors"
-							onclick={() => (searchQuery = '')}
-							aria-label="Clear search"
-						>
-							<Icon name="lucide:x" class="w-3 h-3" />
-						</button>
-					{/if}
-				</div>
-			</div>
-		{/if}
 
 		{#if selectionActive}
 			<!-- Selection toolbar: same single-row layout as Desktop (count left, icon-only actions right). Wraps on narrow screens. -->
@@ -572,14 +573,18 @@
 				<p class="text-xs text-slate-500 dark:text-slate-500">Create your first project below</p>
 			</div>
 		{:else}
-			<div class="space-y-2">
+			<!-- Compact rows, as on the desktop sidebar: no card around each project. -->
+			<div class="space-y-0.5">
 				{#each filteredProjects() as project (project.id)}
 					{@const isActive = projectState.currentProject?.id === project.id}
 					<div
+						data-project-row={project.id}
 						class="flex items-center w-full text-sm text-left cursor-pointer transition-all duration-150 relative group
 							{selectionActive
-							? 'gap-2.5 py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 hover:bg-violet-500/10'
-							: `gap-2 p-3 bg-transparent border border-slate-200 dark:border-slate-700 rounded-lg text-slate-900 dark:text-slate-100 ${isActive ? 'border-violet-300 dark:border-violet-600 bg-violet-50 dark:bg-violet-900/10' : ''}`}"
+							? 'gap-2.5 py-2 px-2 bg-transparent border-none rounded-lg text-slate-600 dark:text-slate-400 hover:bg-violet-500/10'
+							: `gap-1.5 py-1 pl-0.5 pr-1 bg-transparent border-none rounded-lg text-slate-700 dark:text-slate-300 ${isActive ? 'bg-violet-500/10 dark:bg-violet-500/20 text-slate-900 dark:text-slate-100' : 'active:bg-violet-500/10'}`}
+							{movingProjectId === project.id ? 'opacity-50' : ''}
+							{overProjectId === project.id && movingProjectId !== project.id ? 'ring-1 ring-violet-500/60' : ''}"
 						title={project.path}
 						role={selectionActive ? 'button' : undefined}
 						tabindex={selectionActive ? 0 : undefined}
@@ -604,7 +609,6 @@
 							<div class="flex-1 flex items-center justify-between gap-2 min-w-0">
 								<div class="flex-1 min-w-0">
 									<span class="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
-									<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
 									<!-- Fixed-size pin slot keeps the layout stable, same as Desktop. -->
@@ -616,9 +620,17 @@
 								</div>
 							</div>
 						{:else}
+							<!-- Always there on a phone (no hover): hold and drag to move the project. -->
+							<span
+								class="flex items-center justify-center w-6 h-8 shrink-0 text-slate-300 dark:text-slate-600 touch-none cursor-grab"
+								onpointerdown={(event) => startProjectMove(event, project.id)}
+								role="button"
+								tabindex="-1"
+								aria-label="Move {project.name}"
+							><Icon name="lucide:grip-vertical" class="w-4 h-4" /></span>
 							<button
 								type="button"
-								class="flex items-center gap-3 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left"
+								class="flex items-center gap-2.5 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left"
 								onclick={() => {
 									import('$frontend/stores/core/projects.svelte').then((m) =>
 										m.setCurrentProject(project)
@@ -626,33 +638,18 @@
 									closeProjectMenu();
 								}}
 							>
-							<div
-								class="relative w-8 h-8 {isActive
-									? 'bg-violet-200 dark:bg-violet-800/30'
-									: 'bg-violet-100 dark:bg-violet-900/20'} rounded-lg flex items-center justify-center flex-shrink-0"
-							>
-								<Icon name="lucide:folder" class="text-violet-600 dark:text-violet-400 w-4 h-4" />
-								<span
-									class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {getProjectStatusColor(project.id ?? '')}"
-								></span>
+							<div class="relative w-7 h-7 rounded-md flex items-center justify-center flex-shrink-0 text-xs font-semibold {avatarOf(project).colour}" title={statusMeaning(getProjectStatusColor(project.id ?? '')) || undefined}>
+								{avatarOf(project).initials}
+								{#if statusMeaning(getProjectStatusColor(project.id ?? ''))}
+									<span class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {getProjectStatusColor(project.id ?? '')}"></span>
+								{/if}
 							</div>
 							<div class="flex-1 min-w-0">
 								<div class="flex items-center gap-2">
-									<p class="font-semibold text-slate-900 dark:text-slate-100 truncate">
+									<p class="truncate {isActive ? 'font-semibold' : 'font-medium'}">
 										{project.name}
 									</p>
-									{#if !selectionActive && isActive}
-										<span
-											class="inline-flex items-center gap-1 px-2 py-0.5 bg-green-100 dark:bg-green-900/20 text-green-700 dark:text-green-300 text-xs font-medium rounded-full"
-										>
-											<Icon name="lucide:circle-check" class="w-3 h-3" />
-											Active
-										</span>
-									{/if}
 								</div>
-								<p class="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">
-									{project.path}
-								</p>
 							</div>
 						</button>
 						<!-- Fixed-size pin slot keeps the action buttons position stable. -->
@@ -667,7 +664,7 @@
 							     Pin and Archive unreachable on iPhone/iPad. -->
 							<button
 								type="button"
-								class="flex items-center justify-center w-9 h-9 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 shrink-0"
+								class="flex items-center justify-center w-8 h-8 bg-transparent border-none rounded-lg text-slate-400 dark:text-slate-500 cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-violet-600 shrink-0"
 								onclick={(e) => openProjectContextMenu(project, e)}
 								aria-label="Project actions"
 								title="Project actions"
@@ -677,19 +674,7 @@
 						{/if}
 					</div>
 				{:else}
-					<div
-						class="flex flex-col items-center gap-2 py-8 text-slate-500 dark:text-slate-400 text-sm"
-					>
-						<Icon name="lucide:search-x" class="w-10 h-10 opacity-40" />
-						<p class="font-medium">No projects found</p>
-						<button
-							type="button"
-							class="text-xs text-violet-600 dark:text-violet-400 underline cursor-pointer hover:text-violet-700 dark:hover:text-violet-300"
-							onclick={() => (searchQuery = '')}
-						>
-							Clear search
-						</button>
-					</div>
+					<p class="py-8 text-center text-sm text-slate-500 dark:text-slate-400">No projects yet</p>
 				{/each}
 			</div>
 			{#if !selectionActive && archivedList().length > 0}
@@ -795,7 +780,7 @@
 				<Icon name="lucide:trash-2" class="w-5 h-5 text-slate-500 shrink-0" />
 				<div class="flex-1 min-w-0">
 					<p class="text-sm font-semibold text-slate-900 dark:text-slate-100">Delete with all data</p>
-					<p class="text-xs text-slate-500 dark:text-slate-400">Delete all sessions, snapshots, and related data.</p>
+					<p class="text-xs text-slate-500 dark:text-slate-400">Delete all chats and restore points.</p>
 				</div>
 			</button>
 			<button

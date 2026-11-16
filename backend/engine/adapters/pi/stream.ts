@@ -150,7 +150,7 @@ export class PiEngine implements AIEngine {
 		const account = getPiAccountForProvider(providerSlug)
 			?? (accountId != null ? engineQueries.getAccount(accountId) : null);
 		if (!account) {
-			throw new Error(`Pi has no account for provider "${providerSlug}". Add one in Settings → Engines → Pi.`);
+			throw new Error(`Pi has no account for provider "${providerSlug}". Add one in Settings → Agents → Pi.`);
 		}
 		const provider = parsePiCredential(account.credential)?.provider ?? canonicalPiProviderId(providerSlug);
 		const runtime = await createPiRuntime(new DbCredentialStore([account]));

@@ -103,7 +103,7 @@ export interface EngineInfo {
 	}
 }
 
-// ── Qwen provider presets (wire format for `engine:qwen-presets-list`) ──
+// ── Qwen provider presets (wire format for `agents:qwen-presets-list`) ──
 //
 // Defined here so the frontend can stay typed without importing from
 // `$backend`. The runtime values live in `backend/engine/adapters/qwen/presets.ts`.
@@ -121,7 +121,7 @@ export interface QwenProviderPreset {
 	docsUrl?: string;
 }
 
-// ── Pi provider presets (wire format for `engine:pi-presets-list`) ──
+// ── Pi provider presets (wire format for `agents:pi-presets-list`) ──
 //
 // Pi is genuinely multi-provider (Anthropic, OpenAI, Google, OpenRouter, xAI …).
 // Each provider supports API-key auth, OAuth (subscription) auth, or both. The
@@ -160,7 +160,7 @@ export interface PiProviderPreset {
 	apiKeyUrl?: string;
 }
 
-// ── Cline provider presets (wire format for `engine:cline-presets-list`) ──
+// ── Cline provider presets (wire format for `agents:cline-presets-list`) ──
 //
 // Cline (`@cline/sdk`) is genuinely multi-provider (Anthropic, OpenAI, Google,
 // Bedrock, Mistral, the Cline account, OpenAI-compatible …). Each provider is

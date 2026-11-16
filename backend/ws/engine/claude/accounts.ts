@@ -135,7 +135,7 @@ export const accountsHandler = createRouter()
 	// CRUD — instant DB operations (.http)
 	// ═══════════════════════════════════════
 
-	.http('engine:claude-accounts-list', {
+	.http('agents:claude-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -159,7 +159,7 @@ export const accountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:claude-accounts-switch', {
+	.http('agents:claude-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -168,7 +168,7 @@ export const accountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:claude-accounts-delete', {
+	.http('agents:claude-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -178,7 +178,7 @@ export const accountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:claude-accounts-rename', {
+	.http('agents:claude-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -192,7 +192,7 @@ export const accountsHandler = createRouter()
 	// ═══════════════════════════════════════
 
 	// Client → Server: start setup (spawns PTY, registers ONE onData + ONE onExit)
-	.on('engine:claude-account-setup-start', {
+	.on('agents:claude-account-setup-start', {
 		data: t.Object({})
 	}, async ({ conn }) => {
 		const userId = ws.getUserId(conn);
@@ -214,7 +214,7 @@ export const accountsHandler = createRouter()
 		// it used to — `resolveEngineCli` prefers that copy and falls back to PATH.
 		const claudeCli = await resolveEngineCli('claude');
 		if (!claudeCli) {
-			throw new Error('Claude Code CLI not found. Open Settings → Stack to install the engine.');
+			throw new Error('Claude Code CLI not found. Open Settings → Agents → Install to install the engine.');
 		}
 		let pty: ReturnType<typeof spawn>;
 		try {
@@ -226,7 +226,7 @@ export const accountsHandler = createRouter()
 				env: ptyEnv
 			});
 		} catch (err: any) {
-			ws.emit.user(userId, 'engine:claude-account-setup-error', {
+			ws.emit.user(userId, 'agents:claude-account-setup-error', {
 				setupId,
 				message: 'Failed to start Claude CLI: ' + (err.message || 'Unknown error')
 			});
@@ -236,7 +236,7 @@ export const accountsHandler = createRouter()
 		// 15-minute timeout — matches the OAuth code expiry window shown in the UI
 		const timer = setTimeout(() => {
 			debug.warn('engine', `[${setupId}] Setup-token timeout`);
-			ws.emit.user(userId, 'engine:claude-account-setup-error', {
+			ws.emit.user(userId, 'agents:claude-account-setup-error', {
 				setupId,
 				message: 'Setup timed out after 15 minutes'
 			});
@@ -260,7 +260,7 @@ export const accountsHandler = createRouter()
 			entry.buffer += data;
 
 			// Debug: stream raw PTY data to client
-			ws.emit.user(userId, 'engine:claude-account-setup-pty-data', {
+			ws.emit.user(userId, 'agents:claude-account-setup-pty-data', {
 				setupId,
 				data,
 				phase: entry.phase,
@@ -274,7 +274,7 @@ export const accountsHandler = createRouter()
 				if (url && !entry.urlEmitted) {
 					entry.urlEmitted = true;
 					debug.log('engine', `[${setupId}] Auth URL captured`);
-					ws.emit.user(userId, 'engine:claude-account-setup-url', {
+					ws.emit.user(userId, 'agents:claude-account-setup-url', {
 						setupId,
 						authUrl: url
 					});
@@ -287,7 +287,7 @@ export const accountsHandler = createRouter()
 
 					const result = persistClaudeAccount(entry, token);
 					if (!result.ok) {
-						ws.emit.user(userId, 'engine:claude-account-setup-error', {
+						ws.emit.user(userId, 'agents:claude-account-setup-error', {
 							setupId,
 							message: result.error
 						});
@@ -295,7 +295,7 @@ export const accountsHandler = createRouter()
 						return;
 					}
 
-					ws.emit.user(userId, 'engine:claude-account-setup-complete', {
+					ws.emit.user(userId, 'agents:claude-account-setup-complete', {
 						setupId,
 						accountId: result.accountId
 					});
@@ -310,7 +310,7 @@ export const accountsHandler = createRouter()
 					entry.phase = 'done';
 					debug.warn('engine', `[${setupId}] PTY error detected: ${error}`);
 
-					ws.emit.user(userId, 'engine:claude-account-setup-error', {
+					ws.emit.user(userId, 'agents:claude-account-setup-error', {
 						setupId,
 						message: error
 					});
@@ -328,7 +328,7 @@ export const accountsHandler = createRouter()
 			const clean = stripAnsi(entry.buffer);
 
 			if (entry.phase === 'waiting-url') {
-				ws.emit.user(userId, 'engine:claude-account-setup-error', {
+				ws.emit.user(userId, 'agents:claude-account-setup-error', {
 					setupId,
 					message: 'CLI exited before providing auth URL'
 				});
@@ -339,21 +339,21 @@ export const accountsHandler = createRouter()
 					debug.log('engine', `[${setupId}] Token found in final buffer`);
 					const result = persistClaudeAccount(entry, token);
 					if (!result.ok) {
-						ws.emit.user(userId, 'engine:claude-account-setup-error', {
+						ws.emit.user(userId, 'agents:claude-account-setup-error', {
 							setupId,
 							message: result.error
 						});
 						cleanupSetup(setupId);
 						return;
 					}
-					ws.emit.user(userId, 'engine:claude-account-setup-complete', {
+					ws.emit.user(userId, 'agents:claude-account-setup-complete', {
 						setupId,
 						accountId: result.accountId
 					});
 				} else {
 					// Try to extract a meaningful error message
 					const error = extractPtyError(clean);
-					ws.emit.user(userId, 'engine:claude-account-setup-error', {
+					ws.emit.user(userId, 'agents:claude-account-setup-error', {
 						setupId,
 						message: error || 'CLI exited without providing token'
 					});
@@ -365,7 +365,7 @@ export const accountsHandler = createRouter()
 	})
 
 	// Client → Server: submit auth code (transitions phase + writes to existing PTY)
-	.on('engine:claude-account-setup-submit', {
+	.on('agents:claude-account-setup-submit', {
 		data: t.Object({
 			setupId: t.String(),
 			code: t.String(),
@@ -378,7 +378,7 @@ export const accountsHandler = createRouter()
 		try {
 			entry = requireSetupSession(data.setupId, setupProcesses);
 		} catch {
-			ws.emit.user(userId, 'engine:claude-account-setup-error', {
+			ws.emit.user(userId, 'agents:claude-account-setup-error', {
 				setupId: data.setupId,
 				message: 'Setup session not found or expired'
 			});
@@ -404,7 +404,7 @@ export const accountsHandler = createRouter()
 	})
 
 	// Client → Server: cancel setup
-	.on('engine:claude-account-setup-cancel', {
+	.on('agents:claude-account-setup-cancel', {
 		data: t.Object({
 			setupId: t.String()
 		})
@@ -422,23 +422,23 @@ export const accountsHandler = createRouter()
 	// Event declarations (Server → Client)
 	// ═══════════════════════════════════════
 
-	.emit('engine:claude-account-setup-url', t.Object({
+	.emit('agents:claude-account-setup-url', t.Object({
 		setupId: t.String(),
 		authUrl: t.String()
 	}))
 
-	.emit('engine:claude-account-setup-complete', t.Object({
+	.emit('agents:claude-account-setup-complete', t.Object({
 		setupId: t.String(),
 		accountId: t.Number()
 	}))
 
-	.emit('engine:claude-account-setup-error', t.Object({
+	.emit('agents:claude-account-setup-error', t.Object({
 		setupId: t.String(),
 		message: t.String()
 	}))
 
 	// Debug: raw PTY output stream
-	.emit('engine:claude-account-setup-pty-data', t.Object({
+	.emit('agents:claude-account-setup-pty-data', t.Object({
 		setupId: t.String(),
 		data: t.String(),
 		phase: t.String(),

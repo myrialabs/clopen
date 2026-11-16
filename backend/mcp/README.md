@@ -6,7 +6,7 @@ disk and in their namespace keys:
 | | **Internal** (`internal/`) | **External** (`external/`) |
 |---|---|---|
 | What | Custom tools defined in code via `defineServer()` | Servers the user installs from the official MCP registry |
-| Managed | By developers (this README) | By users in **Settings → Integrations** |
+| Managed | By developers (this README) | By users in **Library → Integrations** |
 | Stored | In code (`internal/servers/`) | In the DB (`mcp_servers` table) |
 | Namespace | `clopen-mcp` bridge (non-Claude) / server name (Claude) | one bare `<slug>` per server (no prefix) |
 | Execution | In-process (no subprocess) | Engine connects to Clopen's `/mcp/ext/<slug>` proxy; Clopen connects to the real upstream (stdio subprocess or remote HTTP) |
@@ -37,7 +37,7 @@ in this subsystem has to know accounts exist. And most integrations project no
 MCP server at all — a database provider projects a `db_client_connections` row,
 a chat provider registers a notification channel.
 
-Both appear under one UI, **Settings → Integrations**, which absorbed the old
+Both appear under one UI, **Library → Integrations**, which absorbed the old
 Connectors section.
 
 > **External servers are proxied, not direct.** Engines never connect straight
@@ -207,8 +207,10 @@ backend/mcp/
 │       ├── weather/    # Example: Weather service
 │       │   ├── index.ts
 │       │   └── get-temperature.ts
-│       └── browser-automation/  # Example: Browser automation service
-│           ├── index.ts        # One tool (`actions`), assembled from the registry
+│       ├── memory/     # The memory graph, as one tool (`remember`)
+│       ├── control/    # Clopen itself: `run` plus the intent tools — see below
+│       └── browser/    # The browser, as one tool (`browse`)
+│           ├── index.ts        # One tool, assembled from the registry
 │           ├── schema.ts       # Discriminated union over every action
 │           ├── description.ts  # Tool docs, generated from the registry
 │           ├── runner.ts       # Batch execution: grouping, retargeting, reporting
@@ -220,7 +222,7 @@ backend/mcp/
 │   ├── types.ts        # CatalogServer / ResolvedExternalServer
 │   ├── registry-client.ts  # Fetch + normalise registry.modelcontextprotocol.io
 │   ├── proxy.ts        # `/mcp/ext/<slug>` proxy: Clopen ↔ upstream, schema sanitiser
-│   ├── probe.ts        # Connection health probe (Settings → Integrations status)
+│   ├── probe.ts        # Connection health probe (Library → Integrations status)
 │   ├── oauth.ts        # Centralized OAuth (discovery + dynamic reg + PKCE)
 │   └── config.ts       # Per-engine builders (bridge URL, bare <slug>) + resolveExternalToolName
 └── README.md           # This file
@@ -245,7 +247,15 @@ servers/
     └── utils.ts    # Shared utilities
 ```
 
-`browser-automation` goes one step further: it exposes a **single** tool whose
+The three built-in servers — `browser`, `memory` and `control` — keep **tool
+names unique across servers** (`browse`, `remember`, and `control`'s `run`,
+`delegate`, `automate`, `remind`, `connect`, `send`, `ask`, `status`): engines other than Claude Code see every internal tool in the one
+`clopen-mcp` bridge namespace by its bare name, so two servers exposing a tool
+with the same name would collide. User-added servers whose slug would take one
+of these names get an `x-` prefix (`RESERVED_INTERNAL_NAMES` in
+`shared/constants.ts`).
+
+`browser` goes one step further: it exposes a **single** tool whose
 first argument is an array of actions, so an agent batches a whole interaction
 into one call instead of paying a round trip per click. Its actions live in a
 registry, and the tool's schema, its documentation and the runner's dispatch
@@ -253,8 +263,8 @@ table are all derived from that one list — adding an action is one file plus o
 registry line, and the three cannot drift apart.
 
 ```
-servers/browser-automation/
-├── index.ts         # defineServer, one tool
+servers/browser/
+├── index.ts         # defineServer, one tool (`browse`)
 ├── schema.ts        # z.discriminatedUnion over every action's schema
 ├── description.ts   # Prose + a reference generated from each action's `doc`
 ├── runner.ts        # Runs the batch, reports per action
@@ -264,6 +274,34 @@ servers/browser-automation/
     └── dom-analyze.ts  # Large browser-side program, kept on its own
 ```
 
+`control` (v0.5) is the same shape for Clopen itself: one tool, `run`,
+taking a batch of steps `{ action, args, as?, optional? }`, where `"$name.field"`
+in an argument reads an earlier step's result. Its server file is only the MCP
+shape — the actions, their risk (`read` / `write` / `irreversible`) and who may
+run them (`assistant` = Clopen's own chat, `any` = also an agent in a project
+session) live in `backend/control/agent/`, built on the control catalog's
+`callRouteAs`, so an agent can do anything the web UI can with the web UI's
+rules. Irreversible steps become approval cards; every step is audited in
+`control_audit`. Next to `run`, `control` has one **intent tool** per thing the
+owner asks for most — `delegate` (a crew), `automate` (a flow), `remind`,
+`connect` (a service), `send` (files to the owner), `ask` (a question or a key),
+`status` — each with flat arguments and each a single `run` step underneath,
+because small models failed on `run`'s nested batch schema, not on the work. The tool description is generated from the action registry
+and built lazily on first read, because this module loads with the MCP
+registry long before the backend it describes is ready.
+
+```
+servers/control/index.ts          # defineServer: `run` + intent tools, caller from the stream context
+backend/control/agent/
+├── index.ts      # registry, batch runner, refs, approvals, description
+├── define.ts     # AgentAction = ControlAction + risk + scope
+├── risk.ts       # route/command risk + the absolute blocklist
+└── actions/      # tasks · memory (chats, journal, profile, secrets) · workspace (files,
+                  # shell, git) · library (scripts, skills, recordings, inbox) ·
+                  # flows (delegate, flows, remind, send, ask, connect, share, status) ·
+                  # system (databases, agents, api)
+```
+
 ### Data Flow
 
 > **Where the DB rows come from.** Code-defined internal servers are mirrored
@@ -271,7 +309,7 @@ servers/browser-automation/
 > called from `backend/bootstrap.ts::bootstrapAfterDbInit()` — shared by server
 > startup **and** the "Clear All Data" handler. Clear-data wipes `~/.clopen` and
 > re-runs only migrations + seeders on the live process, so a built-in synced
-> from code (Browser Automation, …) would otherwise disappear from Settings →
+> from code (`browser`, `memory`, `control`) would otherwise disappear from Settings →
 > MCP until the next restart. Anything else established from code after
 > `initializeDatabase()` belongs in that same function.
 
@@ -697,7 +735,7 @@ resolveOpenCodeToolName("unknown_tool");
 
 **Symptom of skipping this helper:** the UI renders the tool with a
 doubled-up name like `mcp__clopen-mcp__clopen-mcp-open_new_tab` instead
-of `mcp__browser-automation__open_new_tab`. The prefix didn't strip and
+of `mcp__browser__open_new_tab`. The prefix didn't strip and
 the registry lookup fell through.
 
 #### `getCodexMcpConfig()` / `getCopilotMcpConfig()`
@@ -1326,7 +1364,7 @@ checklist in `backend/engine/README.md` §10.12. The summary:
 
 Everything above describes **internal** custom tools (the `clopen-mcp`
 bridge). **External** servers are the ones a user installs from the official
-registry (Settings → Integrations → Add → Browse the MCP registry), stored in
+registry (Library → Integrations → Add → Browse the MCP registry), stored in
 the `mcp_servers` table.
 
 ### Proxied through the bridge (not direct)

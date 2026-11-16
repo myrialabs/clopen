@@ -155,7 +155,7 @@ export class ClineEngine implements AIEngine {
 		const account = getClineAccountForProvider(providerSlug)
 			?? (accountId != null ? engineQueries.getAccount(accountId) : null);
 		if (!account) {
-			throw new Error(`Cline has no account for provider "${providerSlug}". Add one in Settings → Engines → Cline.`);
+			throw new Error(`Cline has no account for provider "${providerSlug}". Add one in Settings → Agents → Cline.`);
 		}
 		const provider = parseClineCredential(account.credential)?.provider ?? providerSlug;
 		const auth = await resolveClineAuth(account);

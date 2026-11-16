@@ -7,8 +7,9 @@
  *   - its Clopen user message must be mapped back to the chat message that
  *     sent it, so editing that message later can act like Edit Message;
  *   - the chat must see that something is happening: "typing…" for as long as
- *     the turn runs, and once it has taken a while, one progress line —
- *     edited in place, at most every 10 seconds — naming what it is doing;
+ *     the turn runs (no progress line naming tools — that is the process, and
+ *     the owner only wants the result; Clopen's turns get a quick first word
+ *     instead, see assistant/ack.ts);
  *   - when it ends, the answer goes back to THAT chat as a reply: it asked.
  *
  * A turn may wait in the composer queue behind another, so a prompt is first
@@ -22,7 +23,7 @@
 import { channelMessageQueries } from '$backend/database/queries';
 import { debug } from '$shared/utils/logger';
 import { channelRuntime } from './runtime';
-import { progressCard } from './messages';
+import { textCard } from './messages';
 
 export interface ExpectedPrompt {
 	linkId: string;
@@ -48,10 +49,6 @@ export interface LiveTurn extends ExpectedPrompt {
 
 /** Typing lasts about 5 seconds on Telegram; refresh a little sooner. */
 const TICK_MS = 4500;
-/** A turn this short needs no progress line — the answer is the progress. */
-const PROGRESS_AFTER_MS = 15_000;
-/** The progress line is edited at most this often, to stay inside rate limits. */
-const PROGRESS_EVERY_MS = 10_000;
 /** An expected prompt that never started (a queue that was cleared) is forgotten. */
 const EXPECT_TTL_MS = 6 * 60 * 60 * 1000;
 
@@ -152,26 +149,6 @@ async function tick(chatSessionId: string): Promise<void> {
 	if (channelMessageQueries.openQuestionsForSession(chatSessionId).length > 0) return;
 	await channelRuntime.setTyping(turn.accountId, turn.conversationId).catch(() => {});
 
-	const now = Date.now();
-	const elapsed = now - turn.startedAt;
-	if (elapsed < PROGRESS_AFTER_MS || now - turn.lastProgressAt < PROGRESS_EVERY_MS) return;
-	turn.lastProgressAt = now;
-	const card = progressCard({ elapsedMs: elapsed, activity: turn.activity, steps: turn.steps });
-	try {
-		if (turn.progressMessageId) {
-			await channelRuntime.edit(turn.accountId, turn.conversationId, turn.progressMessageId, card);
-		} else {
-			const sent = await channelRuntime.send(turn.accountId, turn.conversationId, card);
-			// The turn may have ended while this was in flight; its line must not linger.
-			if (live.get(chatSessionId) !== turn && sent.platform_message_id) {
-				await channelRuntime.deleteMessage(turn.accountId, turn.conversationId, sent.platform_message_id);
-				return;
-			}
-			turn.progressMessageId = sent.platform_message_id;
-		}
-	} catch (error) {
-		debug.log('chat-apps', 'Progress update skipped:', error);
-	}
 }
 
 /** Stop a turn's feedback. Returns it so the caller can deliver its answer. */

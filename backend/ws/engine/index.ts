@@ -38,6 +38,6 @@ export const engineRouter = createRouter()
 	 * newly added provider would sit invisible in the picker until something else
 	 * happened to trigger a refetch.
 	 */
-	.emit('engine:config-changed', t.Object({
+	.emit('agents:config-changed', t.Object({
 		revision: t.Number()
 	}));

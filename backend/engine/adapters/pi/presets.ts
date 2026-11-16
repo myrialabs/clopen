@@ -6,7 +6,7 @@
  * or both. Rather than hardcode 30 providers, we enumerate them from a
  * throwaway `ModelRuntime` (`getProviders()` exposes `provider.auth.apiKey` /
  * `provider.auth.oauth`) and expose the result to the login picker via the
- * `engine:pi-presets-list` WS endpoint.
+ * `agents:pi-presets-list` WS endpoint.
  *
  * The wire types (`PiProviderPreset`, `PiAuthMode`) live in
  * `shared/types/unified/engine.ts` so the frontend stays typed without importing

@@ -839,6 +839,11 @@ export class BrowserPreviewService extends EventEmitter {
 	/**
 	 * Get a tab by ID
 	 */
+	/** Keep the tab's next download in `dir` for an agent (see BrowserHostBridge.captureNextDownload). */
+	captureNextDownload(tabId: string, dir: string, timeoutMs: number) {
+		return this.hostBridge.captureNextDownload(tabId, dir, timeoutMs);
+	}
+
 	getTab(tabId: string): BrowserTab | null {
 		return this.tabManager.getTab(tabId);
 	}

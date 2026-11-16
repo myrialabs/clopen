@@ -3,7 +3,7 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import ArtifactGenerateBar from '$frontend/components/settings/common/ArtifactGenerateBar.svelte';
 	import { instructionsStore } from '$frontend/stores/features/instructions.svelte';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 
 	interface Props {
 		showHeader?: boolean;
@@ -45,7 +45,7 @@
 <div class="space-y-6">
 	{#if showHeader}
 		<div>
-			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Instructions</h3>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Rules</h3>
 			<p class="text-sm text-slate-600 dark:text-slate-500">
 				A shared instruction block injected into every engine's memory file.
 			</p>
@@ -55,7 +55,7 @@
 	<ArtifactGenerateBar
 		artifactType="instruction"
 		placeholder={'Describe the instructions, e.g. "always answer concisely and prefer TypeScript"'}
-		onNavigateArtifacts={() => setActiveSection('artifacts')}
+		onNavigateArtifacts={() => openSettingsModal('models')}
 		onGenerated={(f) => { if (typeof f.content === 'string') content = f.content; }}
 	/>
 

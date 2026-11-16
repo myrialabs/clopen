@@ -258,7 +258,7 @@
 
 			addNotification({
 				type: 'success',
-				title: 'Session Deleted',
+				title: 'Chat deleted',
 				message: 'Chat session and related data have been deleted',
 				duration: 3000
 			});
@@ -303,7 +303,7 @@
 
 			addNotification({
 				type: 'success',
-				title: 'All Sessions Deleted',
+				title: 'All chats deleted',
 				message: `${result.deletedCount} sessions and related data have been deleted`,
 				duration: 3000
 			});
@@ -481,7 +481,7 @@
 		{#if filteredSessions.length === 0}
 			<div class="flex flex-col items-center gap-3 py-8 text-slate-600 dark:text-slate-500 text-sm">
 				<Icon name="lucide:message-square-off" class="w-12 h-12 text-slate-400 opacity-40" />
-				<p class="font-medium">No sessions found</p>
+				<p class="font-medium">No chats yet</p>
 				<p class="text-xs text-slate-500 dark:text-slate-500">
 					{searchQuery
 						? 'Try adjusting your search'
@@ -566,7 +566,7 @@
 									{#if sessionWorktree}
 										<span
 											class="flex items-center gap-1 min-w-0 max-w-32 text-amber-600 dark:text-amber-400"
-											title="Worktree: {sessionWorktree.name}"
+											title="Workspace copy: {sessionWorktree.name}"
 										>
 											<Icon name="lucide:git-fork" class="w-3 h-3 shrink-0" />
 											<span class="truncate">{sessionWorktree.name}</span>
@@ -636,7 +636,7 @@
 	bind:isOpen={showDeleteDialog}
 	onClose={closeDeleteDialog}
 	type="error"
-	title="Delete Session"
+	title="Delete chat"
 	message={sessionToDelete && isSessionStreaming(sessionToDelete.id)
 		? 'This session is currently running. Deleting it will stop the active chat and permanently remove all messages, snapshots, and related data.'
 		: 'Are you sure you want to delete this session? All messages, snapshots, and related data will be permanently removed.'}
@@ -650,7 +650,7 @@
 	bind:isOpen={showDeleteAllDialog}
 	onClose={closeDeleteAllDialog}
 	type="error"
-	title="Delete All Sessions"
+	title="Delete all chats"
 	message={`Are you sure you want to delete all ${filteredSessions.length} sessions in this project? All messages, snapshots, and related data will be permanently removed. This only affects the current project.`}
 	confirmText={deletingAll ? 'Deleting...' : 'Delete All'}
 	cancelText="Cancel"

@@ -1,7 +1,7 @@
 /**
  * Profile Queries
  *
- * CRUD for reusable Profiles (Settings → Profiles) — named bundles that
+ * CRUD for reusable Profiles (Library → Toolsets) — named bundles that
  * reference existing artifacts (Skills, Commands, Subagents, Integrations) by
  * their stable slug. The `profiles` table holds only the bundle metadata; the
  * `profile_items` table holds the (artifact_type, ref) references. Neither

@@ -44,7 +44,7 @@ export function handleStreamError(error: unknown): void {
 		|| lower.includes('expired')
 		|| lower.includes('401')
 	) {
-		throw new Error('Cursor is not authenticated. Add or re-enter a valid API key in Settings → Engines → Cursor.');
+		throw new Error('Cursor is not authenticated. Add or re-enter a valid API key in Settings → Agents → Cursor.');
 	}
 
 	if (error.name === 'RateLimitError' || lower.includes('rate limit') || lower.includes('quota') || lower.includes('429')) {

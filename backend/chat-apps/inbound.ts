@@ -30,7 +30,8 @@ import {
 	channelLinkQueries,
 	projectQueries,
 	type ChannelMessageRow,
-	type ChannelLinkRow
+	type ChannelLinkRow,
+	inboxQueries
 } from '$backend/database/queries';
 import { getUserById } from '$backend/auth/auth-service';
 import { debug } from '$shared/utils/logger';
@@ -41,6 +42,32 @@ import { REPLIES, decodeButtonData } from './messages';
 import { answerQuestionWithText, handleQuestionButton, replyText } from './questions';
 import { collectAttachments, isMedia, textOf, type PromptAttachment } from './media';
 import { clearAwaiting, hasAwaiting, takeAwaiting } from './awaiting';
+import { answerCardWithText } from '$backend/assistant/cards';
+import { toInboxItem } from '$backend/assistant/mappers';
+import { askCardField } from './outbound';
+
+/** The Inbox card a chat message stands for, if it is one. */
+/** The field of a login card a message asks for, when it asks for one. */
+function fieldOf(row: { payload: string }): number | null {
+	try {
+		const payload = JSON.parse(row.payload) as { field?: unknown };
+		return typeof payload.field === 'number' ? payload.field : null;
+	} catch {
+		return null;
+	}
+}
+
+/** Fields of a login card answered so far, per card, until the last one arrives. */
+const partialFields = new Map<string, Record<string, string>>();
+
+function cardOf(row: { payload: string }): string | null {
+	try {
+		const payload = JSON.parse(row.payload) as { card?: unknown };
+		return typeof payload.card === 'string' ? payload.card : null;
+	} catch {
+		return null;
+	}
+}
 import {
 	activeTarget,
 	answerAsk,
@@ -219,7 +246,10 @@ async function pair(channel: ActiveChannel, message: UniversalMessage, link: Cha
 	});
 	debug.log('chat-apps', `Paired a ${channel.platform.provider} chat (${paired.id})`);
 	notifyLinksChanged();
-	await replyText(channel, message, REPLIES.paired);
+	// In the owner's language when Clopen has heard them before.
+	const { inOwnersLanguage, ownerSample } = await import('$backend/assistant/think');
+	const sample = ownerSample(null);
+	await replyText(channel, message, sample ? await inOwnersLanguage(REPLIES.paired, sample).catch(() => REPLIES.paired) : REPLIES.paired);
 }
 
 async function handleCommand(conversation: Conversation, command: string, argument: string, rawText: string): Promise<void> {
@@ -247,11 +277,87 @@ async function ownedRow(conversation: Conversation, row: ChannelMessageRow | nul
 	return row;
 }
 
+/**
+ * The owner answered a card from the chat. A key or password is taken out of
+ * the chat at once (deleted from it, kept only in the vault); anything else
+ * is acknowledged with a 👍 on their message, or a short line when there is
+ * something to say (a link to use).
+ */
+async function settleCardFromChat(conversation: Conversation, cardId: string, text: string, fromButton = false): Promise<void> {
+	const { channel, message, link } = conversation;
+	const cardRow = inboxQueries.getById(cardId);
+	const secret = cardRow?.data.includes('"card":"secret"') ?? false;
+	const result = await answerCardWithText(cardId, text, { source: 'telegram' });
+	if (secret && message.platform_message_id) {
+		// The password leaves the chat; a masked copy stays in its place, so the answer does not just vanish.
+		await channelRuntime.deleteMessage(link.account_id, message.address.conversation_id, message.platform_message_id);
+		await replyText(channel, message, result.text || `🔒 ${cardRow?.title ?? ''} · ••••••`.trim());
+		return;
+	}
+	if (result.text) {
+		await replyText(channel, message, result.text);
+		return;
+	}
+	const target = fromButton ? null : message.platform_message_id;
+	if (!target || !(await channelRuntime.react(link.account_id, message.address.conversation_id, target, '👍'))) {
+		if (!fromButton) await replyText(channel, message, '👍');
+	}
+}
+
+/**
+ * One field of a login card, replied to on its own: kept until the last one,
+ * then everything goes to the vault at once. Each reply leaves the chat.
+ */
+async function fillCardField(conversation: Conversation, cardId: string, index: number, text: string): Promise<void> {
+	const { message, link } = conversation;
+	const row = inboxQueries.getById(cardId);
+	const fieldsOfCard = row ? ((toInboxItem(row).data.fields as Array<{ name: string; secret?: boolean }> | undefined) ?? []) : [];
+	// Only a secret leaves the chat (replaced by dots); a login name stays where it was typed.
+	if (fieldsOfCard[index]?.secret !== false && message.platform_message_id) {
+		await channelRuntime.deleteMessage(link.account_id, message.address.conversation_id, message.platform_message_id);
+	}
+	if (!row || row.status !== 'open') {
+		partialFields.delete(cardId);
+		return;
+	}
+	const item = toInboxItem(row);
+	const fields = Array.isArray(item.data.fields) ? (item.data.fields as Array<{ name: string; label: string }>) : [];
+	const values = { ...(partialFields.get(cardId) ?? {}), [fields[index]?.name ?? 'value']: text.trim() };
+	const next = fields.findIndex((field) => !values[field.name]);
+	if (next >= 0) {
+		partialFields.set(cardId, values);
+		await askCardField(link, item, next);
+		return;
+	}
+	partialFields.delete(cardId);
+	const { fillSecretCard } = await import('$backend/assistant/connect');
+	const { maskedCardLine } = await import('$backend/assistant/cards');
+	const result = await fillSecretCard(item, values, 'telegram');
+	await replyText(conversation.channel, message, result.startsWith('Saved') || !result ? maskedCardLine(item, values) : result);
+}
+
 async function handleButton(conversation: Conversation, data: string): Promise<void> {
 	const decoded = decodeButtonData(data);
 	if (!decoded) return;
 	const row = await ownedRow(conversation, channelMessageQueries.getById(decoded.rowId));
 	if (!row) return;
+	// A card's buttons: approve / decline, or one of its options.
+	const cardId = row.kind === 'menu' ? cardOf(row) : null;
+	if (cardId) {
+		const action = decoded.action;
+		const options = (() => {
+			try {
+				return (JSON.parse(row.payload) as { options?: string[] }).options ?? [];
+			} catch {
+				return [];
+			}
+		})();
+		const answer = action.type === 'confirm' ? 'yes' : action.type === 'cancel' ? 'no' : action.type === 'option' ? options[action.index] : null;
+		if (!answer) return;
+		clearAwaiting(conversation.link.id);
+		await settleCardFromChat(conversation, cardId, answer, true);
+		return;
+	}
 	if (row.kind === 'question') await handleQuestionButton(conversation.channel, conversation.message, conversation.link, row, decoded.action);
 	else await handleControlButton(conversation, row, decoded.action);
 }
@@ -279,6 +385,14 @@ async function handleText(conversation: Conversation, text: string, attachments:
 				await continueFrom(conversation, row, text, attachments);
 				return;
 			}
+			const cardId = row.kind === 'menu' ? cardOf(row) : null;
+			if (cardId) {
+				clearAwaiting(link.id);
+				const field = fieldOf(row);
+				if (field !== null) await fillCardField(conversation, cardId, field, text);
+				else await settleCardFromChat(conversation, cardId, text);
+				return;
+			}
 			if (row.kind === 'menu' && isAsking(row)) {
 				clearAwaiting(link.id);
 				await answerAsk(conversation, row, text);
@@ -293,6 +407,8 @@ async function handleText(conversation: Conversation, text: string, attachments:
 	const awaited = takeAwaiting(link.id);
 	const awaitedRow = awaited ? channelMessageQueries.getById(awaited.rowId) : null;
 	if (awaitedRow && awaitedRow.link_id === link.id && awaitedRow.state === 'open') {
+		// A key is only ever taken from a reply to its card — never from "the next message",
+		// which once stored a complaint as a token.
 		if (awaited!.kind === 'question') {
 			const row = await ownedRow(conversation, awaitedRow);
 			if (row) await answerWithText(conversation, row, text, attachments);

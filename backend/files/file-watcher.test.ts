@@ -150,7 +150,7 @@ describe('FileWatcherManager', () => {
 	});
 
 	test('reports changes inside dot-directories people and agents edit', async () => {
-		// `.agents/` is written by Settings → Artifacts; ignoring every dot path
+		// `.agents/` is written by Settings → Models; ignoring every dot path
 		// left the explorer stale until a reload while root `AGENTS.md` updated live.
 		const root = await makeProject();
 		await mkdir(join(root, '.agents', 'skills', 'demo'), { recursive: true });

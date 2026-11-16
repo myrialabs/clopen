@@ -1,71 +1,60 @@
 /**
  * Settings Modal Store - Svelte 5 Runes
- * Controls the visibility and active section of the settings modal
+ * Controls the visibility and active section of the settings modal.
+ *
+ * Settings holds how Clopen behaves. What the owner BUILDS — skills, scripts,
+ * specialists, rules, toolsets, integrations, secrets — lives in the Library
+ * (`library-modal.svelte.ts`), not here.
  */
 
 import type { IconName } from '$shared/types/ui/icons';
 import type { EngineType } from '$shared/types/unified';
 
 export type SettingsSection =
-	| 'assistant'
-	| 'commit-message'
-	| 'git-identities'
-	| 'artifacts'
-	| 'engines'
-	| 'stack'
-	| 'integrations'
-	| 'skills'
-	| 'subagents'
-	| 'instructions'
-	| 'permissions'
-	| 'file-shares'
+	| 'clopen'
+	| 'agents'
+	| 'models'
 	| 'memory'
-	| 'memory-graph'
-	| 'profiles'
+	| 'permissions'
+	| 'git'
+	| 'files'
+	| 'file-shares'
+	| 'devices'
+	| 'tunnel'
+	| 'messaging'
 	| 'appearance'
 	| 'notifications'
-	| 'chat-apps'
-	| 'tunnel'
-	| 'access'
-	| 'files'
 	| 'machine'
-	| 'system';
+	| 'maintenance';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
-export type SettingsGroup =
-	| 'models'
-	| 'infrastructure'
-	| 'artifacts-access'
-	| 'preferences'
-	| 'system';
+export type SettingsGroup = 'clopen' | 'ai' | 'workspace' | 'devices' | 'general' | 'system';
 
 /** Ordered group definitions for the settings sidebar. */
 export const settingsGroups: { id: SettingsGroup; label: string }[] = [
-	{ id: 'models', label: 'Models' },
-	{ id: 'infrastructure', label: 'Infrastructure' },
-	{ id: 'artifacts-access', label: 'Artifacts & Access' },
-	{ id: 'preferences', label: 'Preferences' },
+	{ id: 'clopen', label: 'Clopen' },
+	{ id: 'ai', label: 'AI' },
+	{ id: 'workspace', label: 'Workspace' },
+	{ id: 'devices', label: 'Devices & Sharing' },
+	{ id: 'general', label: 'General' },
 	{ id: 'system', label: 'System' }
 ];
+
+/** Which half of the Agents section is showing. */
+export type AgentsTab = 'accounts' | 'install';
 
 interface SettingsModalState {
 	isOpen: boolean;
 	activeSection: SettingsSection;
+	agentsTab: AgentsTab;
 	/**
-	 * Engine to focus when the Engines section is shown. Set by callers that
-	 * deep-link into a specific engine sub-tab (e.g. EngineModelPicker's
-	 * "Go to Engines" CTA); AIEnginesSettings consumes and clears it.
+	 * Agent to focus when the Agents section is shown. Set by callers that
+	 * deep-link into a specific agent (e.g. the model picker's "Connect an
+	 * account" CTA); AIEnginesSettings consumes and clears it.
 	 */
 	engineFocus: EngineType | null;
-	/**
-	 * Provider whose Connect dialog should open as soon as Integrations is shown.
-	 *
-	 * Set by a CTA that already knows what the user is trying to connect — the
-	 * Issues & PRs surface's empty state, for one. Sending them to a list and letting
-	 * them find Add → GitHub is three clicks of looking for something we already
-	 * knew. IntegrationsSettings consumes and clears it.
-	 */
-	integrationFocusProvider: string | null;
+	/** The job whose row Models opens with (a link from another menu); the row consumes and clears it. */
+	modelsFocus: string | null;
 }
 
 // Settings sections metadata
@@ -79,170 +68,107 @@ export interface SettingsSectionMeta {
 
 export const settingsSections: SettingsSectionMeta[] = [
 	{
-		id: 'assistant',
-		label: 'Assistant',
-		icon: 'lucide:bot',
-		description: 'Chat engine and model',
-		group: 'models'
-	},
-	{
-		id: 'commit-message',
-		label: 'Git',
-		icon: 'lucide:git-branch',
-		description: 'Commits and branches',
-		group: 'models'
-	},
-	{
-		id: 'git-identities',
-		label: 'Git Accounts',
-		icon: 'lucide:user-round-cog',
-		description: 'Commit identity and push access',
-		group: 'infrastructure'
-	},
-	{
-		id: 'artifacts',
-		label: 'Artifacts',
+		id: 'clopen',
+		label: 'Clopen',
 		icon: 'lucide:sparkles',
-		description: 'Model for extensions',
-		group: 'models'
+		description: 'How it acts and starts',
+		group: 'clopen'
+	},
+	{
+		id: 'agents',
+		label: 'Agents',
+		icon: 'lucide:circuit-board',
+		// Engines (accounts) and Stack (installs) were two halves of one thing:
+		// an agent is usable once it is installed AND signed in.
+		description: 'Install and sign in',
+		group: 'ai'
+	},
+	{
+		id: 'models',
+		label: 'Models',
+		icon: 'lucide:bot',
+		description: 'Which AI answers',
+		group: 'ai'
 	},
 	{
 		id: 'memory',
 		label: 'Memory',
 		icon: 'lucide:brain',
-		description: 'Model for long-term memory',
-		group: 'models'
-	},
-	{
-		id: 'engines',
-		label: 'Engines',
-		icon: 'lucide:circuit-board',
-		description: 'Accounts and providers',
-		group: 'infrastructure'
-	},
-	{
-		id: 'stack',
-		label: 'Stack',
-		icon: 'lucide:hammer',
-		description: 'Engines, runtimes & tools',
-		group: 'infrastructure'
-	},
-	{
-		id: 'memory-graph',
-		label: 'Memory',
-		icon: 'lucide:brain',
-		description: 'What gets remembered',
-		group: 'infrastructure'
-	},
-	{
-		id: 'tunnel',
-		label: 'Tunnel',
-		icon: 'lucide:globe',
-		description: 'Cloudflare tunnel services',
-		group: 'infrastructure'
-	},
-	{
-		id: 'file-shares',
-		label: 'File Shares',
-		icon: 'lucide:link',
-		// Infrastructure, not Artifacts & Access: a share link is a way out of
-		// this server, like a tunnel — nothing to do with what an engine can
-		// reach.
-		description: 'Links that expose a single file',
-		group: 'infrastructure'
-	},
-	{
-		id: 'integrations',
-		label: 'Integrations',
-		icon: 'lucide:plug',
-		// Absorbed the old Connectors section: built-in tools, connected accounts
-		// and hand-installed MCP servers are one list now, because two places to
-		// connect a service means two tokens in two tables.
-		description: 'Connected services and tools',
-		group: 'artifacts-access'
-	},
-	{
-		id: 'skills',
-		label: 'Skills',
-		icon: 'lucide:graduation-cap',
-		// Absorbed the old Commands section: a slash command is a skill the user
-		// invokes by name instead of one the agent picks up, so two menus meant
-		// two editors over one artifact.
-		description: 'Reusable prompts and /commands',
-		group: 'artifacts-access'
-	},
-	{
-		id: 'subagents',
-		label: 'Subagents',
-		icon: 'lucide:bot',
-		description: 'Specialized delegated agents',
-		group: 'artifacts-access'
-	},
-	{
-		id: 'instructions',
-		label: 'Instructions',
-		icon: 'lucide:scroll-text',
-		description: 'Shared instruction block',
-		group: 'artifacts-access'
+		description: 'What Clopen remembers',
+		group: 'ai'
 	},
 	{
 		id: 'permissions',
 		label: 'Permissions',
 		icon: 'lucide:shield-check',
-		description: 'Per-engine tool allow/deny',
-		group: 'artifacts-access'
+		description: 'What agents may use',
+		group: 'ai'
 	},
 	{
-		id: 'profiles',
-		label: 'Profiles',
-		icon: 'lucide:layers',
-		description: 'Reusable tool bundles',
-		group: 'artifacts-access'
+		id: 'git',
+		label: 'Git',
+		icon: 'lucide:git-branch',
+		description: 'Commits and accounts',
+		group: 'workspace'
+	},
+	{
+		id: 'files',
+		label: 'Files & Folders',
+		icon: 'lucide:folder-cog',
+		description: 'Folders and limits',
+		group: 'workspace'
+	},
+	{
+		id: 'file-shares',
+		label: 'File Shares',
+		icon: 'lucide:link',
+		description: 'Links to single files',
+		group: 'devices'
+	},
+	{
+		id: 'devices',
+		label: 'Devices & Access',
+		icon: 'lucide:shield',
+		description: 'Who can open Clopen',
+		group: 'devices'
+	},
+	{
+		id: 'tunnel',
+		label: 'Public Links',
+		icon: 'lucide:globe',
+		description: 'Share local ports',
+		group: 'devices'
+	},
+	{
+		id: 'messaging',
+		label: 'Messaging',
+		icon: 'lucide:send',
+		description: 'Clopen in Telegram',
+		group: 'devices'
 	},
 	{
 		id: 'appearance',
 		label: 'Appearance',
 		icon: 'lucide:palette',
 		description: 'Theme and layout',
-		group: 'preferences'
+		group: 'general'
 	},
 	{
 		id: 'notifications',
 		label: 'Notifications',
 		icon: 'lucide:bell',
-		description: 'Sound and push notifications',
-		group: 'preferences'
-	},
-	{
-		id: 'chat-apps',
-		label: 'Chat Apps',
-		icon: 'lucide:send',
-		description: 'Control Clopen from Telegram',
-		group: 'preferences'
-	},
-	{
-		id: 'access',
-		label: 'Sign-in & Devices',
-		icon: 'lucide:shield',
-		description: 'Login and devices',
-		group: 'system'
-	},
-	{
-		id: 'files',
-		label: 'Files & Folders',
-		icon: 'lucide:folder-cog',
-		description: 'Project folders and size limit',
-		group: 'system'
+		description: 'Sounds and alerts',
+		group: 'general'
 	},
 	{
 		id: 'machine',
 		label: 'Machine',
-		icon: 'lucide:server',
-		description: 'Hardware and status',
+		icon: 'lucide:cpu',
+		description: 'This computer',
 		group: 'system'
 	},
 	{
-		id: 'system',
+		id: 'maintenance',
 		label: 'Maintenance',
 		icon: 'lucide:settings-2',
 		description: 'Updates and data',
@@ -253,13 +179,14 @@ export const settingsSections: SettingsSectionMeta[] = [
 // Create the state using Svelte 5 runes
 export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
-	activeSection: 'assistant',
+	activeSection: 'clopen',
+	agentsTab: 'accounts',
 	engineFocus: null,
-	integrationFocusProvider: null
+	modelsFocus: null
 });
 
 // Helper functions
-export function openSettingsModal(section: SettingsSection = 'assistant') {
+export function openSettingsModal(section: SettingsSection = 'clopen') {
 	settingsModalState.isOpen = true;
 	settingsModalState.activeSection = section;
 }
@@ -276,22 +203,25 @@ export function toggleSettingsModal() {
 	settingsModalState.isOpen = !settingsModalState.isOpen;
 }
 
-/**
- * Open Integrations with one provider's Connect dialog already up.
- *
- * `providerId` is a hint, not a promise: a provider that is not in the registry
- * (or is already connected) simply lands on the list, which is the same place
- * the user would have arrived at anyway.
- */
-export function openIntegrationConnect(providerId: string) {
+/** Open Models with one job's row open — where every other menu sends the owner to change a job's model. */
+export function openModelsFor(purpose: string) {
 	settingsModalState.isOpen = true;
-	settingsModalState.activeSection = 'integrations';
-	settingsModalState.integrationFocusProvider = providerId;
+	settingsModalState.activeSection = 'models';
+	settingsModalState.modelsFocus = purpose;
 }
 
-/** Switch to the Engines section and request a specific engine sub-tab. */
+/** Open Agents on its Install half — where an agent that is not installed yet gets installed. */
+export function openAgentsInstall() {
+	settingsModalState.isOpen = true;
+	settingsModalState.activeSection = 'agents';
+	settingsModalState.agentsTab = 'install';
+}
+
+/** Switch to the Agents section and request a specific agent's accounts. */
 export function focusEngineSection(engine: EngineType) {
-	settingsModalState.activeSection = 'engines';
+	settingsModalState.isOpen = true;
+	settingsModalState.activeSection = 'agents';
+	settingsModalState.agentsTab = 'accounts';
 	settingsModalState.engineFocus = engine;
 }
 

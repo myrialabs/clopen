@@ -9,7 +9,7 @@
  * invoked by the MODEL (`auto` trigger, advertised through its description) or
  * by the USER (`slash` trigger, typed as `/<slug>` and expanded here), or both.
  *
- *   - SERVICE (`./service`)     — CRUD used by the WS layer (Settings → Skills).
+ *   - SERVICE (`./service`)     — CRUD used by the WS layer (Library → Skills).
  *   - INVOKE (`./invoke`)       — expand `/<slug> args` into the engine prompt.
  *   - MARKETPLACE (`./marketplace`) — browse + install from external providers.
  *   - DETECT (`./detect`)       — on-disk skills, managed and adoptable.
@@ -18,7 +18,7 @@
  */
 
 export { skillService } from './service';
-export type { SkillDTO, SkillInputFields, ParsedSkillPreview, AvailableSkill } from './service';
+export type { SkillDTO, SkillInputFields, ParsedSkillPreview, AvailableSkill, SkillRevisionMeta } from './service';
 
 export { expandSlashInvocation, parseSlashInvocation } from './invoke';
 export type { ExpandedInvocation, SlashInvocation, InvocationContext } from './invoke';

@@ -74,29 +74,39 @@
 	}
 
 	// Tiles carry an icon and a label only, so the description moves to the
-	// tooltip: it is worth reading once and costs height on every open.
+	// tooltip: it is worth reading once and costs height on every open. Four
+	// small groups by what the tool is for, all visible — a fold hides the one
+	// tool someone came for.
 	const groups = $derived<ToolGroup[]>([
 		{
-			name: 'Connections',
+			name: 'Build',
 			items: [
 				{
-					label: 'Remote Access',
-					description: 'Share a link to reach this Clopen',
-					icon: 'lucide:radio',
-					onClick: onRemoteAccess,
-					count: remoteCount,
-					accent: 'text-violet-600 dark:text-violet-400'
+					// "Issues" alone was a lie by omission: pull requests are half of what
+					// is behind it, and the only half with CI, commits and a diff.
+					label: 'Issues & PRs',
+					description: 'Issues, pull requests and CI',
+					icon: 'lucide:circle-dot',
+					onClick: onWork,
+					// No live count: an open issue is not a connection this machine holds.
+					count: 0,
+					accent: 'text-rose-600 dark:text-rose-400'
 				},
 				{
-					label: 'Public Tunnel',
-					description: 'Expose a local port via Cloudflare',
-					icon: 'lucide:cloud-upload',
-					onClick: onPublicTunnel,
-					count: tunnelCount,
-					accent: 'text-green-600 dark:text-green-400'
-				},
+					label: 'Deployments',
+					description: 'Builds, logs and what is live',
+					icon: 'lucide:rocket',
+					onClick: onDeployments,
+					count: 0,
+					accent: 'text-sky-600 dark:text-sky-400'
+				}
+			]
+		},
+		{
+			name: 'Data',
+			items: [
 				{
-					label: 'DB Client',
+					label: 'Databases',
 					description: 'Connect to a database',
 					icon: 'lucide:database',
 					onClick: onDbClient,
@@ -104,41 +114,8 @@
 					accent: 'text-emerald-600 dark:text-emerald-400'
 				},
 				{
-					label: 'SSH Client',
-					description: 'Shell, files, and port forwarding',
-					icon: 'lucide:server',
-					onClick: onSshClient,
-					count: sshCount,
-					accent: 'text-sky-600 dark:text-sky-400'
-				},
-				{
-					label: 'Ports',
-					description: 'What is listening on this machine',
-					icon: 'lucide:cable',
-					onClick: onPorts,
-					// Counts ports born in a Clopen terminal, not every port on the box —
-					// a machine's own listeners are a constant, not a sign of activity.
-					count: portsCount,
-					accent: 'text-amber-600 dark:text-amber-400'
-				},
-				{
-					label: 'Containers',
-					description: 'Docker and Podman on this machine',
-					icon: 'lucide:container',
-					onClick: onContainers,
-					// Containers running here. Unlike ports, every one of these is
-					// something someone chose to start, so all of them count.
-					count: containersCount,
-					accent: 'text-blue-600 dark:text-blue-400'
-				}
-			]
-		},
-		{
-			name: 'Workspace',
-			items: [
-				{
 					label: 'Memory',
-					description: 'What this workspace has learned',
+					description: 'What Clopen has learned',
 					icon: 'lucide:brain',
 					onClick: onMemory,
 					// No live count: memory is not a connection you open, it just accrues.
@@ -152,29 +129,58 @@
 					onClick: onNotes,
 					count: 0,
 					accent: 'text-amber-600 dark:text-amber-400'
+				}
+			]
+		},
+		{
+			name: 'Connect',
+			items: [
+				{
+					label: 'Remote Access',
+					description: 'Use Clopen from your phone',
+					icon: 'lucide:radio',
+					onClick: onRemoteAccess,
+					count: remoteCount,
+					accent: 'text-violet-600 dark:text-violet-400'
 				},
 				{
-					label: 'Deployments',
-					description: 'Builds, logs and what is live',
-					icon: 'lucide:rocket',
-					onClick: onDeployments,
-					// No live count: a build is someone else's machine working, not a
-					// connection this one holds, and a badge would blink for something
-					// nobody here can act on.
-					count: 0,
+					label: 'Public Link',
+					description: 'Share a local port online',
+					icon: 'lucide:cloud-upload',
+					onClick: onPublicTunnel,
+					count: tunnelCount,
+					accent: 'text-green-600 dark:text-green-400'
+				},
+				{
+					label: 'SSH',
+					description: 'Shell and files on a server',
+					icon: 'lucide:server',
+					onClick: onSshClient,
+					count: sshCount,
 					accent: 'text-sky-600 dark:text-sky-400'
+				}
+			]
+		},
+		{
+			name: 'System',
+			items: [
+				{
+					label: 'Ports',
+					description: 'What is listening here',
+					icon: 'lucide:cable',
+					// Counts ports born in a Clopen terminal, not every port on the box —
+					// a machine's own listeners are a constant, not a sign of activity.
+					onClick: onPorts,
+					count: portsCount,
+					accent: 'text-amber-600 dark:text-amber-400'
 				},
 				{
-					// "Issues" alone was a lie by omission: pull requests are half of what
-					// is behind it, and the only half with CI, commits and a diff.
-					label: 'Issues & PRs',
-					description: 'Issues, pull requests and CI',
-					icon: 'lucide:circle-dot',
-					onClick: onWork,
-					// No live count: an open issue is not a connection this machine holds,
-					// and a badge counting someone's backlog would nag rather than inform.
-					count: 0,
-					accent: 'text-rose-600 dark:text-rose-400'
+					label: 'Containers',
+					description: 'Docker and Podman',
+					icon: 'lucide:container',
+					onClick: onContainers,
+					count: containersCount,
+					accent: 'text-blue-600 dark:text-blue-400'
 				}
 			]
 		}
@@ -205,9 +211,9 @@
 				: 'w-9 h-9 rounded-lg hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100'}
 				{isOpen ? 'bg-violet-500/10 text-slate-900 dark:text-slate-100' : ''}"
 			onclick={toggleMenu}
-			aria-label="More Tools"
+			aria-label="Tools"
 			aria-expanded={isOpen}
-			title="More Tools"
+			title="Tools"
 		>
 			<Icon name="lucide:wrench" class={mobile ? 'w-4.5 h-4.5' : 'w-5 h-5'} />
 			{#if hasActivity}
@@ -223,7 +229,7 @@
 			class="flex items-center gap-2.5 w-full py-2.5 px-3 bg-transparent border-none rounded-lg text-slate-500 text-sm cursor-pointer transition-all duration-150 hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100
 				{isOpen ? 'bg-violet-500/10 text-slate-900 dark:text-slate-100' : ''}"
 			onclick={toggleMenu}
-			aria-label="More Tools"
+			aria-label="Tools"
 			aria-expanded={isOpen}
 		>
 			<div class="relative">
@@ -234,7 +240,7 @@
 					></span>
 				{/if}
 			</div>
-			<span class="flex-1 text-left">More Tools</span>
+			<span class="flex-1 text-left">Tools</span>
 		</button>
 	{/if}
 
@@ -247,13 +253,13 @@
 			small screens that can least afford it.
 		-->
 		<div
-			class="absolute {mobile ? 'top-full right-0 mt-1' : 'bottom-full left-0 mb-1'} flex flex-col w-80 max-w-[calc(100vw-1.5rem)] max-h-[min(28rem,70dvh)] bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
+			class="{mobile ? 'fixed inset-x-3 top-14 w-auto' : 'absolute bottom-full left-0 mb-1 w-80'} flex flex-col max-w-[calc(100vw-1.5rem)] max-h-[min(28rem,70dvh)] bg-white dark:bg-slate-800 border border-violet-500/20 rounded-lg shadow-2xl shadow-slate-900/20 dark:shadow-black/40 z-50 overflow-hidden"
 			transition:scale={{ duration: 150, easing: cubicOut, start: 0.95, opacity: 0 }}
 		>
 			<div class="flex flex-col min-h-0 overflow-y-auto py-2">
 				{#each groups as group, groupIndex (group.name)}
 					{#if groupIndex > 0}
-						<div class="my-2 mx-3 border-t border-slate-200 dark:border-slate-800"></div>
+						<div class="my-1.5"></div>
 					{/if}
 					<div class="px-3 pb-1.5 text-xs font-medium text-violet-600 dark:text-violet-400 uppercase tracking-wide">
 						{group.name}

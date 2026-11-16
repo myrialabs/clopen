@@ -1,5 +1,5 @@
 /**
- * Instructions Router — Settings → Instructions (global + per-project blocks).
+ * Instructions Router — Library → Rules (global + per-project blocks).
  */
 
 import { createRouter } from '$shared/utils/ws-server';

@@ -57,7 +57,7 @@ export function supabaseCredentialsOf(context: DbProviderContext): SupabaseCrede
 	const accessToken = (context.credentials.accessToken ?? '').trim();
 	if (!accessToken) {
 		throw new SupabaseError(
-			'This Supabase account has no access token. Reconnect it in Settings → Integrations.',
+			'This Supabase account has no access token. Reconnect it in Library → Integrations.',
 			401,
 			'auth'
 		);

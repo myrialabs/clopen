@@ -5,6 +5,8 @@
 	import PathBrowser from '$frontend/components/common/form/PathBrowser.svelte';
 	import { dbClientStore } from '$frontend/stores/features/db-client.svelte';
 	import { sshClientStore } from '$frontend/stores/features/ssh-client.svelte';
+	import ws from '$frontend/utils/ws';
+	import type { DbAgentAccess } from '$shared/types/assistant';
 	import type {
 		DbClientConnection,
 		DbClientConnectionInput,
@@ -22,6 +24,24 @@
 	}
 
 	const { connection = null, onSaved, onCancel, onEditLink }: Props = $props();
+
+	let agentAccess = $state<DbAgentAccess>('none');
+	$effect(() => {
+		const id = connection?.id;
+		if (!id) return;
+		void ws.http('assistant:db-access-list', {}).then((map) => (agentAccess = (map[id] as DbAgentAccess | undefined) ?? 'none')).catch(() => undefined);
+	});
+
+	async function setAgentAccess(access: DbAgentAccess): Promise<void> {
+		if (!connection) return;
+		const previous = agentAccess;
+		agentAccess = access;
+		try {
+			await ws.http('assistant:db-access-set', { connectionId: connection.id, access });
+		} catch {
+			agentAccess = previous;
+		}
+	}
 
 	/**
 	 * A managed connection is DERIVED from a connected account.
@@ -424,7 +444,7 @@
 					</select>
 					{#if sshConnectionId}
 						<span class="text-xs text-slate-500 dark:text-slate-500">
-							Uses that host's credentials, jump chain and trusted host key. Manage it in SSH Client.
+							Uses that host's credentials, jump chain and trusted host key. Manage it in SSH.
 						</span>
 					{/if}
 				</label>
@@ -538,6 +558,27 @@
 				{/if}
 			</div>
 		</div>
+	{/if}
+
+	{#if connection}
+		<!--
+			What an AI agent may do with this database. Off by default: connecting a
+			database is not consent for an agent to read customer rows, let alone
+			change them. Enforced server-side by classifying each statement.
+		-->
+		<label class="flex flex-col gap-1">
+			<span class="text-xs text-slate-500 dark:text-slate-400">AI agent access</span>
+			<select
+				value={agentAccess}
+				onchange={(e) => setAgentAccess((e.currentTarget as HTMLSelectElement).value as DbAgentAccess)}
+				class="px-2.5 py-1.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-md text-sm text-slate-900 dark:text-slate-100"
+			>
+				<option value="none">None — agents cannot see it</option>
+				<option value="schema">Structure only — tables and columns, never rows (recommended)</option>
+				<option value="read">Read — may query data</option>
+				<option value="write">Read and write — changes still need your approval</option>
+			</select>
+		</label>
 	{/if}
 
 	{#if formError}

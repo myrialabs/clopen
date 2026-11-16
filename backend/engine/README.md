@@ -21,7 +21,7 @@ stays **agnostic** to the underlying SDK.
 > all type references on `import type` so they erase at runtime). The loader
 > refuses to load an SDK whose installed version ≠ the pinned version, throwing
 > `EngineNotReadyError` (`reason: 'not-installed' | 'needs-update'`) — the
-> engine must first be installed/updated in **Settings → Stack**. This is
+> engine must first be installed/updated in **Settings → Agents → Install**. This is
 > what fixed `bun add -g @myrialabs/clopen` aborting mid-install (it used to
 > drag 200–300 MB of native CLI binaries). The pin covers an SDK's unbundled
 > **peer** dependencies too (`ENGINE_PACKAGES` in
@@ -101,8 +101,8 @@ map, then jump to the area you need.
 1. [Architecture map](#1-architecture-map) — the layers and the two design pitfalls to read before proposing new infrastructure (below).
 2. [Adapter contract](./docs/adapter-contract.md) — the `AIEngine` interface, `EngineOutput`, `EngineQueryOptions`, the standard adapter file taxonomy, and what an adapter must NOT do.
 3. [Database](./docs/database.md) — `engine_providers` + `engine_accounts`, `engineQueries`, and how each adapter reads credentials.
-4. [WebSocket routes](./docs/websocket-routes.md) — `engine:*`, `stack:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
-5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Engines / Stack, the model picker, the send path, reasoning effort/attachments/AskUserQuestion.
+4. [WebSocket routes](./docs/websocket-routes.md) — `agents:*`, `stack:*`, `models:list`, `chat:stream`, and the Restart-Server pattern.
+5. [Frontend & chat integration](./docs/frontend-and-chat.md) — Settings → Agents / Stack, the model picker, the send path, reasoning effort/attachments/AskUserQuestion.
 6. [Stack](./docs/stack.md) — registering a host tool or on-demand engine SDK in `install-recipes.ts` + the install runner.
 7. [Artifacts & Access](./docs/artifacts.md) — the extension layer (Skills, Commands, Subagents, Instructions, Permissions, Profiles, MCP), the capability matrix, and the `artifact-sync.ts` seam adapters call at stream start.
 8. [Adding a new engine](./docs/adding-an-engine.md) — the end-to-end, stage-by-stage checklist.
@@ -116,7 +116,7 @@ map, then jump to the area you need.
 ```
 ┌──────────────────── FRONTEND (Svelte 5 + runes) ─────────────────────┐
 │                                                                       │
-│  Settings → Engines           Settings → Stack         Chat Input     │
+│  Settings → Agents           Settings → Agents → Install         Chat Input     │
 │  ─────────────────────        ──────────────────────  ──────────────  │
 │  AIEnginesSettings+panels/    StackSettings…    EngineModel…    │
 │       │                            │                       │          │
@@ -126,7 +126,7 @@ map, then jump to the area you need.
 │       └─ modelStore                                          ModelState│
 │       │            │             │             │             │        │
 │       ▼            ▼             ▼             ▼             ▼        │
-│  ws.http('engine:*')   ws.http('stack:*')   ws.emit('chat:…')  │
+│  ws.http('agents:*')   ws.http('stack:*')   ws.emit('chat:…')  │
 └──────────────────────────────┬────────────────────────────────────────┘
                                │ WebSocket (ws-server router)
 ┌──────────────────────────────▼────────────────────────────────────────┐

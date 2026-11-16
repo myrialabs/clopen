@@ -29,7 +29,7 @@ describe('fetchCopilotModels', () => {
 
 	test('a rejected token surfaces as an actionable error instead of an empty list', async () => {
 		const failure = new Error('Request models.list failed with message: Not authenticated. Please authenticate first.');
-		expect(fetchCopilotModels(clientReturning(failure), null)).rejects.toThrow('Settings → Engines → Copilot');
+		expect(fetchCopilotModels(clientReturning(failure), null)).rejects.toThrow('Settings → Agents → Copilot');
 	});
 
 	test('a fine-grained PAT the models endpoint refuses falls back to Auto', async () => {

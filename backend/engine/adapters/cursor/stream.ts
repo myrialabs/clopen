@@ -171,7 +171,7 @@ export class CursorEngine implements AIEngine {
 		// ── Resolve account + API key ──
 		const account = (accountId != null ? engineQueries.getAccount(accountId) : null) ?? getActiveCursorAccount();
 		if (!account) {
-			throw new Error('Cursor is not configured. Add an API key in Settings → Engines → Cursor.');
+			throw new Error('Cursor is not configured. Add an API key in Settings → Agents → Cursor.');
 		}
 		const apiKey = resolveCursorApiKey(account);
 

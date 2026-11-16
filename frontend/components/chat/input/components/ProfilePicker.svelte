@@ -94,7 +94,7 @@
 	const triggerLabel = $derived.by(() => {
 		if (selectedProfile) return selectedProfile.name;
 		if (defaultProfile) return `Default · ${defaultProfile.name}`;
-		return 'No profile';
+		return 'No toolset';
 	});
 
 	const filtered = $derived.by(() => {
@@ -147,7 +147,7 @@
 			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
 		onclick={toggle}
 		disabled={appState.isLoading}
-		title="Active profile for this session"
+		title="Toolset for this chat"
 		aria-haspopup="listbox"
 		aria-expanded={open}
 	>
@@ -171,13 +171,13 @@
 					<input
 						type="text"
 						bind:value={searchQuery}
-						placeholder="Search profiles..."
+						placeholder="Search toolsets..."
 						class="w-full pl-6 pr-2 py-1 text-xs bg-slate-50 dark:bg-slate-700/50 border border-slate-200 dark:border-slate-600 rounded-md outline-none focus:ring-1 focus:ring-violet-500/40 focus:border-violet-500 transition-colors text-slate-800 dark:text-slate-200 placeholder-slate-400"
 					/>
 				</div>
 			</div>
 
-			<div class="overflow-y-auto py-1" role="listbox" aria-label="Profiles">
+			<div class="overflow-y-auto py-1" role="listbox" aria-label="Toolsets">
 				<!-- None → fall back to the project default (or truly no profile). -->
 				<button
 					type="button"
@@ -192,12 +192,12 @@
 						{#if chatModelState.profileId === null}<div class="w-1.5 h-1.5 rounded-full bg-violet-600"></div>{/if}
 					</div>
 					<span class="text-xs text-slate-700 dark:text-slate-300">
-						{defaultProfile ? `Project default (${defaultProfile.name})` : 'No profile'}
+						{defaultProfile ? `Project default (${defaultProfile.name})` : 'No toolset'}
 					</span>
 				</button>
 
 				{#if filtered.length === 0}
-					<p class="px-3 py-3 text-xs text-slate-500 text-center">No profile matches.</p>
+					<p class="px-3 py-3 text-xs text-slate-500 text-center">No toolset matches.</p>
 				{:else}
 					{#each filtered as profile (profile.id)}
 						{@const isSelected = chatModelState.profileId === profile.id}

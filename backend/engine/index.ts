@@ -75,7 +75,7 @@ interface EngineSlot {
  *
  * A failed creation is evicted rather than cached: the usual cause is an engine
  * the user has not installed yet, and they must be able to install it in
- * Settings → Stack and retry without restarting the server.
+ * Settings → Agents → Install and retry without restarting the server.
  */
 function slotFor(type: EngineType, cache: Map<EngineType, EngineSlot>): EngineSlot {
 	const cached = cache.get(type);

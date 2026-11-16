@@ -1,5 +1,5 @@
 /**
- * Instruction Handlers (Settings → Instructions)
+ * Instruction Handlers (Library → Rules)
  *
  *   - instructions:get-global / save-global
  *   - instructions:get-project / save-project
@@ -23,31 +23,31 @@ const INSTRUCTION_SCHEMA = t.Object({
 });
 
 export const instructionCrudHandler = createRouter()
-	.http('instructions:get-global', {
+	.http('rules:get-global', {
 		data: t.Object({}),
 		response: t.Object({ instruction: INSTRUCTION_SCHEMA })
 	}, async () => {
-		debug.log('path', 'instructions:get-global');
+		debug.log('path', 'rules:get-global');
 		return { instruction: instructionService.getGlobal() };
 	})
-	.http('instructions:save-global', {
+	.http('rules:save-global', {
 		data: t.Object({ content: t.String(), enabled: t.Boolean() }),
 		response: t.Object({ instruction: INSTRUCTION_SCHEMA })
 	}, async ({ data }) => {
-		debug.log('path', 'instructions:save-global');
+		debug.log('path', 'rules:save-global');
 		return { instruction: instructionService.saveGlobal(data.content, data.enabled) };
 	})
-	.http('instructions:get-project', {
+	.http('rules:get-project', {
 		data: t.Object({ projectId: t.String() }),
 		response: t.Object({ instruction: INSTRUCTION_SCHEMA })
 	}, async ({ data }) => {
-		debug.log('path', `instructions:get-project ${data.projectId}`);
+		debug.log('path', `rules:get-project ${data.projectId}`);
 		return { instruction: instructionService.getForProject(data.projectId) };
 	})
-	.http('instructions:save-project', {
+	.http('rules:save-project', {
 		data: t.Object({ projectId: t.String(), content: t.String(), enabled: t.Boolean() }),
 		response: t.Object({ instruction: INSTRUCTION_SCHEMA })
 	}, async ({ data }) => {
-		debug.log('path', `instructions:save-project ${data.projectId}`);
+		debug.log('path', `rules:save-project ${data.projectId}`);
 		return { instruction: instructionService.saveForProject(data.projectId, data.content, data.enabled) };
 	});

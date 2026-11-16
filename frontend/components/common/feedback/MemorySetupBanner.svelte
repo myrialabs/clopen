@@ -69,7 +69,7 @@
 	);
 
 	function openSettings(): void {
-		openSettingsModal('memory-graph');
+		openSettingsModal('memory');
 	}
 </script>
 

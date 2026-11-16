@@ -38,6 +38,7 @@ import { syncSkills } from '$backend/skills';
 import { syncEngineArtifacts } from '$backend/engine/artifact-sync';
 import { resolveProjectBridge, ensureClaudeProjectPlugin, buildProjectPromptContext } from '$backend/artifacts/project';
 import { artifactFilter } from '$backend/profiles';
+import { ASSISTANT_DENIED_TOOLS, ASSISTANT_SYSTEM_APPEND, isAssistantProjectId } from '$backend/assistant/manager-policy';
 import { resolvePermissionsFromDb, isToolAllowed, hasAnyRestriction, syncPermissions } from '$backend/permissions';
 import type { AIEngine, EngineQueryOptions } from '../../types';
 import { EngineRuns } from '../run-registry';
@@ -245,13 +246,23 @@ export class ClaudeCodeEngine implements AIEngine {
       // Environment is passed via env option — no process.env mutation.
       // When accountId is specified, the env overrides the OAuth token
       // with that specific account's token instead of the globally active one.
+      // In Clopen's own chat the agent is a manager: its file-writing and shell
+      // tools are removed outright (not just denied at the hook, so it never
+      // plans around them), Clopen's tools are loaded up front instead of behind
+      // ToolSearch, and the system prompt says so — the brief alone, sitting in
+      // the user turn, loses to the coding preset.
+      const isManager = isAssistantProjectId(options.mcpContext?.projectId);
+      const systemAppend = [isManager ? ASSISTANT_SYSTEM_APPEND : null, projectInstructions || null].filter(Boolean).join('\n\n');
       const sdkOptions: Options = {
         permissionMode: 'bypassPermissions' as PermissionMode,
         allowDangerouslySkipPermissions: true,
         cwd: resolvedProjectPath,
-        env: getEngineEnv(accountId, options.gitIdentityEnv),
-        systemPrompt: projectInstructions
-          ? { type: "preset", preset: "claude_code", append: projectInstructions }
+        env: isManager
+          ? { ...getEngineEnv(accountId, options.gitIdentityEnv), ENABLE_TOOL_SEARCH: 'false' }
+          : getEngineEnv(accountId, options.gitIdentityEnv),
+        ...(isManager ? { disallowedTools: ASSISTANT_DENIED_TOOLS['claude-code'] } : {}),
+        systemPrompt: systemAppend
+          ? { type: "preset", preset: "claude_code", append: systemAppend }
           : { type: "preset", preset: "claude_code" },
         settingSources: ["user", "project", "local"],
         // The plugin carries skills only; its MCP discovery is off because

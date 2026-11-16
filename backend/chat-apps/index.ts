@@ -1,6 +1,6 @@
 /**
  * Chat apps — control Clopen from a chat app. Chat with any session (or with
- * none, from Home), reply to an earlier message to continue from that point,
+ * none, from Clopen's own chat), reply to an earlier message to continue from that point,
  * edit a sent message like Edit Message, and drive the rest of Clopen through
  * the control catalog: sessions, files, skills, projects, models and engine
  * accounts. Questions and answers of the turns a chat starts come back to it
@@ -20,7 +20,7 @@
  * A chat app is a CAPABILITY of a connected account (`control`), not a panel:
  * the bot token lives on its `integration_accounts` row like every other
  * credential. Pairing and what the chat is told about unprompted sit in
- * Settings → Chat Apps. WHAT the chat can do
+ * Settings → Messaging. WHAT the chat can do
  * is not here at all: it is the control catalog (`backend/control/`), shared
  * with every other remote surface.
  *
@@ -44,11 +44,12 @@ import { handleInboundMessage } from './inbound';
 import { issuePairingCode, revokePairingCode, PAIRING_TTL_MS } from './pairing';
 import { onToolActivity, onUserMessage } from './turns';
 import { CHAT_COMMANDS, REPLIES, describeToolUse, textCard } from './messages';
-import { commandReference, setPublicOriginResolver, type CommandEntry } from '$backend/control';
+import { commandReference, menuCommands, setPublicOriginResolver, type CommandEntry } from '$backend/control';
 import type { ChannelCommand } from './platforms';
 import { notifyLinksChanged } from './link-events';
 
 export { registerComposer, onLinksChanged } from './inbound';
+export { broadcastToChats, sendFilesToChats, announceCard, settleCardMessages } from './outbound';
 
 /** Told when a bot's running state may have changed, so Settings can refresh. */
 export function onBotsChanged(listener: () => void): void {
@@ -63,12 +64,12 @@ const MAX_MENU_COMMANDS = 100;
 const MAX_MENU_DESCRIPTION = 256;
 
 /**
- * The `/` menu: EXACTLY what `/help` lists, in the same order — the chat's own
- * commands, then the catalog's. Generated, so a new catalog action shows up in
- * every chat app without touching this module.
+ * The `/` menu: the everyday commands, in the order `/help` lists them first.
+ * Everything else still works and is listed under "More" in /help — a menu of
+ * thirty commands is one nobody reads.
  */
 export function botCommands(): ChannelCommand[] {
-	return commandReference(CHAT_COMMANDS)
+	return menuCommands(CHAT_COMMANDS)
 		.slice(0, MAX_MENU_COMMANDS)
 		.map((entry) => {
 			const described = entry.hint ? `${entry.description} (${entry.hint})` : entry.description;
@@ -188,7 +189,7 @@ export async function stopChatApps(): Promise<void> {
 	await channelRuntime.stop();
 }
 
-// ── What Settings → Chat Apps shows and does ────────────────────────────────
+// ── What Settings → Messaging shows and does ────────────────────────────────
 
 export interface ChannelLinkInfo {
 	id: string;
@@ -212,6 +213,9 @@ export interface ChannelBotInfo {
 	/** Whether the bot is actually reaching the platform right now. */
 	connection: 'connecting' | 'open' | 'closed' | null;
 	error: string | null;
+	/** Down and coming back by itself: seconds to the next attempt, and which attempt it is. */
+	retryInSeconds: number | null;
+	attempt: number;
 	/** "Control Clopen" is on for this bot; without it a chat cannot drive anything. */
 	control: boolean;
 	/** The chats paired through this bot. */
@@ -250,6 +254,8 @@ export async function listChannelBots(requestOrigin?: string): Promise<ChannelBo
 			originSource: status.originSource,
 			connection: status.connection,
 			error: status.error,
+			retryInSeconds: status.retryInSeconds,
+			attempt: status.attempt,
 			control: capabilities.includes('control'),
 			links: links.map(toLinkInfo)
 		});
@@ -261,7 +267,7 @@ export async function createPairingLink(userId: string, accountId: string): Prom
 	const row = integrationAccountQueries.getById(accountId);
 	const platform = row ? getChannelPlatform(row.provider) : null;
 	const adapter = channelRuntime.adapterFor(accountId);
-	if (!row || !platform || !adapter) throw new Error('That bot is not running. Check it in Settings → Integrations.');
+	if (!row || !platform || !adapter) throw new Error('That bot is not running. Check it in Library → Integrations.');
 	const { code, expiresAt } = issuePairingCode(userId, accountId);
 	return { url: await platform.pairingLink(adapter, code), expiresAt, ttlSeconds: Math.round(PAIRING_TTL_MS / 1000) };
 }

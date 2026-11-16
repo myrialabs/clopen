@@ -14,7 +14,7 @@ import { getBackendOS } from '../../../utils/os';
 import { readEngineSdkVersion } from '$backend/engine/sdk-loader';
 
 export const cursorStatusHandler = createRouter()
-	.http('engine:cursor-status', {
+	.http('agents:cursor-status', {
 		data: t.Object({}),
 		response: t.Object({
 			installed: t.Boolean(),

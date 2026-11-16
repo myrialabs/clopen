@@ -1,7 +1,7 @@
 /**
  * Profiles Store
  *
- * Reactive store for Settings → Profiles — reusable bundles that reference
+ * Reactive store for Library → Toolsets — reusable bundles that reference
  * existing artifacts (Skills, Commands, Subagents, Integrations) by slug, plus
  * an optional per-engine permission overlay. A profile is activated per-session
  * (see the picker) and resolved at stream start against the project's shared
@@ -82,7 +82,7 @@ export const profilesStore = {
 	async fetchAvailable(force = false): Promise<AvailableProfile[]> {
 		if (availableLoaded && !force) return available;
 		try {
-			const result = await ws.http('profiles:available', {});
+			const result = await ws.http('toolsets:available', {});
 			available = result.profiles;
 			availableLoaded = true;
 		} catch (error) {
@@ -93,7 +93,7 @@ export const profilesStore = {
 
 	async projectDefault(projectId: string): Promise<number | null> {
 		try {
-			const result = await ws.http('profiles:project-default', { projectId });
+			const result = await ws.http('toolsets:project-default', { projectId });
 			return result.profileId;
 		} catch (error) {
 			debug.error('settings', 'Failed to read project default profile:', error);
@@ -102,7 +102,7 @@ export const profilesStore = {
 	},
 
 	async setProjectDefault(projectId: string, profileId: number | null): Promise<void> {
-		await ws.http('profiles:set-project-default', { projectId, profileId });
+		await ws.http('toolsets:set-project-default', { projectId, profileId });
 	},
 
 	async fetch(): Promise<Profile[]> {
@@ -112,7 +112,7 @@ export const profilesStore = {
 
 	async refresh(): Promise<Profile[]> {
 		try {
-			const result = await ws.http('profiles:list', {});
+			const result = await ws.http('toolsets:list', {});
 			profiles = result.profiles;
 			loaded = true;
 			availableLoaded = false; // picker list may be stale after any mutation
@@ -126,18 +126,18 @@ export const profilesStore = {
 	},
 
 	async fetchInventory(): Promise<ProfileInventory> {
-		const result = await ws.http('profiles:inventory', {});
+		const result = await ws.http('toolsets:inventory', {});
 		inventory = result;
 		return result;
 	},
 
 	async get(id: number): Promise<Profile> {
-		const result = await ws.http('profiles:get', { id });
+		const result = await ws.http('toolsets:get', { id });
 		return result.profile;
 	},
 
 	async create(payload: ProfilePayload): Promise<Profile> {
-		const result = await ws.http('profiles:create', {
+		const result = await ws.http('toolsets:create', {
 			name: payload.name,
 			description: payload.description,
 			items: itemsToArray(payload.items)
@@ -147,7 +147,7 @@ export const profilesStore = {
 	},
 
 	async update(id: number, payload: ProfilePayload): Promise<Profile> {
-		const result = await ws.http('profiles:update', {
+		const result = await ws.http('toolsets:update', {
 			id,
 			name: payload.name,
 			description: payload.description,
@@ -158,18 +158,18 @@ export const profilesStore = {
 	},
 
 	async remove(id: number): Promise<void> {
-		await ws.http('profiles:delete', { id });
+		await ws.http('toolsets:delete', { id });
 		await this.refresh();
 	},
 
 	// ── Per-profile permission overlay ─────────────────────────────────────────
 	async getPermissions(id: number): Promise<ProfilePermissionOverlay[]> {
-		const result = await ws.http('profiles:get-permissions', { id });
+		const result = await ws.http('toolsets:get-permissions', { id });
 		return result.sets;
 	},
 
 	async savePermissions(id: number, engine: string, allow: string[], deny: string[]): Promise<void> {
-		await ws.http('profiles:save-permissions', { id, engine, allow, deny });
+		await ws.http('toolsets:save-permissions', { id, engine, allow, deny });
 	},
 
 	reset() {

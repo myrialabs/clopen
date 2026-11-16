@@ -2,7 +2,7 @@
  * Cline Provider Presets Store
  *
  * The Cline provider catalog (id, name, supported auth modes, credential fields)
- * for the login picker. Fetched from backend via `engine:cline-presets-list`.
+ * for the login picker. Fetched from backend via `agents:cline-presets-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -39,7 +39,7 @@ export const clinePresetsStore = {
  * because nothing would ever ask for it again.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:cline-presets-list', {});
+	const result = await ws.http('agents:cline-presets-list', {});
 	presets = result.presets;
 	debug.log('settings', `Cline presets loaded: ${presets.length}`);
 }

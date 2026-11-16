@@ -37,6 +37,7 @@ interface CLIOptions {
 	resetPat?: boolean;
 	clearData?: boolean;
 	log?: boolean;
+	service?: 'install' | 'uninstall' | 'status';
 }
 
 // Get version from package.json
@@ -106,7 +107,7 @@ const MAX_PORT = 65535;
 
 function showHelp() {
 	console.log(`
-Clopen - All-in-one web workspace for Claude Code & OpenCode
+Clopen - Your AI that runs your AI coding agents
 
 USAGE:
   clopen [OPTIONS]
@@ -116,6 +117,9 @@ COMMANDS:
   update                  Update clopen to the latest version
   reset-pat               Regenerate the owner's Personal Access Token
   clear-data              Delete all projects, sessions, and settings
+  service install         Start Clopen automatically when this computer starts
+  service uninstall       Stop starting Clopen with the computer
+  service status          Show whether Clopen starts with the computer
 
 OPTIONS:
   -p, --port <number>     Port to run the server on (default: ${DEFAULT_PORT})
@@ -196,6 +200,16 @@ function parseArguments(): CLIOptions {
 			case 'clear-data':
 				options.clearData = true;
 				break;
+
+			case 'service': {
+				const action = args[++i];
+				if (action !== 'install' && action !== 'uninstall' && action !== 'status') {
+					console.error('❌ Error: use "clopen service install", "clopen service uninstall" or "clopen service status"');
+					process.exit(1);
+				}
+				options.service = action;
+				break;
+			}
 
 			case '--log':
 				options.log = true;
@@ -424,6 +438,40 @@ async function startServer(options: CLIOptions) {
 }
 
 // ============================================================
+// Start with the computer
+// ============================================================
+
+async function runServiceCommand(action: 'install' | 'uninstall' | 'status', port?: number) {
+	const { autostartStatus, disableAutostart, enableAutostart } = await import('../backend/assistant/autostart');
+	const describe = (status: ReturnType<typeof autostartStatus>) =>
+		status.supported
+			? `Clopen ${status.enabled ? 'starts' : 'does not start'} with this computer (${status.method}).`
+			: `Not supported here: ${status.reason ?? process.platform}`;
+
+	if (action === 'status') {
+		console.log(describe(autostartStatus()));
+		return;
+	}
+	if (action === 'uninstall') {
+		console.log(describe(disableAutostart()));
+		return;
+	}
+	const entry = process.argv[1];
+	if (!entry) {
+		console.error('❌ Could not tell where the clopen command lives.');
+		process.exit(1);
+	}
+	try {
+		const status = enableAutostart({ bun: process.execPath, entry, port });
+		console.log(`✅ ${describe(status)}`);
+		console.log('   It takes effect the next time you log in. Jobs keep their schedule from then on.');
+	} catch (error) {
+		console.error(`❌ ${error instanceof Error ? error.message : error}`);
+		process.exit(1);
+	}
+}
+
+// ============================================================
 // Main
 // ============================================================
 
@@ -479,6 +527,11 @@ async function main() {
 		if (options.clearData) {
 			await setupEnvironment();
 			await clearAllData();
+			process.exit(0);
+		}
+
+		if (options.service) {
+			await runServiceCommand(options.service, options.port);
 			process.exit(0);
 		}
 

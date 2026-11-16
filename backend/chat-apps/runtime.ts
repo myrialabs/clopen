@@ -24,12 +24,12 @@
 import { createHash, createHmac } from 'crypto';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
-import { ChatKit, splitRuns, type AccountHealth, type SendResult, type TextRun, type UniversalMessage } from '@myrialabs/chatkit';
+import { ChatKit, reaction, splitRuns, type AccountHealth, type SendResult, type TextRun, type UniversalMessage } from '@myrialabs/chatkit';
 import { SqliteStore } from '@myrialabs/chatkit/store';
 import { integrationAccountQueries, type IntegrationAccountRow } from '$backend/database/queries';
 import { getMasterKey } from '$backend/database/crypto';
 import { getProvider, withGeneratedCredentials, type WebhookEvent } from '$backend/integrations';
-import { findPublicOrigin, isLocalHostname, resolvePublicOrigin, type PublicOrigin } from '$backend/tunnel/public-origin';
+import { findPublicOrigin, isLocalHostname, type PublicOrigin } from '$backend/tunnel/public-origin';
 import { tunnelKit } from '$backend/tunnel/tunnel-config';
 import { getClopenDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
@@ -60,7 +60,16 @@ export interface ChannelStatus {
 	originSource: PublicOrigin['source'] | null;
 	connection: AccountHealth['state'] | null;
 	error: string | null;
+	/** Not running and trying again by itself: in how many seconds, and which attempt. */
+	retryInSeconds: number | null;
+	attempt: number;
 }
+
+/** Waits between attempts to bring a bot back: quick at first, then once a minute for as long as it takes. */
+const RETRY_STEPS_S = [5, 15, 30, 60];
+const RECOVERY_TICK_MS = 5_000;
+/** A polling bot is checked this often; two failed checks in a row rebuild its connection. */
+const HEALTH_EVERY_MS = 60_000;
 
 export type InboundHandler = (message: UniversalMessage, channel: ActiveChannel) => Promise<void>;
 
@@ -94,6 +103,25 @@ function usableForWebhook(origin: PublicOrigin | null): origin is PublicOrigin {
 	}
 }
 
+/**
+ * A webhook only on an address that stays: a configured domain, the address
+ * the browser reached Clopen on, a named tunnel. A Cloudflare quick tunnel
+ * changes or drops on sleep, network change or restart — and then Telegram
+ * cannot deliver while sending still works, so the bot looks alive and hears
+ * nothing. Long polling needs no address at all; quick tunnels use it.
+ */
+function stableForWebhook(origin: PublicOrigin | null): origin is PublicOrigin {
+	if (!usableForWebhook(origin)) return false;
+	try {
+		return !(origin.source === 'tunnel' && new URL(origin.origin).hostname.endsWith('.trycloudflare.com'));
+	} catch {
+		return false;
+	}
+}
+
+/** How often a webhook's delivery is checked. */
+const WATCHDOG_MS = 60_000;
+
 function fingerprintOf(row: IntegrationAccountRow, credentials: Record<string, string>): string {
 	return createHash('sha256').update(JSON.stringify([row.provider, credentials])).digest('hex');
 }
@@ -126,6 +154,11 @@ class ChannelRuntime {
 	private chat: ChatKit | null = null;
 	private readonly active = new Map<string, ActiveChannel>();
 	private readonly failures = new Map<string, string>();
+	/** Bots that are down and coming back on their own: the attempt they are on, and when the next one is. */
+	private readonly retries = new Map<string, { attempt: number; nextAt: number }>();
+	private readonly unhealthy = new Map<string, number>();
+	private recovery: ReturnType<typeof setInterval> | null = null;
+	private lastHealthAt = 0;
 	private chain: Promise<void> = Promise.resolve();
 	private inboundHandler: InboundHandler | null = null;
 	private menu: CommandMenu | null = null;
@@ -133,6 +166,9 @@ class ChannelRuntime {
 	private statusTimer: ReturnType<typeof setTimeout> | null = null;
 	private browserOrigin: string | null = null;
 	private tunnelTimer: ReturnType<typeof setTimeout> | null = null;
+	private watchdog: ReturnType<typeof setInterval> | null = null;
+	/** Accounts whose webhook failed: they poll until this time. */
+	private readonly pollUntil = new Map<string, number>();
 	private readonly onTunnelChange = (): void => {
 		if (this.tunnelTimer) clearTimeout(this.tunnelTimer);
 		this.tunnelTimer = setTimeout(() => {
@@ -219,10 +255,104 @@ class ChannelRuntime {
 		this.browserOrigin = await chat.store.kvGet(KV_NAMESPACE, KV_BROWSER_ORIGIN).catch(() => null);
 		tunnelKit.on('status-changed', this.onTunnelChange);
 		this.reconcile();
+		this.watchdog = setInterval(() => this.enqueue(() => this.checkDelivery()), WATCHDOG_MS);
+		this.recovery = setInterval(() => void this.recover(), RECOVERY_TICK_MS);
+		this.recovery.unref?.();
+	}
+
+	/**
+	 * Bring bots back without a restart. A bot that failed to start (the
+	 * network was down, a tunnel died) is tried again after 5 s, 15 s, 30 s,
+	 * then every minute until it is up. A running polling bot whose connection
+	 * gave up, or that fails two health checks in a row, is rebuilt the same way.
+	 */
+	private async recover(): Promise<void> {
+		if (!this.chat) return;
+		const now = Date.now();
+		for (const { row, platform, credentials } of this.desiredAccounts()) {
+			if (this.active.has(row.id)) continue;
+			const retry = this.retries.get(row.id) ?? this.scheduleRetry(row.id, 0);
+			if (retry.nextAt > now) continue;
+			await this.enqueue(async () => {
+				if (this.active.has(row.id)) return;
+				debug.log('chat-apps', `Reconnecting ${row.provider} "${row.label}" (attempt ${retry.attempt + 1})`);
+				await this.setup(row, platform, credentials, fingerprintOf(row, credentials), { allowTunnelStart: false });
+				if (this.active.has(row.id)) this.retries.delete(row.id);
+				else this.scheduleRetry(row.id, retry.attempt + 1);
+			});
+		}
+		if (now - this.lastHealthAt < HEALTH_EVERY_MS) return;
+		this.lastHealthAt = now;
+		for (const channel of [...this.active.values()]) {
+			const health = this.chat.health(channel.platform.chatkit, channel.accountId)[0];
+			let sick = Boolean(health?.terminal);
+			if (!sick && channel.mode === 'polling') {
+				const adapter = this.chat.adapterFor(channel.platform.chatkit, channel.accountId);
+				const probe = adapter ? await channel.platform.probe(adapter, 'polling').catch(() => null) : null;
+				const failed = !probe || probe.status !== 'ok';
+				const count = failed ? (this.unhealthy.get(channel.accountId) ?? 0) + 1 : 0;
+				this.unhealthy.set(channel.accountId, count);
+				sick = count >= 2;
+			}
+			if (!sick) continue;
+			debug.warn('chat-apps', `Channel ${channel.accountId} lost its connection; rebuilding it`);
+			this.unhealthy.delete(channel.accountId);
+			await this.enqueue(() => this.teardown(channel, { unregister: false }));
+			this.failures.set(channel.accountId, 'The connection dropped');
+			this.scheduleRetry(channel.accountId, 0);
+		}
+	}
+
+	private scheduleRetry(accountId: string, attempt: number): { attempt: number; nextAt: number } {
+		const wait = RETRY_STEPS_S[Math.min(attempt, RETRY_STEPS_S.length - 1)] * 1000;
+		const retry = { attempt, nextAt: Date.now() + wait };
+		this.retries.set(accountId, retry);
+		this.statusChanged();
+		return retry;
+	}
+
+	/** Reconnect a bot now — the Settings button — instead of waiting for the next attempt. */
+	async reconnect(accountId: string): Promise<void> {
+		await this.enqueue(async () => {
+			const current = this.active.get(accountId);
+			if (current) await this.teardown(current, { unregister: false });
+			const entry = this.desiredAccounts().find((candidate) => candidate.row.id === accountId);
+			if (!entry) throw new Error('That bot is switched off.');
+			this.failures.delete(accountId);
+			await this.setup(entry.row, entry.platform, entry.credentials, fingerprintOf(entry.row, entry.credentials), { allowTunnelStart: false });
+			if (this.active.has(accountId)) this.retries.delete(accountId);
+			else this.scheduleRetry(accountId, 0);
+		});
+	}
+
+	/**
+	 * A webhook Telegram can no longer reach (a recent delivery error) is
+	 * dropped for long polling — so a bot never goes quiet while it still
+	 * looks healthy from the sending side.
+	 */
+	private async checkDelivery(): Promise<void> {
+		if (!this.chat) return;
+		for (const channel of [...this.active.values()]) {
+			if (channel.mode !== 'webhook') continue;
+			const adapter = this.chat.adapterFor(channel.platform.chatkit, channel.accountId);
+			if (!adapter) continue;
+			const health = await channel.platform.probe(adapter, 'webhook').catch(() => null);
+			if (!health || health.status === 'ok') continue;
+			debug.warn('chat-apps', `Webhook delivery failing (${health.detail}); switching to polling`);
+			this.pollUntil.set(channel.accountId, Date.now() + 30 * 60_000);
+			const row = integrationAccountQueries.getById(channel.accountId);
+			if (!row) continue;
+			await this.teardown(channel, { unregister: true });
+			await this.setup(row, channel.platform, integrationAccountQueries.credentialsOf(row), channel.fingerprint, { allowTunnelStart: false });
+		}
 	}
 
 	async stop(): Promise<void> {
 		tunnelKit.off('status-changed', this.onTunnelChange);
+		if (this.watchdog) clearInterval(this.watchdog);
+		this.watchdog = null;
+		if (this.recovery) clearInterval(this.recovery);
+		this.recovery = null;
 		if (this.tunnelTimer) clearTimeout(this.tunnelTimer);
 		await this.chain.catch(() => {});
 		const chat = this.chat;
@@ -294,16 +424,10 @@ class ChannelRuntime {
 	}
 
 	/** The webhook origin to use right now, optionally starting a tunnel to get one. */
-	private async resolveOrigin(allowTunnelStart: boolean): Promise<PublicOrigin | null> {
+	private async resolveOrigin(_allowTunnelStart: boolean): Promise<PublicOrigin | null> {
+		// Never start a tunnel for a bot: polling works without one, and a quick tunnel is not stable enough.
 		const found = findPublicOrigin(this.browserOrigin ?? undefined);
-		if (found || !allowTunnelStart) return usableForWebhook(found) ? found : null;
-		try {
-			const started = await resolvePublicOrigin(this.browserOrigin ?? undefined);
-			return usableForWebhook(started) ? started : null;
-		} catch (error) {
-			debug.warn('chat-apps', 'No public origin for channel webhooks, falling back to polling:', describe(error));
-			return null;
-		}
+		return stableForWebhook(found) ? found : null;
 	}
 
 	private async setup(
@@ -317,7 +441,8 @@ class ChannelRuntime {
 		if (!chat) return;
 		const secret = credentials[getProvider(row.provider)?.webhook?.secretField ?? ''] ?? '';
 
-		if (platform.deliveryModes.includes('webhook') && secret) {
+		const pollingUntil = this.pollUntil.get(row.id) ?? 0;
+		if (platform.deliveryModes.includes('webhook') && secret && Date.now() > pollingUntil) {
 			const origin = await this.resolveOrigin(options.allowTunnelStart);
 			if (origin) {
 				const adapter = platform.createAdapter({ account: row.id, credentials, mode: 'webhook' });
@@ -414,6 +539,11 @@ class ChannelRuntime {
 		return usableForWebhook(origin) ? origin.origin : null;
 	}
 
+	/** Accounts whose channel is running right now. */
+	activeAccountIds(): string[] {
+		return [...this.active.keys()];
+	}
+
 	get(accountId: string): ActiveChannel | null {
 		return this.active.get(accountId) ?? null;
 	}
@@ -426,7 +556,9 @@ class ChannelRuntime {
 			mode: channel?.mode ?? null,
 			originSource: channel?.origin?.source ?? null,
 			connection: health?.state ?? null,
-			error: this.failures.get(accountId) ?? null
+			error: this.failures.get(accountId) ?? null,
+			retryInSeconds: !channel && this.retries.has(accountId) ? Math.max(0, Math.ceil((this.retries.get(accountId)!.nextAt - Date.now()) / 1000)) : null,
+			attempt: this.retries.get(accountId)?.attempt ?? 0
 		};
 	}
 
@@ -477,22 +609,45 @@ class ChannelRuntime {
 	}
 
 	/** Send a file, inline when the platform can show it. */
+	/**
+	 * A reply to a message that is gone — a password Clopen took out of the
+	 * chat — is refused by Telegram, and the answer with it. A message is never
+	 * lost for that: it goes out as a plain message instead.
+	 */
+	private async withReply(conversationId: string, replyTo: string | null | undefined, send: (replyTo: string | null) => Promise<SendResult>): Promise<SendResult> {
+		const target = replyTo && !this.deleted.has(`${conversationId}:${replyTo}`) ? replyTo : null;
+		if (!target) return send(null);
+		try {
+			return await send(target);
+		} catch (error) {
+			debug.log('chat-apps', 'Reply refused; sending without it:', describe(error));
+			return send(null);
+		}
+	}
+
+	/** Messages Clopen deleted from chats, so nothing replies to them. */
+	private readonly deleted = new Set<string>();
+
 	async sendFile(accountId: string, conversationId: string, file: ChannelFile, replyTo?: string | null): Promise<SendResult> {
 		const { chat, channel } = this.require(accountId);
-		return chat.send({
-			to: { platform: channel.platform.chatkit, account: accountId, conversation_id: conversationId },
-			...channel.platform.renderFile(file),
-			...(replyTo ? { reply_to: replyTo } : {})
-		});
+		return this.withReply(conversationId, replyTo, (target) =>
+			chat.send({
+				to: { platform: channel.platform.chatkit, account: accountId, conversation_id: conversationId },
+				...channel.platform.renderFile(file),
+				...(target ? { reply_to: target } : {})
+			})
+		);
 	}
 
 	async send(accountId: string, conversationId: string, card: ChannelCard, replyTo?: string | null): Promise<SendResult> {
 		const { chat, channel } = this.require(accountId);
-		return chat.send({
-			to: { platform: channel.platform.chatkit, account: accountId, conversation_id: conversationId },
-			...channel.platform.render(card),
-			...(replyTo ? { reply_to: replyTo } : {})
-		});
+		return this.withReply(conversationId, replyTo, (target) =>
+			chat.send({
+				to: { platform: channel.platform.chatkit, account: accountId, conversation_id: conversationId },
+				...channel.platform.render(card),
+				...(target ? { reply_to: target } : {})
+			})
+		);
 	}
 
 	/**
@@ -534,6 +689,8 @@ class ChannelRuntime {
 
 	/** Best effort: remove a message the bot sent (a progress line once the answer is in). */
 	async deleteMessage(accountId: string, conversationId: string, platformMessageId: string): Promise<void> {
+		this.deleted.add(`${conversationId}:${platformMessageId}`);
+		if (this.deleted.size > 500) this.deleted.delete(this.deleted.values().next().value!);
 		try {
 			const { chat, channel } = this.require(accountId);
 			await chat.deleteMessage({
@@ -542,6 +699,21 @@ class ChannelRuntime {
 			});
 		} catch (error) {
 			debug.log('chat-apps', 'Channel message delete skipped:', describe(error));
+		}
+	}
+
+	/** React to a message (👍 for "got it") — quieter than a reply. Never throws. */
+	async react(accountId: string, conversationId: string, platformMessageId: string, emoji: string): Promise<boolean> {
+		try {
+			const { chat, channel } = this.require(accountId);
+			await chat.send({
+				to: { platform: channel.platform.chatkit, account: accountId, conversation_id: conversationId },
+				content: reaction(emoji, platformMessageId)
+			});
+			return true;
+		} catch (error) {
+			debug.log('chat-apps', 'Channel reaction skipped:', describe(error));
+			return false;
 		}
 	}
 

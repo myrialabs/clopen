@@ -269,8 +269,7 @@
 					No git accounts yet
 				</p>
 				<p class="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
-					Add one and every commit you make in Clopen — from the Git panel, the terminal, or an
-					agent — is authored by it.
+					Every commit made in Clopen is authored by it.
 				</p>
 			</div>
 		{:else}
@@ -389,8 +388,7 @@
 				placeholder="github.com, git.company.com"
 			/>
 			<p class="text-xs text-slate-500 dark:text-slate-400 -mt-2">
-				Which hosts this credential is for. A push is only authenticated with it when the
-				remote's host is listed here.
+				Hosts this credential pushes to.
 			</p>
 		{/if}
 
@@ -468,7 +466,7 @@
 			<div class="space-y-2 rounded-lg border border-slate-200 dark:border-slate-700 p-3">
 				{#if githubAccounts.length === 0}
 					<p class="text-sm text-slate-600 dark:text-slate-300">
-						No GitHub account is connected yet. Connect one in Settings → Integrations, then
+						No GitHub account is connected yet. Connect one in Library → Integrations, then
 						pick it here.
 					</p>
 				{:else}

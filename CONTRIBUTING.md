@@ -51,7 +51,7 @@ Thanks for considering a contribution. This guide covers the development environ
   - [Cline](https://github.com/cline/cline) by Cline Bot Inc.
   - [Cursor](https://cursor.com) by Anysphere
 
-Engines install on demand via **Settings → Stack** after first launch (into a clopen-managed directory, not your global setup).
+Agents install on demand from **Settings → Agents** after first launch (into a clopen-managed directory, not your global setup). OpenCode with its free models is installed automatically, so a fresh install works without any account.
 
 Clopen is a Bun-only project — Node.js and Deno are not supported. Use `bun` for all package management and scripts.
 

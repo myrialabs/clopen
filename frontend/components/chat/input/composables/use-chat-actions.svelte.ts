@@ -1,5 +1,8 @@
 import { appState } from '$frontend/stores/core/app.svelte';
-import { sessionState, loadMessagesForSession } from '$frontend/stores/core/sessions.svelte';
+import { sessionState, loadMessagesForSession, setCurrentSession } from '$frontend/stores/core/sessions.svelte';
+import { projectState } from '$frontend/stores/core/projects.svelte';
+import { assistantStore } from '$frontend/stores/features/assistant.svelte';
+import { isAssistantProject } from '$shared/utils/assistant-project';
 import { chatService } from '$frontend/services/chat/chat.service';
 import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 import type { RestoreConflict, ConflictResolution } from '$frontend/services/snapshot/snapshot.service';
@@ -82,6 +85,32 @@ export function useChatActions(params: ChatActionsParams) {
 		if (chatService.queueMessage(text, attachedFiles.length > 0 ? attachedFiles : undefined)) {
 			resetComposer();
 		}
+	}
+
+	const ROUTE_NOTICE: Record<string, string> = {
+		parallel: 'Answering in a new chat while the other one works.',
+		'new-topic': 'New topic, new chat. Earlier context comes along.',
+		long: 'Continuing in a fresh chat. Earlier context comes along.'
+	};
+
+	/**
+	 * In Clopen's own chat a message may belong in a fresh chat: a parallel one
+	 * while this one is busy, a new topic, or a long chat handing over. The
+	 * server decides (and prepares the new chat's context); here the screen
+	 * just follows. Returns true when it moved.
+	 */
+	async function followRoute(text: string): Promise<boolean> {
+		const current = sessionState.currentSession;
+		if (!current || !isAssistantProject(projectState.currentProject)) return false;
+		const decision = await assistantStore.route(current.id, text);
+		if (!decision?.changed || decision.sessionId === current.id) return false;
+		const { session } = await ws.http('sessions:get', { id: decision.sessionId });
+		// The draft belonged to the chat it was typed in; it leaves with the message.
+		params.clearDraft();
+		await setCurrentSession(session);
+		const notice = ROUTE_NOTICE[decision.reason];
+		if (notice) addNotification({ type: 'info', title: 'New chat', message: notice, duration: 3500 });
+		return true;
 	}
 
 	/** Rewind to before the edited message, then send the new version. */
@@ -176,6 +205,8 @@ export function useChatActions(params: ChatActionsParams) {
 				// Rewinding mid-turn would race the engine; the server refuses it too.
 				if (appState.isLoading) return;
 				await submitEdit(text, files);
+			} else if (await followRoute(text)) {
+				await sendNow(text, files);
 			} else if (appState.isLoading) {
 				queue(text, files);
 			} else {

@@ -1,7 +1,7 @@
 /**
  * Skill CRUD Handlers
  *
- * Manage user Agent Skills (Settings → Skills) — one feature covering both
+ * Manage user Agent Skills (Library → Skills) — one feature covering both
  * model-invoked skills (`auto`) and user-invoked `/slash` prompts:
  *   - skills:list         — installed skills (DB metadata + on-disk presence)
  *   - skills:get          — one skill plus its SKILL.md body (for the editor)

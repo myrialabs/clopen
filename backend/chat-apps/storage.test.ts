@@ -18,7 +18,7 @@ import {
 } from '$backend/database/queries';
 import { integrationAccounts } from '$backend/integrations/accounts';
 import { handleInboundDelivery, onWebhook, type WebhookEvent } from '$backend/integrations/webhooks/gateway';
-import { ensureHomeProject } from '$backend/projects/home';
+import { ensureAssistantProject } from '$backend/assistant/project';
 
 const owner = `channel-test-${randomUUID()}`;
 const delivered: WebhookEvent[] = [];
@@ -191,8 +191,8 @@ describe('links and channel messages', () => {
 
 describe('Home', () => {
 	it('is one per install, on disk, and in the project list', () => {
-		const first = ensureHomeProject();
-		const again = ensureHomeProject();
+		const first = ensureAssistantProject();
+		const again = ensureAssistantProject();
 		expect(again.id).toBe(first.id);
 		expect(first.kind).toBe('home');
 		expect(existsSync(first.path)).toBe(true);

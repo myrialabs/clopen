@@ -207,7 +207,7 @@ export const stopSession = defineAction({
 	title: 'Stop',
 	description: 'Stop the running turn',
 	args: t.Object({}),
-	command: { name: 'stop' },
+	command: { name: 'stop', menu: true },
 	async run(ctx) {
 		const found = accessibleSession(ctx.target.sessionId);
 		const stream = found ? streamManager.getSessionStream(found.session.id, found.project.id) : undefined;

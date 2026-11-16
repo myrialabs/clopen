@@ -123,3 +123,51 @@ export function excerptMarkdown(markdown: string, max: number): string {
 	if ((excerpt.match(/^\s*```/gm) ?? []).length % 2 === 1) excerpt += '\n```';
 	return `${excerpt.trimEnd()}\n\n…`;
 }
+
+/** Friendly names for the tools a turn used, for a reply that said nothing. */
+const TOOL_LABELS: Record<string, string> = {
+	run: 'Clopen',
+	browse: 'the browser',
+	remember: 'memory',
+	Bash: 'the terminal',
+	Edit: 'file edits',
+	MultiEdit: 'file edits',
+	Write: 'new files',
+	Read: 'reading files',
+	WebFetch: 'the web',
+	WebSearch: 'web search',
+	Task: 'a helper agent'
+};
+
+/**
+ * What the last turn DID, for when it said nothing: "Done — used Clopen (3×)
+ * and the browser." Null when it did nothing either.
+ */
+export function turnActionSummary(chatSessionId: string): string | null {
+	const head = sessionQueries.getHead(chatSessionId);
+	if (!head) return null;
+	const counts = new Map<string, number>();
+	let currentId: string | null = head;
+	for (let steps = 0; currentId && steps < MAX_WALK; steps++) {
+		const row = messageQueries.getById(currentId);
+		if (!row || isTurnStart(row)) break;
+		try {
+			const message = JSON.parse(row.data) as UnifiedMessage;
+			if (message.type === 'assistant' && message.parent?.toolUseId == null && Array.isArray(message.content)) {
+				for (const block of message.content as Array<{ type?: string; name?: string }>) {
+					if (block.type !== 'tool_use' || !block.name) continue;
+					const bare = block.name.replace(/^mcp__[^_]+(?:_[^_]+)*__/, '');
+					const label = TOOL_LABELS[bare] ?? bare;
+					counts.set(label, (counts.get(label) ?? 0) + 1);
+				}
+			}
+		} catch {
+			// Unparseable row — skip it.
+		}
+		currentId = row.parent_message_id ?? null;
+	}
+	if (counts.size === 0) return null;
+	const parts = [...counts.entries()].reverse().map(([label, count]) => (count > 1 ? `${label} (${count}×)` : label));
+	const list = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}` : parts[0];
+	return `Done — used ${list}.`;
+}

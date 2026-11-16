@@ -40,7 +40,7 @@ export const openCodeProviderHandler = createRouter()
 	// Provider CRUD
 	// ═══════════════════════════════════════
 
-	.http('engine:opencode-providers-list', {
+	.http('agents:opencode-providers-list', {
 		data: t.Object({}),
 		response: t.Object({
 			providers: t.Array(ProviderSchema)
@@ -67,7 +67,7 @@ export const openCodeProviderHandler = createRouter()
 		};
 	})
 
-	.http('engine:opencode-provider-add', {
+	.http('agents:opencode-provider-add', {
 		data: t.Object({
 			slug: t.String({ minLength: 1 }),
 			name: t.String({ minLength: 1 }),
@@ -125,7 +125,7 @@ export const openCodeProviderHandler = createRouter()
 		};
 	})
 
-	.http('engine:opencode-provider-remove', {
+	.http('agents:opencode-provider-remove', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -134,7 +134,7 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:opencode-provider-update', {
+	.http('agents:opencode-provider-update', {
 		data: t.Object({
 			id: t.Number(),
 			slug: t.Optional(t.String({ minLength: 1 })),
@@ -164,7 +164,7 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:opencode-provider-toggle', {
+	.http('agents:opencode-provider-toggle', {
 		data: t.Object({ id: t.Number(), enabled: t.Boolean() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -172,7 +172,7 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:opencode-provider-update-options', {
+	.http('agents:opencode-provider-update-options', {
 		data: t.Object({ id: t.Number(), options: t.String() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -186,7 +186,7 @@ export const openCodeProviderHandler = createRouter()
 	// Account CRUD
 	// ═══════════════════════════════════════
 
-	.http('engine:opencode-account-add', {
+	.http('agents:opencode-account-add', {
 		data: t.Object({
 			providerDbId: t.Number(),
 			name: t.String({ minLength: 1 }),
@@ -208,7 +208,7 @@ export const openCodeProviderHandler = createRouter()
 		};
 	})
 
-	.http('engine:opencode-account-switch', {
+	.http('agents:opencode-account-switch', {
 		data: t.Object({ accountId: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -216,7 +216,7 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:opencode-account-delete', {
+	.http('agents:opencode-account-delete', {
 		data: t.Object({ accountId: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -224,7 +224,7 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:opencode-account-rename', {
+	.http('agents:opencode-account-rename', {
 		data: t.Object({ accountId: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -232,7 +232,7 @@ export const openCodeProviderHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:opencode-account-update-credential', {
+	.http('agents:opencode-account-update-credential', {
 		// Empty string allowed — a keyless custom endpoint may clear its key.
 		data: t.Object({ accountId: t.Number(), credential: t.String() }),
 		response: t.Object({ success: t.Boolean() })
@@ -245,7 +245,7 @@ export const openCodeProviderHandler = createRouter()
 	// Models.dev Catalog
 	// ═══════════════════════════════════════
 
-	.http('engine:opencode-models-dev-list', {
+	.http('agents:opencode-models-dev-list', {
 		data: t.Object({}),
 		response: t.Object({
 			catalog: t.Array(t.Object({
@@ -273,7 +273,7 @@ export const openCodeProviderHandler = createRouter()
 		}
 	})
 
-	.http('engine:opencode-models-dev-fetch', {
+	.http('agents:opencode-models-dev-fetch', {
 		data: t.Object({}),
 		response: t.Object({
 			catalog: t.Array(t.Object({
@@ -294,7 +294,7 @@ export const openCodeProviderHandler = createRouter()
 	// Model Discovery
 	// ═══════════════════════════════════════
 
-	.http('engine:opencode-provider-fetch-models', {
+	.http('agents:opencode-provider-fetch-models', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({
 			models: t.Array(t.Object({ id: t.String(), name: t.Optional(t.String()) }))

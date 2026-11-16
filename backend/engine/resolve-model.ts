@@ -51,7 +51,7 @@ export interface GenerationTarget {
 export const GENERATION_SETTINGS = {
 	artifact: 'Settings → Models → Artifacts',
 	commit: 'Settings → Models → Commit message',
-	memory: 'Settings → Models → Memory',
+	memory: 'Settings → Memory',
 	assistant: 'Settings → Models'
 } as const;
 
@@ -116,7 +116,7 @@ export async function resolveGenerationTarget(
 	if (catalog.length === 0) {
 		throw new Error(
 			`${label} has no models available — it may not be signed in or configured. ` +
-			`Set it up in Settings → Engines → ${label}, then choose a model in ${settingsPath}.`
+			`Set it up in Settings → Agents → ${label}, then choose a model in ${settingsPath}.`
 		);
 	}
 

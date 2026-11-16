@@ -1,7 +1,7 @@
 <script lang="ts">
 	/**
 	 * Per-engine tool allowlist for subagents. Mirrors the "Permission overlay"
-	 * combobox in Settings → Profiles: engine tabs, each with a chip list + typed
+	 * combobox in Library → Toolsets: engine tabs, each with a chip list + typed
 	 * suggestions drawn from that engine's tool inventory.
 	 *
 	 * Tools are stored per engine (EngineType → comma-separated list; absent/empty
@@ -99,7 +99,7 @@
 	>
 		{#if configuredCount === 0}
 			<Icon name="lucide:wrench" class="w-4 h-4 text-slate-400 flex-shrink-0" />
-			<span class="flex-1 min-w-0 text-sm text-slate-500 dark:text-slate-400">All tools <span class="text-xs">— no per-engine restriction</span></span>
+			<span class="flex-1 min-w-0 text-sm text-slate-500 dark:text-slate-400">All tools <span class="text-xs">— no per-agent limit</span></span>
 		{:else}
 			<div class="flex-1 min-w-0 flex flex-wrap items-center gap-1.5">
 				{#each ENGINES as engine (engine.type)}

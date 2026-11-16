@@ -178,7 +178,7 @@ export class OpenCodeEngine implements AIEngine {
 		const client = await ensureClient();
 		const models = await fetchOpenCodeModels(client);
 		if (models.length === 0) {
-			throw new Error('Open Code is not configured. Add a provider in Settings → Engines → Open Code.');
+			throw new Error('Open Code is not configured. Add a provider in Settings → Agents → Open Code.');
 		}
 		return models;
 	}

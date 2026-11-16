@@ -24,7 +24,7 @@ async function disposeCopilotEngines(): Promise<void> {
 
 export const copilotAccountsHandler = createRouter()
 
-	.http('engine:copilot-accounts-list', {
+	.http('agents:copilot-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -48,7 +48,7 @@ export const copilotAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:copilot-accounts-add', {
+	.http('agents:copilot-accounts-add', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			token: t.String({ minLength: 1 })
@@ -84,7 +84,7 @@ export const copilotAccountsHandler = createRouter()
 		};
 	})
 
-	.http('engine:copilot-accounts-switch', {
+	.http('agents:copilot-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -93,7 +93,7 @@ export const copilotAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:copilot-accounts-delete', {
+	.http('agents:copilot-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -103,7 +103,7 @@ export const copilotAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:copilot-accounts-rename', {
+	.http('agents:copilot-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -113,7 +113,7 @@ export const copilotAccountsHandler = createRouter()
 
 	// Replace the stored PAT for an account. When the edited account is the
 	// active one, drop engine instances so the next stream picks up the token.
-	.http('engine:copilot-accounts-update-token', {
+	.http('agents:copilot-accounts-update-token', {
 		data: t.Object({ id: t.Number(), token: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {

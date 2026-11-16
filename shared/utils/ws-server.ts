@@ -288,8 +288,28 @@ export class WSRouter<
 	 */
 	private rateLimiter: ((conn: WSConnection, action: string, isRequest: boolean) => boolean) | null = null;
 
+	/**
+	 * Optional hook run after a request route succeeded — from a browser or
+	 * in-process (`invoke`). The server uses it to announce data changes to
+	 * every open device, whoever made them.
+	 */
+	private afterRequest: ((conn: WSConnection, action: string) => void) | null = null;
+
 	constructor() {
 		this.registerContextHandler();
+	}
+
+	setAfterRequest(fn: (conn: WSConnection, action: string) => void): void {
+		this.afterRequest = fn;
+	}
+
+	private notifyAfterRequest(conn: WSConnection, action: string): void {
+		if (!this.afterRequest) return;
+		try {
+			this.afterRequest(conn, action);
+		} catch (err) {
+			debug.warn('websocket', `After-request hook failed [${action}]:`, err);
+		}
 	}
 
 	setAuthMiddleware(fn: (conn: WSConnection, action: string) => Promise<{ allowed: boolean; error?: string }>): void {
@@ -511,6 +531,24 @@ export class WSRouter<
 	}
 
 	/**
+	 * Every request route with its schemas — the description the Clopen MCP
+	 * server's `api.describe` publishes, so an agent can call any route with
+	 * the right shape instead of guessing. Fire-and-forget routes (`on`) carry
+	 * no response schema.
+	 */
+	describeRoutes(): Array<{ action: string; kind: 'request' | 'event'; data: TSchema | null; response: TSchema | null }> {
+		const out: Array<{ action: string; kind: 'request' | 'event'; data: TSchema | null; response: TSchema | null }> = [];
+		for (const [action, route] of this.httpRoutes) {
+			out.push({ action, kind: 'request', data: route.dataSchema ?? null, response: route.responseSchema });
+		}
+		for (const [action, route] of this.routes) {
+			if (this.httpRoutes.has(action)) continue;
+			out.push({ action, kind: 'event', data: route.dataSchema ?? null, response: null });
+		}
+		return out.sort((a, b) => a.action.localeCompare(b.action));
+	}
+
+	/**
 	 * Run a route in-process for a connection, through the same auth gate and
 	 * request validation as a message from a browser — and return what the
 	 * handler returned instead of sending it. The rate limiter is skipped: an
@@ -536,7 +574,9 @@ export class WSRouter<
 				throw new Error(`Request validation failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
 			}
 		}
-		return route.handler({ conn, data: validated } as any);
+		const result = await route.handler({ conn, data: validated } as any);
+		if (httpRoute) this.notifyAfterRequest(conn, action);
+		return result;
 	}
 
 	/**
@@ -601,6 +641,7 @@ export class WSRouter<
 			// `t.Transform` in the codebase), so removing it cannot change a
 			// successful response by even one byte.
 			const validatedResponse = result;
+			this.notifyAfterRequest(conn, action);
 
 			// Check if response contains binary data
 			if (isBinaryAction(responseAction, validatedResponse)) {

@@ -49,6 +49,8 @@ export interface ChannelFile {
 	filename: string;
 	mime: string;
 	caption?: string;
+	/** Send as a file even when it is an image (a full-page screenshot would be shrunk past reading as a photo). */
+	asDocument?: boolean;
 }
 
 export interface ChannelPlatform {

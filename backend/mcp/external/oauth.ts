@@ -41,7 +41,11 @@ interface PendingFlow {
 	serverId: number;
 	codeVerifier: string;
 	record: OAuthRecord;
+	startedAt: number;
 }
+
+/** A sign-in not finished within this window is forgotten. */
+const PENDING_TTL_MS = 30 * 60_000;
 const pendingFlows = new Map<string, PendingFlow>();
 
 // ---------------------------------------------------------------------------
@@ -218,14 +222,20 @@ function withExpiry(record: OAuthRecord, token: TokenResponse): OAuthRecord {
  * remembers the PKCE verifier keyed by `state`, and returns the URL the user
  * must open. Completion arrives at the callback route (or the manual paste).
  */
-export async function startAuthorization(serverId: number, resourceUrl: string, wwwAuthenticate?: string): Promise<{ authorizationUrl: string }> {
+export async function startAuthorization(
+	serverId: number,
+	resourceUrl: string,
+	wwwAuthenticate?: string,
+	redirectUri: string = oauthRedirectUri()
+): Promise<{ authorizationUrl: string }> {
 	const disc = await discover(resourceUrl, wwwAuthenticate);
-	const redirectUri = oauthRedirectUri();
+	for (const [state, flow] of pendingFlows) if (Date.now() - flow.startedAt > PENDING_TTL_MS) pendingFlows.delete(state);
 
-	// Reuse a prior registration when present; otherwise register dynamically.
+	// Reuse a prior registration when it was made for this redirect; otherwise register dynamically.
 	const existing = loadOAuth(serverId);
-	let clientId = existing?.clientId;
-	let clientSecret = existing?.clientSecret;
+	const sameRedirect = existing?.redirectUri === redirectUri;
+	let clientId = sameRedirect ? existing?.clientId : undefined;
+	let clientSecret = sameRedirect ? existing?.clientSecret : undefined;
 	if (!clientId) {
 		if (!disc.registrationEndpoint) throw new Error('Server requires a pre-registered OAuth client (no dynamic registration)');
 		({ clientId, clientSecret } = await registerClient(disc.registrationEndpoint, redirectUri, disc.scope));
@@ -245,7 +255,7 @@ export async function startAuthorization(serverId: number, resourceUrl: string, 
 		scope: disc.scope,
 		resource: disc.resource
 	};
-	pendingFlows.set(state, { serverId, codeVerifier, record });
+	pendingFlows.set(state, { serverId, codeVerifier, record, startedAt: Date.now() });
 
 	const url = new URL(disc.authorizationEndpoint);
 	url.searchParams.set('response_type', 'code');
@@ -259,6 +269,11 @@ export async function startAuthorization(serverId: number, resourceUrl: string, 
 
 	debug.log('mcp', `🔐 OAuth flow started for server ${serverId} (state ${state.slice(0, 6)}…)`);
 	return { authorizationUrl: url.toString() };
+}
+
+/** Sign-ins still waiting for their callback. */
+export function pendingFlowCount(): number {
+	return pendingFlows.size;
 }
 
 /** Whether a `state` belongs to a known pending flow (callback validation). */

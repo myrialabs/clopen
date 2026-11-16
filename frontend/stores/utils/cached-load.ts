@@ -14,7 +14,7 @@
  * Because `fetch()` short-circuits on `loaded`, one failed request poisoned the
  * store for the rest of the session: nothing ever retried, and the only way back
  * was a code path that happened to call `refresh()` instead. That is exactly the
- * bug where the chat input reported "no accounts" until Settings → Engines was
+ * bug where the chat input reported "no accounts" until Settings → Agents was
  * opened — Settings forces a refresh, so it looked like a fix when it was really
  * just the one caller that bypassed the poisoned cache.
  *

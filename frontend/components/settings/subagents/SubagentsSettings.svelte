@@ -12,7 +12,7 @@
 		type InstalledSubagent
 	} from '$frontend/stores/features/subagents.svelte';
 	import type { EngineValueMap } from '$frontend/stores/features/artifacts';
-	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 
 	interface Props {
@@ -187,7 +187,7 @@
 <div class="space-y-6">
 	{#if showHeader}
 		<div>
-			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Subagents</h3>
+			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Specialists</h3>
 			<p class="text-sm text-slate-600 dark:text-slate-500">
 				Specialized agents with their own tools, model, and instructions.
 			</p>
@@ -304,7 +304,7 @@
 			<ArtifactGenerateBar
 				artifactType="subagent"
 				placeholder={'Describe the subagent, e.g. "reviews diffs for correctness bugs"'}
-				onNavigateArtifacts={() => { closeEditor(); setActiveSection('artifacts'); }}
+				onNavigateArtifacts={() => { closeEditor(); openSettingsModal('models'); }}
 				onGenerated={(f) => {
 					if (typeof f.name === 'string') edName = f.name;
 					if (typeof f.description === 'string') edDescription = f.description;

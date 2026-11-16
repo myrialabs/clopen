@@ -69,7 +69,7 @@ export const getEngineInfo = (engineType: EngineType): EngineInfo | undefined =>
 // Per-engine data (model lists, provider presets, etc.) lives with the adapter
 // in `backend/engine/adapters/<engine>/`. The frontend never imports those
 // modules directly — it loads what it needs at runtime via WS endpoints
-// (`models:list`, `engine:qwen-presets-list`, …).
+// (`models:list`, `agents:qwen-presets-list`, …).
 // ============================================================================
 
 // ============================================================================
@@ -154,21 +154,43 @@ export function getModelTags(model: EngineModel): string[] {
 	return tags;
 }
 
+/** True when a model is free to run: both token prices are zero. */
+export function isFreeModel(model: EngineModel): boolean {
+	return model.cost.input === 0 && model.cost.output === 0;
+}
+
 /**
- * Pick the best default model from a list: the most capable one, measured by
- * how many capability/modality badges it exposes (see getModelTags). Ties keep
- * the earlier model, preserving the provider's original ordering. Returns
- * undefined for an empty list.
+ * Pick the best default model from a list.
+ *
+ * Ranked by what a first-time user (and the Clopen assistant, which drives
+ * every other agent through tools) needs most, in order: it can call tools,
+ * it is free — no account, no bill, usable the moment Clopen is installed —
+ * then the most capable by capability/modality badges (see getModelTags), and
+ * finally the larger context window. Ties keep the earlier model, preserving
+ * the provider's original ordering. Returns undefined for an empty list.
  */
 export function pickDefaultModel(models: EngineModel[]): EngineModel | undefined {
+	const rank = (model: EngineModel): number[] => [
+		model.capabilities.tools ? 1 : 0,
+		isFreeModel(model) ? 1 : 0,
+		getModelTags(model).length,
+		model.limit.input
+	];
 	let best: EngineModel | undefined;
-	let bestCount = -1;
+	let bestRank: number[] | null = null;
 	for (const model of models) {
-		const count = getModelTags(model).length;
-		if (count > bestCount) {
+		const current = rank(model);
+		if (!bestRank || compareRanks(current, bestRank) > 0) {
 			best = model;
-			bestCount = count;
+			bestRank = current;
 		}
 	}
 	return best;
+}
+
+function compareRanks(a: number[], b: number[]): number {
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] !== b[i]) return a[i] - b[i];
+	}
+	return 0;
 }

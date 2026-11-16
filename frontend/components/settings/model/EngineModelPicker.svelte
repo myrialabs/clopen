@@ -3,7 +3,7 @@
 	import { ENGINES, getModelTags } from '$shared/constants/engines';
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import { formatProvider, formatTokens } from '$frontend/utils/format';
-	import { focusEngineSection, openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { focusEngineSection, openAgentsInstall } from '$frontend/stores/ui/settings-modal.svelte';
 	import { settings, setReasoningDefault } from '$frontend/stores/features/settings.svelte';
 
 	interface Props {
@@ -104,35 +104,26 @@
 
 </script>
 
-<!-- Engine Selection -->
-<div class="mb-6">
-	<label class="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-2">Engine</label>
-	<div class="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+<!-- Engine: small chips — the real choice is the model below. -->
+<div class="mb-4">
+	<span class="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">Engine</span>
+	<div class="flex flex-wrap gap-1.5" role="radiogroup" aria-label="Engine">
 		{#each ENGINES as eng (eng.type)}
 			{@const isActive = displayEngine === eng.type}
 			<button
 				type="button"
-				class="flex items-center gap-2.5 p-3 overflow-hidden border-2 rounded-xl text-left cursor-pointer transition-all duration-200
+				role="radio"
+				aria-checked={isActive}
+				title={eng.description}
+				class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-medium cursor-pointer transition-colors
 					{isActive
-					? 'border-violet-600 bg-gradient-to-br from-violet-500/10 to-purple-500/5 dark:from-violet-500/12 dark:to-purple-500/8'
-					: 'border-slate-200 dark:border-slate-800 bg-slate-100/80 dark:bg-slate-800/80 hover:border-violet-500/20 dark:hover:border-violet-500/35'}"
+					? 'border-violet-500 bg-violet-500/10 text-violet-700 dark:text-violet-300'
+					: 'border-slate-200 dark:border-slate-700 bg-transparent text-slate-600 dark:text-slate-300 hover:border-violet-500/40'}"
 				onclick={() => handleEngineChange(eng.type)}
 			>
-				<div class="shrink-0">
-					<div class="flex dark:hidden items-center justify-center w-5 h-5">{@html eng.icon.light}</div>
-					<div class="hidden dark:flex items-center justify-center w-5 h-5">{@html eng.icon.dark}</div>
-				</div>
-				<div class="flex-1 min-w-0">
-					<div class="font-bold text-sm text-slate-900 dark:text-slate-100 truncate">{eng.name}</div>
-					<div class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">{eng.description}</div>
-				</div>
-				{#if isActive}
-					<div class="flex items-center justify-center w-5 h-5 bg-gradient-to-br from-violet-600 to-purple-600 rounded-full text-white ml-auto flex-shrink-0">
-						<svg viewBox="0 0 24 24" fill="none" class="w-3 h-3" aria-hidden="true">
-							<path d="M5 13l4 4L19 7" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" />
-						</svg>
-					</div>
-				{/if}
+				<span class="flex dark:hidden items-center justify-center w-4 h-4">{@html eng.icon.light}</span>
+				<span class="hidden dark:flex items-center justify-center w-4 h-4">{@html eng.icon.dark}</span>
+				{eng.name}
 			</button>
 		{/each}
 	</div>
@@ -140,12 +131,7 @@
 
 <!-- Model Selection -->
 <div>
-	<div class="mb-1.5">
-		<label class="text-sm font-semibold text-slate-700 dark:text-slate-300">Model</label>
-	</div>
-	<p class="text-sm text-slate-600 dark:text-slate-500 mb-3">
-		Select the model for the {engineMeta?.name || 'selected'} engine
-	</p>
+	<span class="block text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400 mb-1.5">Model</span>
 
 	<!-- Search -->
 	<div class="relative mb-3">
@@ -199,11 +185,11 @@
 						<p class="text-sm text-amber-900 dark:text-amber-100">
 							{engineError}
 						</p>
-						{#if engineError && engineError.includes('Settings → Stack')}
+						{#if engineError && engineError.includes('Settings → Agents → Install')}
 							<button
 								type="button"
 								class="mt-2.5 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"
-								onclick={() => openSettingsModal('stack')}
+								onclick={() => openAgentsInstall()}
 							>
 								Open Stack
 							</button>

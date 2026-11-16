@@ -751,7 +751,7 @@ function resolveCopilotAccount(accountId?: number) {
 		? engineQueries.getAccount(accountId)
 		: engineQueries.getActiveAccountForEngine('copilot');
 	if (!account) {
-		throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Engines → Copilot.');
+		throw new Error('Copilot is not configured. Add a Personal Access Token in Settings → Agents → Copilot.');
 	}
 	return account;
 }

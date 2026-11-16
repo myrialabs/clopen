@@ -45,6 +45,9 @@ import { browserMcpControl } from '../preview';
 import { extractMessageText } from '../snapshot/helpers';
 import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
 import { buildMemoryContext, withMemoryContext } from '../memory/context';
+import { buildAssistantBrief, withAssistantBrief } from '../assistant/brief';
+import { routeReplyToOpenCard } from '../assistant/cards';
+import { isAssistantProject } from '$shared/utils/assistant-project';
 import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
 import { resolveGitEnv } from '$backend/git/identity';
 import { debug } from '$shared/utils/logger';
@@ -813,6 +816,26 @@ class StreamManager extends EventEmitter {
 				}
 			} catch (error) {
 				debug.warn('memory', 'Memory injection failed, continuing without it:', error);
+			}
+
+			// ── Clopen assistant brief ──
+			// In Clopen's own chat the agent IS the assistant: who it is, how
+			// autonomous it may be, how it works through the `run` tool, and a
+			// snapshot of missions, the Inbox and jobs. Prepended to the engine
+			// prompt only, like the memory block, so the timeline stays clean.
+			try {
+				const project = projectId ? projectQueries.getById(projectId) : null;
+				if (project && isAssistantProject(project)) {
+					// A reply to a question that is waiting on the owner goes to that question first.
+					const said = enginePrompt.content
+						.filter((block) => block.type === 'text')
+						.map((block) => (block as { text: string }).text)
+						.join('\n');
+					const answered = chatSessionId ? await routeReplyToOpenCard(chatSessionId, said).catch(() => null) : null;
+					enginePrompt = withAssistantBrief(enginePrompt, [buildAssistantBrief(chatSessionId ?? null), answered].filter(Boolean).join('\n'));
+				}
+			} catch (error) {
+				debug.warn('assistant', 'Assistant brief injection failed, continuing without it:', error);
 			}
 
 			// Detect orphaned user messages and prepend context (claude-code only).

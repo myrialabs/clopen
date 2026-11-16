@@ -3,7 +3,7 @@
  *
  * Shared reactive store for Cline accounts. Each account is tied to a Cline
  * provider (Anthropic, OpenAI, the Cline account, …) and an auth method
- * (api_key or oauth). Fetches from backend via `engine:cline-accounts-list`.
+ * (api_key or oauth). Fetches from backend via `agents:cline-accounts-list`.
  */
 
 import ws from '$frontend/utils/ws';
@@ -62,7 +62,7 @@ export const clineAccountsStore = {
  * the session.
  */
 async function load(): Promise<void> {
-	const result = await ws.http('engine:cline-accounts-list', {});
+	const result = await ws.http('agents:cline-accounts-list', {});
 	accounts = result.accounts;
 	debug.log('settings', `Cline accounts loaded: ${accounts.length}`);
 }

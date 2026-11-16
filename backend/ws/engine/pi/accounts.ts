@@ -6,7 +6,7 @@
  * type, interaction)` — the provider owns its prompts, so it can ask for exactly
  * what it needs (e.g. Cloudflare wants an account ID + key, not just a key). The
  * interaction's `notify`/`prompt` callbacks are relayed to the client over WS;
- * the client answers prompts via `engine:pi-account-login-submit`. Passing
+ * the client answers prompts via `agents:pi-account-login-submit`. Passing
  * `reauthAccountId` re-authenticates an existing account in place.
  *
  * Every account's `engine_accounts.credential` stores a JSON wrapper
@@ -93,7 +93,7 @@ export const piAccountsHandler = createRouter()
 
 	// ═══ CRUD ═══
 
-	.http('engine:pi-accounts-list', {
+	.http('agents:pi-accounts-list', {
 		data: t.Object({}),
 		response: t.Object({
 			accounts: t.Array(t.Object({
@@ -133,7 +133,7 @@ export const piAccountsHandler = createRouter()
 
 	// Add or edit an API-key account from an all-fields-at-once form. A blank
 	// secret field on edit keeps the stored value; blank env fields keep theirs.
-	.http('engine:pi-accounts-save', {
+	.http('agents:pi-accounts-save', {
 		data: t.Object({
 			accountId: t.Optional(t.Number()),
 			name: t.String({ minLength: 1 }),
@@ -179,7 +179,7 @@ export const piAccountsHandler = createRouter()
 		return { success: true, accountId };
 	})
 
-	.http('engine:pi-accounts-switch', {
+	.http('agents:pi-accounts-switch', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -188,7 +188,7 @@ export const piAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:pi-accounts-delete', {
+	.http('agents:pi-accounts-delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -198,7 +198,7 @@ export const piAccountsHandler = createRouter()
 		return { success: true };
 	})
 
-	.http('engine:pi-accounts-rename', {
+	.http('agents:pi-accounts-rename', {
 		data: t.Object({ id: t.Number(), name: t.String({ minLength: 1 }) }),
 		response: t.Object({ success: t.Boolean() })
 	}, async ({ data }) => {
@@ -208,7 +208,7 @@ export const piAccountsHandler = createRouter()
 
 	// ═══ Interactive / OAuth login (event-driven) ═══
 
-	.on('engine:pi-account-login-start', {
+	.on('agents:pi-account-login-start', {
 		data: t.Object({
 			name: t.String({ minLength: 1 }),
 			provider: t.String({ minLength: 1 }),
@@ -227,18 +227,18 @@ export const piAccountsHandler = createRouter()
 			pendingPrompt: null,
 			authUrl: null,
 			timer: setTimeout(() => {
-				ws.emit.user(userId, 'engine:pi-account-login-error', { loginId, message: 'Login timed out after 15 minutes' });
+				ws.emit.user(userId, 'agents:pi-account-login-error', { loginId, message: 'Login timed out after 15 minutes' });
 				cleanupLogin(loginId);
 			}, LOGIN_TIMEOUT_MS),
 		};
 		loginSessions.set(loginId, entry);
-		ws.emit.user(userId, 'engine:pi-account-login-started', { loginId });
+		ws.emit.user(userId, 'agents:pi-account-login-started', { loginId });
 
 		const interaction: AuthInteraction = {
 			signal: controller.signal,
 			notify: (event: AuthEvent) => {
 				if (event.type === 'auth_url') entry.authUrl = event.url;
-				ws.emit.user(userId, 'engine:pi-account-login-event', {
+				ws.emit.user(userId, 'agents:pi-account-login-event', {
 					loginId,
 					kind: event.type,
 					message: 'message' in event ? event.message : undefined,
@@ -259,9 +259,9 @@ export const piAccountsHandler = createRouter()
 						if (entry.pendingPrompt?.resolve !== resolve) return;
 						entry.pendingPrompt = null;
 						reject(new Error('Prompt closed'));
-						ws.emit.user(userId, 'engine:pi-account-login-prompt-closed', { loginId });
+						ws.emit.user(userId, 'agents:pi-account-login-prompt-closed', { loginId });
 					}, { once: true });
-					const emitPrompt = (optional: boolean) => ws.emit.user(userId, 'engine:pi-account-login-prompt', {
+					const emitPrompt = (optional: boolean) => ws.emit.user(userId, 'agents:pi-account-login-prompt', {
 						loginId,
 						kind: prompt.type,
 						message: prompt.message,
@@ -304,12 +304,12 @@ export const piAccountsHandler = createRouter()
 			}
 			await disposePiEngines();
 
-			ws.emit.user(userId, 'engine:pi-account-login-complete', { loginId, accountId });
+			ws.emit.user(userId, 'agents:pi-account-login-complete', { loginId, accountId });
 			cleanupLogin(loginId);
 		} catch (error) {
 			if (!entry.disposed) {
 				debug.warn('engine', `Pi login failed: ${error instanceof Error ? error.message : String(error)}`);
-				ws.emit.user(userId, 'engine:pi-account-login-error', {
+				ws.emit.user(userId, 'agents:pi-account-login-error', {
 					loginId,
 					message: explainLoginError(data.provider, data.type, error),
 				});
@@ -318,7 +318,7 @@ export const piAccountsHandler = createRouter()
 		}
 	})
 
-	.on('engine:pi-account-login-submit', {
+	.on('agents:pi-account-login-submit', {
 		data: t.Object({ loginId: t.String(), value: t.String() })
 	}, async ({ data }) => {
 		let entry: PiLoginSession;
@@ -332,7 +332,7 @@ export const piAccountsHandler = createRouter()
 		pending?.resolve(data.value);
 	})
 
-	.on('engine:pi-account-login-cancel', {
+	.on('agents:pi-account-login-cancel', {
 		data: t.Object({ loginId: t.String() })
 	}, async ({ data }) => {
 		try {
@@ -345,8 +345,8 @@ export const piAccountsHandler = createRouter()
 
 	// ═══ Event declarations (Server → Client) ═══
 
-	.emit('engine:pi-account-login-started', t.Object({ loginId: t.String() }))
-	.emit('engine:pi-account-login-event', t.Object({
+	.emit('agents:pi-account-login-started', t.Object({ loginId: t.String() }))
+	.emit('agents:pi-account-login-event', t.Object({
 		loginId: t.String(),
 		kind: t.String(),
 		message: t.Optional(t.String()),
@@ -356,7 +356,7 @@ export const piAccountsHandler = createRouter()
 		verificationUri: t.Optional(t.String()),
 		links: t.Optional(t.Array(t.Object({ url: t.String(), label: t.Optional(t.String()) }))),
 	}))
-	.emit('engine:pi-account-login-prompt', t.Object({
+	.emit('agents:pi-account-login-prompt', t.Object({
 		loginId: t.String(),
 		kind: t.String(),
 		message: t.String(),
@@ -369,6 +369,6 @@ export const piAccountsHandler = createRouter()
 		/** A manual fallback the flow can complete without (its loopback callback is listening). */
 		optional: t.Boolean(),
 	}))
-	.emit('engine:pi-account-login-prompt-closed', t.Object({ loginId: t.String() }))
-	.emit('engine:pi-account-login-complete', t.Object({ loginId: t.String(), accountId: t.Number() }))
-	.emit('engine:pi-account-login-error', t.Object({ loginId: t.String(), message: t.String() }));
+	.emit('agents:pi-account-login-prompt-closed', t.Object({ loginId: t.String() }))
+	.emit('agents:pi-account-login-complete', t.Object({ loginId: t.String(), accountId: t.Number() }))
+	.emit('agents:pi-account-login-error', t.Object({ loginId: t.String(), message: t.String() }));

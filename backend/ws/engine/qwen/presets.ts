@@ -21,7 +21,7 @@ const PRESET_LITERALS = t.Union([
 ]);
 
 export const qwenPresetsHandler = createRouter()
-	.http('engine:qwen-presets-list', {
+	.http('agents:qwen-presets-list', {
 		data: t.Object({}),
 		response: t.Object({
 			presets: t.Array(t.Object({

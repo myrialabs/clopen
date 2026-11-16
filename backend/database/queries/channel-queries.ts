@@ -96,6 +96,10 @@ export const channelLinkQueries = {
 			.get(accountId, conversationId) as ChannelLinkRow | null) ?? null;
 	},
 
+	listAll(): ChannelLinkRow[] {
+		return getDatabase().prepare('SELECT * FROM channel_links ORDER BY created_at').all() as ChannelLinkRow[];
+	},
+
 	listByAccount(accountId: string): ChannelLinkRow[] {
 		return getDatabase()
 			.prepare('SELECT * FROM channel_links WHERE account_id = ? ORDER BY created_at')
@@ -103,7 +107,8 @@ export const channelLinkQueries = {
 	},
 
 	/**
-	 * Pair a chat. Re-pairing the same chat moves it rather than failing:
+	 * Pair a chat — the one chat Clopen talks to; another one linked before is
+	 * unlinked. Re-pairing the same chat moves it rather than failing:
 	 * whoever just proved they hold the chat AND a fresh code from a Clopen
 	 * session holds it now, and nothing the previous holder was talking to
 	 * carries over.
@@ -132,6 +137,8 @@ export const channelLinkQueries = {
 			}
 			return this.getById(existing.id)!;
 		}
+		// Clopen has one owner and one Telegram: linking a chat replaces the one linked before.
+		db.prepare('DELETE FROM channel_links').run();
 		const id = crypto.randomUUID();
 		db.prepare(
 			`INSERT INTO channel_links
@@ -233,6 +240,27 @@ export const channelMessageQueries = {
 		return (getDatabase()
 			.prepare("SELECT * FROM channel_messages WHERE link_id = ? AND kind = 'user' AND clopen_message_id = ? LIMIT 1")
 			.get(linkId, clopenMessageId) as ChannelMessageRow | null) ?? null;
+	},
+
+	/** The messages that showed a card (an inbox item) in chats. */
+	/** The message a chat got for a Clopen row (a mirrored owner message). */
+	getAnswerFor(linkId: string, clopenMessageId: string): ChannelMessageRow | null {
+		return (getDatabase()
+			.prepare("SELECT * FROM channel_messages WHERE link_id = ? AND kind = 'answer' AND clopen_message_id = ? ORDER BY created_at DESC LIMIT 1")
+			.get(linkId, clopenMessageId) as ChannelMessageRow | undefined) ?? null;
+	},
+
+	forCard(itemId: string): ChannelMessageRow[] {
+		return getDatabase()
+			.prepare("SELECT * FROM channel_messages WHERE kind = 'menu' AND json_extract(payload, '$.card') = ? AND state = 'open'")
+			.all(itemId) as ChannelMessageRow[];
+	},
+
+	/** The owner's own messages in a session, as sent from chats. */
+	userMessagesForSession(chatSessionId: string): ChannelMessageRow[] {
+		return getDatabase()
+			.prepare("SELECT * FROM channel_messages WHERE chat_session_id = ? AND kind = 'user'")
+			.all(chatSessionId) as ChannelMessageRow[];
 	},
 
 	setPayload(id: string, payload: unknown): void {

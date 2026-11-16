@@ -25,10 +25,11 @@
  */
 
 import { getMemoryConfig } from './config';
+import { sharedMemoryModel } from './shared-model';
 import { embedder, getEmbeddingInstallStatus, type EmbeddingInstallStatus } from './embedding';
 
 export interface MemoryReadiness {
-	/** Master switch from Settings → Infrastructure → Memory. */
+	/** Master switch from Settings → Memory. */
 	enabled: boolean;
 	/** Retrieval, automatic injection and the MCP `recall` action. */
 	canRecall: boolean;
@@ -48,7 +49,7 @@ export function getMemoryReadiness(): MemoryReadiness {
 	const config = getMemoryConfig();
 	const install = getEmbeddingInstallStatus();
 	const embeddingReady = embedder.status().ready;
-	const modelConfigured = Boolean(config.model?.modelId);
+	const modelConfigured = Boolean(config.model?.modelId || sharedMemoryModel());
 
 	const blockers: MemoryBlocker[] = [];
 	// The artifact comes first: it is the one the user cannot fix by choosing

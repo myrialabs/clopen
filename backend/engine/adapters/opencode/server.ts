@@ -970,14 +970,14 @@ async function spawnServerOnce(
 	await adoptLegacyScopeDir(plan.scopeKey, dataDir);
 
 	// The CLI lives in clopen's managed stack dir (or, failing that, on the
-	// user's PATH); `resolveEngineCli` is the same lookup Settings → Stack
+	// user's PATH); `resolveEngineCli` is the same lookup Settings → Agents → Install
 	// reports, so an engine shown as installed is always one we can spawn.
-	// The literal "Settings → Stack" routes the chat/model-picker error to the
+	// The literal "Settings → Agents → Install" routes the chat/model-picker error to the
 	// one place that fixes it.
 	const cli = await resolveEngineCli('opencode');
 	if (!cli) {
 		throw new Error(
-			'Open Code is missing its CLI. Open Settings → Stack to install it before using this engine.'
+			'Open Code is missing its CLI. Open Settings → Agents → Install to install it before using this engine.'
 		);
 	}
 	const args = [cli.path, 'serve', `--hostname=${OPENCODE_HOST}`, `--port=${port}`];

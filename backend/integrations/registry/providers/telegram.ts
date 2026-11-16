@@ -39,7 +39,7 @@ export default defineProvider({
 			name: 'botToken',
 			label: 'Bot token',
 			placeholder: '123456789:AA…',
-			help: 'Message @BotFather on Telegram, send /newbot, and paste the token it replies with. Then link your chat from Settings → Chat Apps.',
+			help: 'Message @BotFather on Telegram, send /newbot, and paste the token it replies with. Then link your chat from Settings → Messaging.',
 			isSecret: true,
 			isRequired: true
 		}

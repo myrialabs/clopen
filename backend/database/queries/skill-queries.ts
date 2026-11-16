@@ -2,7 +2,7 @@
  * Skill Queries
  *
  * CRUD for user-managed Agent Skills — the single artifact behind both model-
- * invoked skills and user-invoked `/slash` prompts (Settings → Skills). The
+ * invoked skills and user-invoked `/slash` prompts (Library → Skills). The
  * `skills` table holds only METADATA + the enable toggle; the actual SKILL.md
  * (and any bundled resources) live on disk in the canonical store under
  * `{clopenDir}/skills/<slug>/` (see `backend/skills/store.ts`).

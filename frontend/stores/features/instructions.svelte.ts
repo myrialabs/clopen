@@ -1,7 +1,7 @@
 /**
  * Instructions Store
  *
- * Reactive store for Settings → Instructions. Manages the Clopen-managed
+ * Reactive store for Library → Rules. Manages the Clopen-managed
  * instruction block for the global scope (and, when given, per project). The
  * block is injected into each engine's memory file (CLAUDE.md / AGENTS.md / …)
  * as a marker-region, so hand-written content is preserved.
@@ -26,7 +26,7 @@ export const instructionsStore = {
 
 	async fetchGlobal(): Promise<InstructionData | null> {
 		try {
-			const result = await ws.http('instructions:get-global', {});
+			const result = await ws.http('rules:get-global', {});
 			global = result.instruction;
 			return global;
 		} catch (error) {
@@ -36,13 +36,13 @@ export const instructionsStore = {
 	},
 
 	async saveGlobal(content: string, enabled: boolean): Promise<void> {
-		const result = await ws.http('instructions:save-global', { content, enabled });
+		const result = await ws.http('rules:save-global', { content, enabled });
 		global = result.instruction;
 	},
 
 	async fetchProject(projectId: string): Promise<InstructionData | null> {
 		try {
-			const result = await ws.http('instructions:get-project', { projectId });
+			const result = await ws.http('rules:get-project', { projectId });
 			return result.instruction;
 		} catch (error) {
 			debug.error('settings', 'Failed to load project instructions:', error);
@@ -51,7 +51,7 @@ export const instructionsStore = {
 	},
 
 	async saveProject(projectId: string, content: string, enabled: boolean): Promise<InstructionData> {
-		const result = await ws.http('instructions:save-project', { projectId, content, enabled });
+		const result = await ws.http('rules:save-project', { projectId, content, enabled });
 		return result.instruction;
 	},
 

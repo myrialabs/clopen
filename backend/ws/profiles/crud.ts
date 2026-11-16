@@ -1,5 +1,5 @@
 /**
- * Profiles Handlers (Settings → Profiles) + per-session picker + project default.
+ * Profiles Handlers (Library → Toolsets) + per-session picker + project default.
  *
  *   - profiles:list / get / inventory / create / update / delete
  *   - profiles:get-permissions / save-permissions
@@ -51,96 +51,96 @@ const PERMISSION_OVERLAY_SCHEMA = t.Object({
 });
 
 export const profilesCrudHandler = createRouter()
-	.http('profiles:list', {
+	.http('toolsets:list', {
 		data: t.Object({}),
 		response: t.Object({ profiles: t.Array(PROFILE_SCHEMA) })
 	}, () => {
-		debug.log('path', 'profiles:list');
+		debug.log('path', 'toolsets:list');
 		return { profiles: profileService.list() };
 	})
-	.http('profiles:get', {
+	.http('toolsets:get', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ profile: PROFILE_SCHEMA })
 	}, ({ data }) => {
-		debug.log('path', `profiles:get ${data.id}`);
+		debug.log('path', `toolsets:get ${data.id}`);
 		const profile = profileService.get(data.id);
 		if (!profile) throw new Error('Profile not found');
 		return { profile };
 	})
-	.http('profiles:inventory', {
+	.http('toolsets:inventory', {
 		data: t.Object({}),
 		response: t.Object({ skill: INVENTORY_ENTRY, subagent: INVENTORY_ENTRY, mcp: INVENTORY_ENTRY })
 	}, () => {
-		debug.log('path', 'profiles:inventory');
+		debug.log('path', 'toolsets:inventory');
 		return profileService.inventory();
 	})
-	.http('profiles:create', {
+	.http('toolsets:create', {
 		data: t.Object({ name: t.String(), description: t.String(), items: ITEM_INPUT_SCHEMA }),
 		response: t.Object({ profile: PROFILE_SCHEMA })
 	}, ({ data }) => {
-		debug.log('path', `profiles:create ${data.name}`);
+		debug.log('path', `toolsets:create ${data.name}`);
 		if (!data.name.trim()) throw new Error('A profile name is required');
 		return { profile: profileService.create(data.name.trim(), data.description, data.items) };
 	})
-	.http('profiles:update', {
+	.http('toolsets:update', {
 		data: t.Object({ id: t.Number(), name: t.String(), description: t.String(), items: ITEM_INPUT_SCHEMA }),
 		response: t.Object({ profile: PROFILE_SCHEMA })
 	}, ({ data }) => {
-		debug.log('path', `profiles:update ${data.id}`);
+		debug.log('path', `toolsets:update ${data.id}`);
 		if (!data.name.trim()) throw new Error('A profile name is required');
 		return { profile: profileService.update(data.id, data.name.trim(), data.description, data.items) };
 	})
-	.http('profiles:delete', {
+	.http('toolsets:delete', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ success: t.Boolean() })
 	}, ({ data }) => {
-		debug.log('path', `profiles:delete ${data.id}`);
+		debug.log('path', `toolsets:delete ${data.id}`);
 		profileService.remove(data.id);
 		return { success: true };
 	})
 
 	// ── Per-profile permission overlay (Fase 3) ────────────────────────────────
-	.http('profiles:get-permissions', {
+	.http('toolsets:get-permissions', {
 		data: t.Object({ id: t.Number() }),
 		response: t.Object({ sets: t.Array(PERMISSION_OVERLAY_SCHEMA) })
 	}, ({ data }) => {
-		debug.log('path', `profiles:get-permissions ${data.id}`);
+		debug.log('path', `toolsets:get-permissions ${data.id}`);
 		const sets = permissionService.listForProfile(data.id).map(s => ({ engine: s.engine, allow: s.allow, deny: s.deny }));
 		return { sets };
 	})
-	.http('profiles:save-permissions', {
+	.http('toolsets:save-permissions', {
 		data: t.Object({ id: t.Number(), engine: t.String(), allow: t.Array(t.String()), deny: t.Array(t.String()) }),
 		response: t.Object({ success: t.Boolean() })
 	}, ({ data }) => {
-		debug.log('path', `profiles:save-permissions ${data.id}/${data.engine}`);
+		debug.log('path', `toolsets:save-permissions ${data.id}/${data.engine}`);
 		permissionService.save('profile' as PermissionScope, null, data.id, data.engine as EngineType, data.allow, data.deny);
 		return { success: true };
 	})
 
 	// ── Project default (shared) ───────────────────────────────────────────────
-	.http('profiles:set-project-default', {
+	.http('toolsets:set-project-default', {
 		data: t.Object({ projectId: t.String(), profileId: t.Union([t.Number(), t.Null()]) }),
 		response: t.Object({ success: t.Boolean() })
 	}, ({ data }) => {
-		debug.log('path', `profiles:set-project-default ${data.projectId}`);
+		debug.log('path', `toolsets:set-project-default ${data.projectId}`);
 		projectQueries.setDefaultProfileId(data.projectId, data.profileId);
 		return { success: true };
 	})
 
 	// ── Per-session picker + default read ──────────────────────────────────────
-	.http('profiles:available', {
+	.http('toolsets:available', {
 		data: t.Object({}),
 		response: t.Object({
 			profiles: t.Array(t.Object({ id: t.Number(), slug: t.String(), name: t.String(), description: t.String() }))
 		})
 	}, () => {
-		debug.log('path', 'profiles:available');
+		debug.log('path', 'toolsets:available');
 		return { profiles: profileService.available() };
 	})
-	.http('profiles:project-default', {
+	.http('toolsets:project-default', {
 		data: t.Object({ projectId: t.String() }),
 		response: t.Object({ profileId: t.Union([t.Number(), t.Null()]) })
 	}, ({ data }) => {
-		debug.log('path', `profiles:project-default ${data.projectId}`);
+		debug.log('path', `toolsets:project-default ${data.projectId}`);
 		return { profileId: projectQueries.getDefaultProfileId(data.projectId) };
 	});

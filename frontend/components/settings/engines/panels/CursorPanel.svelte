@@ -52,7 +52,7 @@
 		cursorAddStep = 'saving';
 		cursorAddError = '';
 		try {
-			await ws.http('engine:cursor-accounts-add', {
+			await ws.http('agents:cursor-accounts-add', {
 				name: cursorAddName.trim(),
 				apiKey: cursorAddKey.trim()
 			});
@@ -75,7 +75,7 @@
 
 	async function switchCursorAccount(id: number) {
 		try {
-			await ws.http('engine:cursor-accounts-switch', { id });
+			await ws.http('agents:cursor-accounts-switch', { id });
 			await cursorAccountsStore.refresh();
 			await refreshCursorStatus();
 			await modelStore.refreshModels('cursor');
@@ -92,7 +92,7 @@
 	async function deleteCursorAccount() {
 		if (cursorDeleteTargetId === null) return;
 		try {
-			await ws.http('engine:cursor-accounts-delete', { id: cursorDeleteTargetId });
+			await ws.http('agents:cursor-accounts-delete', { id: cursorDeleteTargetId });
 			await cursorAccountsStore.refresh();
 			await refreshCursorStatus();
 		} catch {
@@ -110,9 +110,9 @@
 		if (cursorRenamingId === null || !cursorRenameValue.trim()) return;
 		const id = cursorRenamingId;
 		try {
-			await ws.http('engine:cursor-accounts-rename', { id, name: cursorRenameValue.trim() });
+			await ws.http('agents:cursor-accounts-rename', { id, name: cursorRenameValue.trim() });
 			const apiKey = cursorRenameKey.trim();
-			if (apiKey) await ws.http('engine:cursor-accounts-update-key', { id, apiKey });
+			if (apiKey) await ws.http('agents:cursor-accounts-update-key', { id, apiKey });
 			cursorRenamingId = null;
 			cursorRenameValue = '';
 			cursorRenameKey = '';

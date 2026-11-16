@@ -125,7 +125,7 @@ export const telegramPlatform: ChannelPlatform = {
 
 	renderFile(file: ChannelFile) {
 		// GIFs become silent videos as a photo; a document keeps them intact.
-		const asPhoto = PHOTO_TYPES.has(file.mime) && file.data.byteLength <= MAX_PHOTO;
+		const asPhoto = !file.asDocument && PHOTO_TYPES.has(file.mime) && file.data.byteLength <= MAX_PHOTO;
 		const mediaType: MediaType = asPhoto ? 'image' : 'document';
 		const caption = file.caption ? (file.caption.length > MAX_CAPTION ? `${file.caption.slice(0, MAX_CAPTION - 1)}…` : file.caption) : undefined;
 		return { content: media({ mediaType, data: file.data, mime: file.mime, filename: file.filename, caption }) };

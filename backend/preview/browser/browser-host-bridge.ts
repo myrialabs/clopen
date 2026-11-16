@@ -20,8 +20,8 @@
 
 import { EventEmitter } from 'events';
 import { randomUUID } from 'crypto';
-import { mkdir, readFile, rm, writeFile } from 'fs/promises';
-import { join } from 'path';
+import { mkdir, readFile, rm, stat, writeFile } from 'fs/promises';
+import { basename, join } from 'path';
 import type { CDPSession, Page } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import { getClopenDir } from '$backend/utils/paths';
@@ -132,12 +132,61 @@ const REQUEST_TIMEOUT_MS: Record<HostRequestKind, number> = {
  */
 const MAX_RELAYED_DOWNLOAD_BYTES = 32 * 1024 * 1024;
 
+/** A download kept on this machine for an agent. */
+export interface CapturedDownload {
+	path: string;
+	filename: string;
+	size: number;
+	url: string;
+}
+
+/** `name.pdf`, or `name (2).pdf` when that is taken. */
+async function uniquePath(dir: string, filename: string): Promise<string> {
+	const safe = filename.replace(/[\\/:*?"<>|]+/g, '_').slice(0, 180) || 'download';
+	const dot = safe.lastIndexOf('.');
+	const [stem, ext] = dot > 0 ? [safe.slice(0, dot), safe.slice(dot)] : [safe, ''];
+	for (let n = 1; n < 1000; n++) {
+		const candidate = join(dir, n === 1 ? safe : `${stem} (${n})${ext}`);
+		if (!(await stat(candidate).catch(() => null))) return candidate;
+	}
+	return join(dir, `${stem}-${Date.now()}${ext}`);
+}
+
 export class BrowserHostBridge extends EventEmitter {
 	private tabs = new Map<string, TabBridge>();
 	private pending = new Map<string, PendingRequest>();
 
 	/** Downloads seen per tab, so progress events can find their metadata. */
 	private downloads = new Map<string, { tabId: string; filename: string; url: string }>();
+
+	/** An agent waiting for a tab's next download to land on this machine. */
+	private captures = new Map<string, { dir: string; resolve: (file: CapturedDownload) => void; reject: (error: Error) => void }>();
+
+	/**
+	 * Keep the tab's next download on this machine, in `dir`, instead of only
+	 * relaying it to a viewer — an agent clicked "Download" and needs the file.
+	 * Settles once it finished (or failed); times out when none starts.
+	 */
+	captureNextDownload(tabId: string, dir: string, timeoutMs: number): Promise<CapturedDownload> {
+		this.captures.get(tabId)?.reject(new Error('Replaced by a newer download.'));
+		return new Promise((resolve, reject) => {
+			const timer = setTimeout(() => {
+				this.captures.delete(tabId);
+				reject(new Error('No download started.'));
+			}, timeoutMs);
+			this.captures.set(tabId, {
+				dir,
+				resolve: (file) => {
+					clearTimeout(timer);
+					resolve(file);
+				},
+				reject: (error) => {
+					clearTimeout(timer);
+					reject(error);
+				}
+			});
+		});
+	}
 
 	/**
 	 * Install the bridge for a tab. Must run before the first navigation so the
@@ -396,9 +445,12 @@ export class BrowserHostBridge extends EventEmitter {
 		if (!meta) return;
 
 		const filePath = join(transferDir, guid);
+		const capture = this.captures.get(meta.tabId);
+		if (capture) this.captures.delete(meta.tabId);
 
 		if (state !== 'completed') {
 			await rm(filePath, { force: true }).catch(() => {});
+			capture?.reject(new Error('The download was cancelled.'));
 			this.emit('download', {
 				tabId: meta.tabId,
 				downloadId: guid,
@@ -413,6 +465,13 @@ export class BrowserHostBridge extends EventEmitter {
 
 		try {
 			const bytes = await readFile(filePath);
+
+			if (capture) {
+				await mkdir(capture.dir, { recursive: true });
+				const saved = await uniquePath(capture.dir, meta.filename);
+				await writeFile(saved, bytes);
+				capture.resolve({ path: saved, filename: basename(saved), size: bytes.byteLength, url: meta.url });
+			}
 
 			if (bytes.byteLength > MAX_RELAYED_DOWNLOAD_BYTES) {
 				this.emit('download', {
@@ -439,6 +498,7 @@ export class BrowserHostBridge extends EventEmitter {
 				timestamp: Date.now()
 			} satisfies HostDownloadEvent);
 		} catch (error) {
+			capture?.reject(error instanceof Error ? error : new Error('Failed to read the downloaded file'));
 			this.emit('download', {
 				tabId: meta.tabId,
 				downloadId: guid,

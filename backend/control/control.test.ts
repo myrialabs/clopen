@@ -15,6 +15,7 @@ import {
 	commandReference,
 	controlActionForCommand,
 	controlHelp,
+	MENU_ORDER,
 	describeControlActions,
 	getControlAction,
 	matchSkill,
@@ -99,12 +100,14 @@ describe('the catalog', () => {
 		expect(new Set(commands.map((command) => command.command)).size).toBe(commands.length);
 	});
 
-	it('the menu, /help and the Settings reference list the same commands in the same order', () => {
+	it('the menu is the everyday four, in order; /help lists them first and everything else under More', () => {
+		expect(botCommands().map((command) => command.command)).toEqual(MENU_ORDER);
 		const reference = commandReference(CHAT_COMMANDS).map((entry) => entry.command);
-		expect(botCommands().map((command) => command.command)).toEqual(reference);
 		const help = controlHelp(CHAT_COMMANDS);
 		const inHelp = [...help.matchAll(/^\/([a-z0-9_]+)/gm)].map((match) => match[1]);
-		expect(inHelp).toEqual(reference);
+		expect(inHelp.slice(0, MENU_ORDER.length)).toEqual(MENU_ORDER);
+		expect([...inHelp].sort()).toEqual([...reference].sort());
+		expect(help).toContain('**More**');
 	});
 });
 

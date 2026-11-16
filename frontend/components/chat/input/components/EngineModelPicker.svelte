@@ -19,7 +19,7 @@
 	import type { EngineType, EngineModel } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ProfilePicker from './ProfilePicker.svelte';
-	import { openSettingsModal, focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal, openAgentsInstall, focusEngineSection } from '$frontend/stores/ui/settings-modal.svelte';
 	import { claudeAccountsStore, type ClaudeAccountItem } from '$frontend/stores/features/claude-accounts.svelte';
 	import { copilotAccountsStore, type CopilotAccountItem } from '$frontend/stores/features/copilot-accounts.svelte';
 	import { codexAccountsStore, type CodexAccountItem } from '$frontend/stores/features/codex-accounts.svelte';
@@ -250,26 +250,26 @@
 	async function promoteAccountOnServer(engine: EngineType, id: number): Promise<void> {
 		switch (engine) {
 			case 'codex':
-				await ws.http('engine:codex-accounts-switch', { id });
+				await ws.http('agents:codex-accounts-switch', { id });
 				await codexAccountsStore.refresh();
 				return;
 			case 'qwen':
-				await ws.http('engine:qwen-accounts-switch', { id });
+				await ws.http('agents:qwen-accounts-switch', { id });
 				await qwenAccountsStore.refresh();
 				await modelStore.refreshModels('qwen');
 				return;
 			case 'pi':
-				await ws.http('engine:pi-accounts-switch', { id });
+				await ws.http('agents:pi-accounts-switch', { id });
 				await piAccountsStore.refresh();
 				await modelStore.refreshModels('pi');
 				return;
 			case 'cline':
-				await ws.http('engine:cline-accounts-switch', { id });
+				await ws.http('agents:cline-accounts-switch', { id });
 				await clineAccountsStore.refresh();
 				await modelStore.refreshModels('cline');
 				return;
 			case 'cursor':
-				await ws.http('engine:cursor-accounts-switch', { id });
+				await ws.http('agents:cursor-accounts-switch', { id });
 				await cursorAccountsStore.refresh();
 				await modelStore.refreshModels('cursor');
 				return;
@@ -788,10 +788,10 @@
 		void modelStore.refreshModels(chatModelState.engine);
 	}
 
-	// No accounts connected → Settings → Engines for this engine.
+	// No accounts connected → Settings → Agents for this engine.
 	function connectAccount() {
 		closeAllDropdowns();
-		openSettingsModal('engines');
+		openSettingsModal('agents');
 		focusEngineSection(chatModelState.engine);
 	}
 
@@ -807,17 +807,17 @@
 		if (appState.isLoading) untrack(() => closeAllDropdowns());
 	});
 
-	// Not-ready shortcuts from the model dropdown: install via Settings → Stack,
+	// Not-ready shortcuts from the model dropdown: install via Settings → Agents → Install,
 	// or configure the engine's account. Both close the dropdown first so the
 	// Settings modal isn't hidden behind it.
 	function openStack() {
 		closeDropdown();
-		openSettingsModal('stack');
+		openAgentsInstall();
 	}
 
 	function configureEngine(engineType: EngineType) {
 		closeDropdown();
-		openSettingsModal('engines');
+		openSettingsModal('agents');
 		focusEngineSection(engineType);
 	}
 
@@ -875,7 +875,7 @@
 					bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40
 					border border-amber-200 dark:border-amber-700/50 cursor-pointer"
 				onclick={connectAccount}
-				title="Connect an account in Settings → Engines"
+				title="Connect an account in Settings → Agents"
 			>
 				<Icon name="lucide:triangle-alert" class="w-3.5 h-3.5 flex-shrink-0" />
 				<span class="font-medium">No accounts connected</span>
@@ -1155,7 +1155,7 @@
 									<Icon name="lucide:refresh-cw" class="w-3 h-3" />
 									Retry
 								</button>
-								{#if engineError.includes('Settings → Stack')}
+								{#if engineError.includes('Settings → Agents → Install')}
 									<button
 										type="button"
 										class="inline-flex items-center gap-1.5 px-2.5 py-1 pointer-coarse:min-h-8 text-2xs font-semibold rounded-md bg-amber-600 hover:bg-amber-700 text-white cursor-pointer transition-colors"

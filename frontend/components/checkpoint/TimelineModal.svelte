@@ -421,7 +421,7 @@
 <Dialog
 	bind:isOpen={showConfirmDialog}
 	type="warning"
-	title="Restore Checkpoint"
+	title="Restore point"
 	message={pendingNode
 		? `Are you sure you want to restore to this checkpoint?\n"${getTruncatedMessage(pendingNode.checkpoint.messageText)}"\nThis will restore your files to this point within this session.`
 		: ''}

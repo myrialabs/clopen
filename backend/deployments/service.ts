@@ -142,7 +142,7 @@ export const deployService = {
 		const account = integrationAccountQueries.getById(accountId);
 		if (!account) throw new Error('That integration account is no longer connected');
 		if (account.is_enabled !== 1) {
-			throw new Error(`${account.label} is switched off in Settings → Integrations`);
+			throw new Error(`${account.label} is switched off in Library → Integrations`);
 		}
 
 		const adapter = getDeployAdapter(account.provider);
