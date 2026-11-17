@@ -3,7 +3,7 @@
  * Shared logic for getting project status data
  */
 
-import { streamManager, type StreamState } from '../chat/stream-manager.js';
+import { streamManager, waitingOnBackground, type StreamState } from '../chat/stream-manager.js';
 import { sessionQueries } from '../database/queries/session-queries.js';
 import type { UnifiedMessage } from '$shared/types/unified';
 import { isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
@@ -48,7 +48,9 @@ function toStreamStatus(stream: StreamState, worktreeMemo: Map<string, string | 
     status: stream.status,
     startedAt: stream.startedAt,
     messagesCount: stream.messages.length,
-    isWaitingInput: detectStreamWaitingInput(stream)
+    isWaitingInput: detectStreamWaitingInput(stream),
+    /** Background tasks the stream waits on between turns (0 while generating). */
+    waitingOnBackground: waitingOnBackground(stream)
   };
 }
 

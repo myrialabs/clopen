@@ -156,6 +156,26 @@ export interface NotificationEvent {
 	message: string;
 }
 
+/**
+ * The background work an engine is still running for this stream — commands or
+ * agents it started without waiting for them — as the COMPLETE current list
+ * (empty once everything finished).
+ *
+ * Some engines start a turn on their own when such work finishes, after the
+ * turn that started it already ended (Claude Code; Open Code with background
+ * sub-agents enabled). Others hold their completion signal until it is done
+ * (Qwen Code holds `result`, Copilot holds `session.idle`), and Codex, Cursor,
+ * Pi and Cline have no such work; those never emit this. An adapter that does
+ * must keep its stream — and its channel back to Clopen for tools and
+ * permissions — open until the list is empty and the engine is idle. The
+ * stream manager shows the gap between turns as "waiting for background work".
+ */
+export interface BackgroundWorkEvent {
+	type: 'background_work';
+	sessionId: string;
+	tasks: Array<{ id: string; description?: string }>;
+}
+
 // ============================================================
 // Engine Output
 // ============================================================
@@ -173,7 +193,8 @@ export type EngineOutput =
 	| ResultEvent
 	| SystemInitEvent
 	| RateLimitEvent
-	| NotificationEvent;
+	| NotificationEvent
+	| BackgroundWorkEvent;
 
 // ============================================================
 // Stream Transport (WebSocket layer)

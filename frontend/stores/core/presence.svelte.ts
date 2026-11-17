@@ -86,6 +86,20 @@ export function isSessionWaitingInput(chatSessionId: string, projectId?: string)
 }
 
 /**
+ * How many background tasks a chat session's stream is waiting on between
+ * turns — the turn that started them has ended and the engine will continue
+ * when they finish. 0 while the engine is producing output.
+ */
+export function getSessionBackgroundWait(chatSessionId: string, projectId?: string): number {
+	const statuses = projectId ? [presenceState.statuses.get(projectId)] : [...presenceState.statuses.values()];
+	for (const status of statuses) {
+		const stream = status?.streams?.find((s: any) => s.status === 'active' && s.chatSessionId === chatSessionId);
+		if (stream) return (stream as { waitingOnBackground?: number }).waitingOnBackground ?? 0;
+	}
+	return 0;
+}
+
+/**
  * Get the status indicator color for a project.
  * Priority (highest wins when multiple sessions exist):
  * - Green (bg-emerald-500)  : at least one stream actively processing
