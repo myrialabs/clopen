@@ -117,6 +117,13 @@ const GIT_INTERNAL_IGNORED = new Set([
 const GIT_DEBOUNCE_MS = 500;
 
 /**
+ * Above this many changes in one flush, clients are told to resync instead of
+ * being sent the list. Every consumer of `files:changed` also handles
+ * `files:resync`, so the cut-off only changes the payload, not the outcome.
+ */
+const MAX_CHANGES_PER_EVENT = 1000;
+
+/**
  * Delay before re-resolving a project's git directories after an event arrived
  * from one we do not know about yet. Debounced because the trigger is bursty:
  * `git init` and `git clone` create dozens of files under a brand-new `.git`.
@@ -775,6 +782,18 @@ class FileWatcherManager {
 		// Clear pending changes
 		projectWatcher.pendingChanges.clear();
 		projectWatcher.debounceTimer = null;
+
+		// A burst this large (an install, a build writing its output, a checkout)
+		// is one resync, not a list of every path. Every client re-reads its view
+		// once either way; the list only added megabytes to each of them.
+		if (changes.length > MAX_CHANGES_PER_EVENT) {
+			ws.emit.project(scopeProjectId(projectId), 'files:resync', {
+				projectId,
+				timestamp: Date.now()
+			});
+			debug.log('file', `Collapsed ${changes.length} file changes into a resync for project ${projectId}`);
+			return;
+		}
 
 		// Emit changes to users currently viewing the project
 		ws.emit.project(scopeProjectId(projectId), 'files:changed', {

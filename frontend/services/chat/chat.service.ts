@@ -23,6 +23,7 @@ import { setRateLimit } from '$frontend/stores/ui/rate-limit.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
+import { placeDelta } from '$frontend/utils/stream-delta';
 import { INTERACTIVE_TOOLS, isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
 
 /** Chat service configuration */
@@ -1017,76 +1018,167 @@ class ChatService {
   }
 
   /**
-   * Handle partial message events (streaming)
+   * The streaming placeholder for one (process, reasoning) pair, if any.
+   */
+  private findStreamPlaceholder(processId: string, reasoning: boolean): StreamingMessage | undefined {
+    for (let i = sessionState.messages.length - 1; i >= 0; i--) {
+      const msg = sessionState.messages[i];
+      if (
+        msg.type === 'stream_event' &&
+        (msg as StreamingMessage).processId === processId &&
+        !!(msg as StreamingMessage).reasoning === reasoning
+      ) {
+        return msg as StreamingMessage;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Insert an empty streaming placeholder.
+   *
+   * A reasoning placeholder goes BEFORE any existing non-reasoning stream_event
+   * so the on-screen order stays reasoning → text within a turn. Without this,
+   * engines that emit a preliminary non-reasoning stream_start at turn
+   * boundaries (e.g. OpenCode) leave a stale empty text placeholder ahead of the
+   * reasoning block, which then gets claimed by the next tool message and
+   * visually swaps reasoning behind the tool.
+   */
+  private insertStreamPlaceholder(
+    processId: string,
+    reasoning: boolean,
+    block: number | undefined,
+    text = '',
+    createdAt = new Date().toISOString()
+  ): StreamingMessage {
+    const placeholder: StreamingMessage = { type: 'stream_event', processId, text, createdAt, reasoning, block };
+    const messages = sessionState.messages as FrontendMessage[];
+    if (reasoning) {
+      const textIdx = messages.findIndex((m) => m.type === 'stream_event' && !(m as StreamingMessage).reasoning);
+      if (textIdx !== -1) {
+        messages.splice(textIdx, 0, placeholder);
+        return messages[textIdx] as StreamingMessage;
+      }
+    }
+    messages.push(placeholder);
+    return messages[messages.length - 1] as StreamingMessage;
+  }
+
+  /**
+   * Handle partial message events (streaming).
+   *
+   * An `update` carries only its delta and where it starts (`offset`), so the
+   * text is rebuilt here: a delta already covered is ignored, one that
+   * overlaps adds only its new tail, and one that starts past the end of what
+   * we hold means frames were missed — the text is re-read from the server
+   * rather than shown with a hole in it. `end` carries the full text and
+   * settles any remaining doubt.
    */
   private handlePartialEvent(data: any, stream: SessionStreamState): void {
     // Ignore partials from a completed/cancelled stream
     if (stream.streamCompleted) return;
 
     const isReasoning = data.reasoning === true;
-    const { eventType, partialText } = data;
+    const block: number | undefined = typeof data.block === 'number' ? data.block : undefined;
+    let placeholder = this.findStreamPlaceholder(data.processId, isReasoning);
 
-    // Match placeholders on (processId, reasoning) so a reasoning stream and
-    // a text stream within the same turn don't clobber each other's text.
-    const findPlaceholder = (): StreamingMessage | undefined => {
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i];
-        if (
-          msg.type === 'stream_event' &&
-          (msg as StreamingMessage).processId === data.processId &&
-          !!(msg as StreamingMessage).reasoning === isReasoning
-        ) {
-          return msg as StreamingMessage;
-        }
-      }
-      return undefined;
-    };
-
-    // Insert a reasoning placeholder BEFORE any existing non-reasoning
-    // stream_event so the on-screen order stays reasoning → text within a
-    // turn. Non-reasoning placeholders go to the end. Without this, engines
-    // that emit a preliminary non-reasoning stream_start at turn boundaries
-    // (e.g. OpenCode) leave a stale empty text placeholder ahead of the
-    // reasoning block, which then gets claimed by the next tool message
-    // and visually swaps reasoning behind the tool.
-    const insertNewPlaceholder = (): void => {
-      const newMessage: StreamingMessage = {
-        type: 'stream_event',
-        processId: data.processId,
-        text: partialText || '',
-        createdAt: data.timestamp || new Date().toISOString(),
-        reasoning: isReasoning,
-      };
-
-      if (isReasoning) {
-        const textIdx = (sessionState.messages as FrontendMessage[]).findIndex(
-          (m) => m.type === 'stream_event' && !(m as StreamingMessage).reasoning
-        );
-        if (textIdx !== -1) {
-          (sessionState.messages as FrontendMessage[]).splice(textIdx, 0, newMessage);
-          return;
-        }
-      }
-      (sessionState.messages as FrontendMessage[]).push(newMessage);
-    };
-
-    if (eventType === 'start') {
-      const existing = findPlaceholder();
-      if (existing) {
-        existing.text = partialText || '';
-        return;
-      }
-      insertNewPlaceholder();
-    } else if (eventType === 'update') {
-      const existing = findPlaceholder();
-      if (existing) {
-        existing.text = partialText || '';
-        return;
-      }
-      // Fallback: missed start event
-      insertNewPlaceholder();
+    // A newer block replaces the text; a stale block's frames are dropped.
+    if (placeholder && block !== undefined && placeholder.block !== undefined && placeholder.block !== block) {
+      if (block < placeholder.block) return;
+      placeholder.text = '';
+      placeholder.block = block;
     }
-    // Note: 'end' event is not needed - stream_event is replaced by the final message in handleMessageEvent
+
+    if (data.eventType === 'start') {
+      if (placeholder) {
+        placeholder.text = '';
+        placeholder.block = block;
+      } else {
+        this.insertStreamPlaceholder(data.processId, isReasoning, block, '', data.timestamp);
+      }
+      return;
+    }
+
+    if (data.eventType === 'end') {
+      if (typeof data.partialText !== 'string') return;
+      if (placeholder) {
+        placeholder.text = data.partialText;
+        placeholder.block = block;
+      } else {
+        this.insertStreamPlaceholder(data.processId, isReasoning, block, data.partialText, data.timestamp);
+      }
+      return;
+    }
+
+    if (data.eventType !== 'update') return;
+    if (!placeholder) {
+      // Missed the start (or joined mid-block): begin empty and let the offset
+      // check below decide whether this delta can be placed.
+      placeholder = this.insertStreamPlaceholder(data.processId, isReasoning, block, '', data.timestamp);
+    }
+    if (placeholder.block === undefined) placeholder.block = block;
+
+    const delta: string = data.deltaText || '';
+    const offset: number = typeof data.offset === 'number' ? data.offset : placeholder.text.length;
+    const placed = placeDelta(placeholder.text, offset, delta);
+    if (placed.kind === 'extended') placeholder.text = placed.text;
+    else if (placed.kind === 'gap') this.resyncStreamText(data.chatSessionId);
+  }
+
+  /** Sessions with a stream-state re-read in flight, so a burst of gaps asks once. */
+  private resyncing = new Set<string>();
+
+  /** Re-read the live text of a session's stream after missed frames. */
+  private resyncStreamText(chatSessionId: string | undefined): void {
+    if (!chatSessionId || this.resyncing.has(chatSessionId)) return;
+    this.resyncing.add(chatSessionId);
+    ws.http('chat:stream-state', { chatSessionId })
+      .then((snapshot) => {
+        if (sessionState.messagesSessionId !== chatSessionId) return;
+        if (snapshot?.status === 'active' && snapshot.processId) this.applyStreamSnapshot(snapshot);
+      })
+      .catch((error) => debug.warn('chat', 'Could not re-read stream text:', error))
+      .finally(() => this.resyncing.delete(chatSessionId));
+  }
+
+  /**
+   * Bring the streaming placeholders up to a server snapshot
+   * (`chat:stream-state`): used to catch up when joining a running stream and
+   * to repair a gap. A snapshot only ever moves text forward — it is ignored
+   * for a block it is older than, and never shortens text that live frames
+   * have already extended.
+   */
+  applyStreamSnapshot(snapshot: {
+    processId: string;
+    currentPartialText?: string;
+    currentReasoningText?: string;
+    partialBlock?: number;
+    reasoningBlock?: number;
+  }): void {
+    const apply = (reasoning: boolean, text: string | undefined, block: number | undefined) => {
+      if (!text) return;
+      const placeholder = this.findStreamPlaceholder(snapshot.processId, reasoning);
+      if (!placeholder) {
+        this.insertStreamPlaceholder(snapshot.processId, reasoning, block, text);
+        return;
+      }
+      if (block !== undefined && placeholder.block !== undefined && block < placeholder.block) return;
+      if (block === placeholder.block && placeholder.text.length > text.length && placeholder.text.startsWith(text)) return;
+      placeholder.text = text;
+      placeholder.block = block;
+    };
+
+    // Reasoning before text, so the display order matches live emission.
+    apply(true, snapshot.currentReasoningText, snapshot.reasoningBlock);
+    apply(false, snapshot.currentPartialText, snapshot.partialBlock);
+
+    // Nothing streamed yet: an empty text placeholder keeps the loading indicator visible.
+    if (!snapshot.currentPartialText && !snapshot.currentReasoningText) {
+      const hasAnyStream = sessionState.messages.some(
+        (m) => m.type === 'stream_event' && (m as StreamingMessage).processId === snapshot.processId
+      );
+      if (!hasAnyStream) this.insertStreamPlaceholder(snapshot.processId, false, snapshot.partialBlock);
+    }
   }
 
   /**

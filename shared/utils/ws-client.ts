@@ -10,6 +10,7 @@
  */
 
 import { debug } from './logger';
+import { CHUNK_MARKER_CODE, decodeChunk } from './ws-chunk';
 
 // ============================================================================
 // Singleton Encoders (Performance Optimization)
@@ -275,6 +276,8 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 
 	/** In-flight HTTP requests, keyed by requestId, for resend-on-reconnect. */
 	private pendingHttpRequests = new Map<string, PendingHttpRequest>();
+	/** Large replies being reassembled, by reply stream. Dropped with the socket. */
+	private chunkAssemblies = new Map<string, { parts: string[]; received: number }>();
 	/** Prevents a heal-reconnect stampede when many requests time out at once. */
 	private healingReconnect = false;
 
@@ -461,6 +464,9 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 				debug.log('websocket', 'Disconnected');
 				this.isConnected = false;
 				this.ws = null;
+				// Pieces of a reply cannot be completed on another socket; the request
+				// itself is re-sent on reconnect and its reply starts over.
+				this.chunkAssemblies.clear();
 
 				// Auto-reconnect
 				if (this.shouldReconnect && this.options.autoReconnect) {
@@ -482,6 +488,11 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 	 * Handle text/JSON message from server
 	 */
 	private handleTextMessage(data: string): void {
+		if (data.charCodeAt(0) === CHUNK_MARKER_CODE) {
+			this.handleChunk(data);
+			return;
+		}
+
 		// Check if data looks like binary (not valid JSON start)
 		if (data && data.length > 0 && data[0] !== '{' && data[0] !== '[') {
 			debug.warn('websocket', `Received non-JSON text data (length: ${data.length}), first char code: ${data.charCodeAt(0)}`);
@@ -497,6 +508,38 @@ export class WSClient<TAPI extends { client: any; server: any }> {
 		}
 
 		this.dispatchToListeners(action, payload);
+	}
+
+	/**
+	 * One piece of a large request-response reply (format: shared/utils/ws-chunk.ts).
+	 *
+	 * Each piece is proof the reply is still arriving, so it re-arms that
+	 * request's timeout — without this a slow link timed a big reply out halfway
+	 * and re-requested it, downloading it again. The last piece completes the
+	 * frame, which is then handled exactly like one sent whole.
+	 */
+	private handleChunk(data: string): void {
+		const chunk = decodeChunk(data);
+		if (!chunk) {
+			debug.warn('websocket', 'Dropping malformed chunk frame');
+			return;
+		}
+		const { streamId, requestId, index, count } = chunk;
+
+		let assembly = this.chunkAssemblies.get(streamId);
+		if (!assembly) {
+			assembly = { parts: new Array<string>(count), received: 0 };
+			this.chunkAssemblies.set(streamId, assembly);
+		}
+		if (assembly.parts[index] === undefined) {
+			assembly.parts[index] = chunk.slice;
+			assembly.received++;
+		}
+		this.pendingHttpRequests.get(requestId)?.arm();
+
+		if (assembly.received < count) return;
+		this.chunkAssemblies.delete(streamId);
+		this.handleTextMessage(assembly.parts.join(''));
 	}
 
 	/**

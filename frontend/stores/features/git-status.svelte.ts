@@ -37,6 +37,61 @@ export const gitStatusState = $state<GitStatusState>({
 	isRepo: false
 });
 
+/**
+ * Bumped by every event that can change `git status` (a working-tree change, a
+ * git state change, a watcher resync, a reconnect). Two reads made under the
+ * same generation are the same read, so they share one request.
+ */
+let changeGeneration = 0;
+let sharedRead: { projectId: string; generation: number; startedAt: number; promise: Promise<GitStatusResponse> } | null = null;
+
+/**
+ * A read is only shared while it is fresh. Readers reacting to the same event
+ * ask within a few hundred ms of each other; without an age limit, a read from
+ * before a long stretch with no listener counting changes (both panels closed)
+ * would be handed to the next panel that opened.
+ */
+const SHARE_WINDOW_MS = 2000;
+
+type GitStatusResponse = Awaited<ReturnType<typeof readGitStatus>>;
+
+function readGitStatus(projectId: string) {
+	return ws.http('git:status', { projectId });
+}
+
+/**
+ * `git status` for a project — the one way the app reads it.
+ *
+ * The file tree's badges (this store) and the Git panel both refresh on the
+ * same change events, and used to issue a request each: two `git status`
+ * processes and two payloads for every edit. A read is shared while no change
+ * event has arrived since it started. Pass `force` after an action of your own
+ * (stage, commit, discard…), whose change event may not have arrived yet.
+ */
+export function loadGitStatus(projectId: string, options: { force?: boolean } = {}): Promise<GitStatusResponse> {
+	if (
+		!options.force &&
+		sharedRead &&
+		sharedRead.projectId === projectId &&
+		sharedRead.generation === changeGeneration &&
+		Date.now() - sharedRead.startedAt < SHARE_WINDOW_MS
+	) {
+		return sharedRead.promise;
+	}
+	const promise = readGitStatus(projectId);
+	const read = { projectId, generation: changeGeneration, startedAt: Date.now(), promise };
+	sharedRead = read;
+	promise.catch(() => {
+		if (sharedRead === read) sharedRead = null;
+	});
+	return promise;
+}
+
+/** Note that something may have changed `git status`; the next read is fresh. */
+export function noteGitStatusChange(): void {
+	changeGeneration++;
+}
+
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inFlight = false;
 let pendingRefresh = false;
@@ -53,7 +108,7 @@ async function fetchStatus(projectId: string, projectPath: string): Promise<void
 	}
 	inFlight = true;
 	try {
-		const status = await ws.http('git:status', { projectId });
+		const status = await loadGitStatus(projectId);
 		gitStatusState.isRepo = status.isRepo;
 		if (!status.isRepo) {
 			gitStatusState.map = new Map();
@@ -112,20 +167,24 @@ export function initGitStatus(): void {
 		// An empty change list says nothing changed — refreshing on it would spawn
 		// a git process for no reason.
 		if (payload.changes.length === 0) return;
+		changeGeneration++;
 		refreshGitStatus(500);
 	});
 	unsubscribeGit = ws.on('git:changed', (payload) => {
 		if (payload.projectId !== currentScopeKey()) return;
+		changeGeneration++;
 		refreshGitStatus(150);
 	});
 	unsubscribeResync = ws.on('files:resync', (payload) => {
 		if (payload.projectId !== currentScopeKey()) return;
+		changeGeneration++;
 		refreshGitStatus(500);
 	});
 	// Every `git:changed` sent while the socket was down was delivered to nobody,
 	// so the badges have no way of knowing what they missed. Re-read once the
 	// connection is back rather than waiting for the next unrelated file write.
 	unsubscribeReconnect = onWsReconnect(() => {
+		changeGeneration++;
 		refreshGitStatus(250);
 	});
 }

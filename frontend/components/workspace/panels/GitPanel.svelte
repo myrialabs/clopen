@@ -12,6 +12,7 @@
 	import { clickOutside } from '$frontend/utils/click-outside';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
+	import { loadGitStatus, noteGitStatusChange } from '$frontend/stores/features/git-status.svelte';
 	import { acquireFileWatch } from '$frontend/utils/file-watch';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { isPreviewableFile, isBinaryFile } from '$frontend/utils/file-type';
@@ -1019,16 +1020,17 @@
 	let contributors = $state<ContributorEntry[]>([]);
 	// Total commits sampled (denominator for each contributor's share %).
 	let contributorTotal = $state(0);
-	// Raw commit sample, kept so a contributor row can expand to its own commits
-	// without another round-trip.
-	let contributorLog = $state<GitCommit[]>([]);
+	// A contributor's own commits, read when their row is expanded and keyed like
+	// `contributorVisible` (`key`, or `<relPath>:key` for a sub-repo). `null`
+	// while loading. The full sample used to ride along with every contributors
+	// refresh just in case a row was expanded.
+	let contributorCommitsCache = $state<Record<string, GitCommit[] | null>>({});
 	let expandedContributors = $state<Set<string>>(new Set());
 	let isContributorsLoading = $state(false);
 
 	// Nested contributors state
 	let nestedContributors = $state<Record<string, ContributorEntry[]>>({});
 	let nestedContributorTotal = $state<Record<string, number>>({});
-	let nestedContributorLog = $state<Record<string, GitCommit[]>>({});
 	let nestedIsContributorsLoading = $state<Record<string, boolean>>({});
 
 	// How many of a contributor's commits are rendered. Paginated client-side
@@ -1037,17 +1039,45 @@
 	const CONTRIBUTOR_COMMIT_PAGE_SIZE = 8;
 	let contributorVisible = $state<Record<string, number>>({});
 
-	function toggleContributor(key: string) {
+	function toggleContributor(key: string, scope?: { relPath: string; path: string }) {
+		const scopedKey = scope ? `${scope.relPath}:${key}` : key;
 		const next = new Set(expandedContributors);
-		if (next.has(key)) {
-			next.delete(key);
+		if (next.has(scopedKey)) {
+			next.delete(scopedKey);
 		} else {
-			next.add(key);
-			if (!contributorVisible[key]) {
-				contributorVisible = { ...contributorVisible, [key]: CONTRIBUTOR_COMMIT_PAGE_SIZE };
+			next.add(scopedKey);
+			if (!contributorVisible[scopedKey]) {
+				contributorVisible = { ...contributorVisible, [scopedKey]: CONTRIBUTOR_COMMIT_PAGE_SIZE };
 			}
+			void loadContributorCommits(scopedKey, key, scope?.path);
 		}
 		expandedContributors = next;
+	}
+
+	async function loadContributorCommits(scopedKey: string, key: string, repoPath?: string) {
+		if (!projectId || contributorCommitsCache[scopedKey] !== undefined) return;
+		const requestProjectId = projectId;
+		contributorCommitsCache = { ...contributorCommitsCache, [scopedKey]: null };
+		try {
+			const commits = await ws.http('git:list-contributor-commits', { projectId, key, repoPath });
+			if (requestProjectId !== projectId) return;
+			contributorCommitsCache = { ...contributorCommitsCache, [scopedKey]: commits };
+		} catch (err) {
+			debug.error('git', 'Failed to load contributor commits:', err);
+			if (requestProjectId === projectId) {
+				contributorCommitsCache = { ...contributorCommitsCache, [scopedKey]: [] };
+			}
+		}
+	}
+
+	/** Re-read the commits of every expanded contributor (after a refresh). */
+	function reloadExpandedContributorCommits() {
+		contributorCommitsCache = {};
+		for (const scopedKey of expandedContributors) {
+			const nested = branchInfo?.nested?.find((n) => scopedKey.startsWith(`${n.relPath}:`));
+			const key = nested ? scopedKey.slice(nested.relPath.length + 1) : scopedKey;
+			void loadContributorCommits(scopedKey, key, nested?.path);
+		}
 	}
 
 	function loadMoreContributorCommits(key: string) {
@@ -1055,11 +1085,8 @@
 		contributorVisible = { ...contributorVisible, [key]: current + CONTRIBUTOR_COMMIT_PAGE_SIZE };
 	}
 
-	function contributorCommits(key: string, repoPath?: string): GitCommit[] {
-		const log = repoPath && branchInfo?.nested
-			? (nestedContributorLog[branchInfo.nested.find(n => n.path === repoPath)?.relPath ?? ''] || [])
-			: contributorLog;
-		return log.filter(c => (c.authorEmail || c.author).toLowerCase().trim() === key);
+	function contributorCommits(scopedKey: string): GitCommit[] {
+		return contributorCommitsCache[scopedKey] ?? [];
 	}
 
 	// Tab system (like Files panel)
@@ -1480,7 +1507,7 @@
 			// Stash + tags are loaded here too (not just lazily on their view) so the
 			// Stash/Tags badge counts are correct immediately after a switch/refresh,
 			// not only once the user opens those views.
-			await Promise.all([loadStatus(), loadBranches(), loadRemotes(), loadStash(), loadTags(), loadContributors()]);
+			await Promise.all([loadStatus({ force: false }), loadBranches(), loadRemotes(), loadStash(), loadTags(), loadContributors()]);
 			// Both depend on what `loadBranches` just produced.
 			await Promise.all([loadOperationState(), loadPushTarget()]);
 		} catch (err) {
@@ -1491,11 +1518,16 @@
 		}
 	}
 
-	async function loadStatus() {
+	/**
+	 * Read `git status` into the panel. Event-driven refreshes share the read the
+	 * file tree's badges make for the same change (`force: false`); everything
+	 * else — the panel's own actions, an explicit reload — reads fresh.
+	 */
+	async function loadStatus(options: { force?: boolean } = { force: true }) {
 		if (!projectId) return;
 		const requestProjectId = projectId;
 		try {
-			const data = await ws.http('git:status', { projectId });
+			const data = await loadGitStatus(projectId, options);
 			// Drop a response that outlived its project — otherwise the previous
 			// project's changes render under the new project's header.
 			if (requestProjectId !== projectId) return;
@@ -3075,44 +3107,18 @@
 		if (!projectId || isContributorsLoading) return;
 		isContributorsLoading = true;
 		try {
-			const data = await ws.http('git:log', { projectId, limit: 500, skip: 0 });
-			const map = new Map<string, ContributorEntry>();
-			for (const c of data.commits) {
-				// Group by email when available (one person may commit under several
-				// display names) and fall back to the author name otherwise.
-				const key = (c.authorEmail || c.author).toLowerCase().trim();
-				const existing = map.get(key);
-				if (existing) {
-					existing.count++;
-					if (c.date > existing.lastDate) existing.lastDate = c.date;
-				} else {
-					map.set(key, { key, name: c.author.trim(), email: c.authorEmail, count: 1, lastDate: c.date });
-				}
-			}
-			contributorLog = data.commits;
-			contributorTotal = data.commits.length;
-			contributors = [...map.values()].sort((a, b) => b.count - a.count);
+			const data = await ws.http('git:list-contributors', { projectId });
+			contributorTotal = data.total;
+			contributors = data.contributors;
 
 			// Load contributors for nested subrepos
 			if (branchInfo?.nested) {
 				for (const nested of branchInfo.nested) {
 					nestedIsContributorsLoading = { ...nestedIsContributorsLoading, [nested.relPath]: true };
 					try {
-						const nestedData = await ws.http('git:log', { projectId, limit: 500, skip: 0, repoPath: nested.path });
-						const nestedMap = new Map<string, ContributorEntry>();
-						for (const c of nestedData.commits) {
-							const key = (c.authorEmail || c.author).toLowerCase().trim();
-							const existing = nestedMap.get(key);
-							if (existing) {
-								existing.count++;
-								if (c.date > existing.lastDate) existing.lastDate = c.date;
-							} else {
-								nestedMap.set(key, { key, name: c.author.trim(), email: c.authorEmail, count: 1, lastDate: c.date });
-							}
-						}
-						nestedContributorLog = { ...nestedContributorLog, [nested.relPath]: nestedData.commits };
-						nestedContributorTotal = { ...nestedContributorTotal, [nested.relPath]: nestedData.commits.length };
-						nestedContributors = { ...nestedContributors, [nested.relPath]: [...nestedMap.values()].sort((a, b) => b.count - a.count) };
+						const nestedData = await ws.http('git:list-contributors', { projectId, repoPath: nested.path });
+						nestedContributorTotal = { ...nestedContributorTotal, [nested.relPath]: nestedData.total };
+						nestedContributors = { ...nestedContributors, [nested.relPath]: nestedData.contributors };
 					} catch {
 						// Skip loading contributors for failed nested repos
 					} finally {
@@ -3120,6 +3126,7 @@
 					}
 				}
 			}
+			reloadExpandedContributorCommits();
 		} catch { /* ignore */ }
 		finally { isContributorsLoading = false; }
 	}
@@ -4809,7 +4816,7 @@
 					selectedCommit = null;
 					expandedContributors = new Set();
 					contributorVisible = {};
-					contributorLog = [];
+					contributorCommitsCache = {};
 					contributorTotal = 0;
 					expandedBranchCommits = new Set();
 					branchCommitFileState = {};
@@ -4998,7 +5005,7 @@
 			// Refresh git status and branches (branch switch also modifies working tree)
 			const previousBranch = branchInfo?.current;
 			clearGitSectionStale('status', 'branches');
-			await Promise.all([loadStatus(), loadBranches()]);
+			await Promise.all([loadStatus({ force: false }), loadBranches()]);
 
 			// A branch switch can change the remote set; so can an out-of-band git
 			// operation. Either way, re-read it at most once.
@@ -5053,6 +5060,7 @@
 			// An empty change list carries no information; refreshing on it just
 			// churns git and the open diff for nothing.
 			if (payload.changes.length === 0) return;
+			noteGitStatusChange();
 			scheduleGitRefresh();
 		});
 
@@ -5060,6 +5068,7 @@
 		// what was missed is by definition unknown, so no section can be trusted.
 		const unsubResync = ws.on('files:resync', (payload: any) => {
 			if (payload.projectId !== watchScope) return;
+			noteGitStatusChange();
 			scheduleGitRefresh(true);
 		});
 
@@ -5098,6 +5107,7 @@
 			if (payload.projectId !== watchScope) return;
 			// Full refresh: index/HEAD/refs moved, so branches, remotes, stash, tags,
 			// contributors and the log can all be stale.
+			noteGitStatusChange();
 			scheduleGitRefresh(true);
 		});
 
@@ -5132,6 +5142,7 @@
 			const now = Date.now();
 			if (now - lastRevalidateAt < REVALIDATE_MIN_INTERVAL_MS) return;
 			lastRevalidateAt = now;
+			noteGitStatusChange();
 			scheduleGitRefresh(true);
 		};
 
@@ -5139,6 +5150,7 @@
 		// throttle would be measuring the wrong thing.
 		const unsubReconnect = onWsReconnect(() => {
 			lastRevalidateAt = Date.now();
+			noteGitStatusChange();
 			scheduleGitRefresh(true);
 		});
 
@@ -6110,7 +6122,6 @@
 {#snippet nestedContributorBlock(nested: GitNestedRepoInfo)}
 	{@const nestedContribs = nestedContributors[nested.relPath] ?? []}
 	{@const nestedTotal = nestedContributorTotal[nested.relPath] ?? 0}
-	{@const nestedLog = nestedContributorLog[nested.relPath] ?? []}
 	{@const isLoadingNested = nestedIsContributorsLoading[nested.relPath] ?? false}
 	{@const isCollapsed = nestedReposCollapsed[nested.relPath] !== undefined
 		? nestedReposCollapsed[nested.relPath]
@@ -6183,13 +6194,8 @@
 									class="flex items-center gap-2 px-2.5 py-2 rounded-md hover:bg-slate-100 dark:hover:bg-slate-800/60 transition-colors cursor-pointer"
 									role="button"
 									tabindex="0"
-									onclick={() => {
-										const scopedKey = `${nested.relPath}:${c.key}`;
-										const next = new Set(expandedContributors);
-										if (next.has(scopedKey)) { next.delete(scopedKey); } else { next.add(scopedKey); if (!contributorVisible[scopedKey]) { contributorVisible = { ...contributorVisible, [scopedKey]: CONTRIBUTOR_COMMIT_PAGE_SIZE }; } }
-										expandedContributors = next;
-									}}
-									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); const scopedKey = `${nested.relPath}:${c.key}`; const next = new Set(expandedContributors); if (next.has(scopedKey)) { next.delete(scopedKey); } else { next.add(scopedKey); if (!contributorVisible[scopedKey]) { contributorVisible = { ...contributorVisible, [scopedKey]: CONTRIBUTOR_COMMIT_PAGE_SIZE }; } } expandedContributors = next; } }}
+									onclick={() => toggleContributor(c.key, nested)}
+									onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggleContributor(c.key, nested); } }}
 								>
 									<Icon name={expanded ? 'lucide:chevron-down' : 'lucide:chevron-right'} class="w-3 h-3 shrink-0 text-slate-400" />
 									<div class="flex-1 min-w-0">
@@ -6208,10 +6214,13 @@
 								</div>
 								{#if expanded}
 									{@const scopedKey = `${nested.relPath}:${c.key}`}
-									{@const list = nestedLog.filter(commit => (commit.authorEmail || commit.author).toLowerCase().trim() === c.key)}
+									{@const list = contributorCommits(scopedKey)}
+									{@const listLoading = contributorCommitsCache[scopedKey] === null}
 									{@const visible = contributorVisible[scopedKey] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE}
 									<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
-										{#if list.length === 0}
+										{#if listLoading}
+											<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading commits...</span></div>
+										{:else if list.length === 0}
 											<div class="py-1.5 text-xs text-slate-400">No commits in the sampled history</div>
 										{:else}
 											{#each list.slice(0, visible) as commit (commit.hash)}
@@ -7216,9 +7225,12 @@
 									</div>
 									{#if expanded}
 										{@const list = contributorCommits(c.key)}
+										{@const listLoading = contributorCommitsCache[c.key] === null}
 										{@const visible = contributorVisible[c.key] ?? CONTRIBUTOR_COMMIT_PAGE_SIZE}
 										<div class="ml-5 mb-1 border-l border-slate-200 dark:border-slate-700 pl-2 space-y-0.5">
-											{#if list.length === 0}
+											{#if listLoading}
+												<div class="flex items-center gap-2 py-1.5 text-xs text-slate-400"><div class="w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin"></div><span>Loading commits...</span></div>
+											{:else if list.length === 0}
 												<div class="py-1.5 text-xs text-slate-400">No commits in the sampled history</div>
 											{:else}
 												{#each list.slice(0, visible) as commit (commit.hash)}

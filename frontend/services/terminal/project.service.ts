@@ -117,7 +117,13 @@ class TerminalProjectManager {
 			// Hide current project's terminal sessions (but keep them running)
 			await this.hideProjectTerminalSessions(this.currentProjectId);
 
-			// Background output collection is handled by the server
+			// Leave the workspace on the server too: no awareness events and no
+			// output from its sessions reach this socket until we come back. The
+			// server keeps their scrollback, and re-attaching replays it.
+			const leaving = this.currentProjectId;
+			ptyClient.leaveNamespace(leaving).catch((err) => {
+				debug.warn('terminal', `Could not leave terminal namespace ${leaving}:`, err);
+			});
 		}
 
 		// Get or create context for the new project

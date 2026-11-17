@@ -196,10 +196,20 @@ export interface StreamNotification {
 	message: string;
 }
 
+/**
+ * One streamed piece of an assistant (or reasoning) block.
+ *
+ * `update` carries only `deltaText`, placed at `offset` within the block; the
+ * full text is sent once, on `end`. `block` changes on every `start`.
+ */
 export interface PartialMessageData {
 	processId: string;
 	eventType: 'start' | 'update' | 'end';
-	partialText: string;
+	block: number;
+	/** Length of the block's text before `deltaText` (on `start` and `update`). */
+	offset?: number;
+	/** The block's full text — on `end` only. */
+	partialText?: string;
 	deltaText: string;
 	reasoning: boolean;
 	timestamp: string;

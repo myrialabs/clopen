@@ -34,18 +34,13 @@ import type { WSConnection } from '$shared/utils/ws-server';
 import { encodeBinaryMessage, isBinaryAction } from '$shared/utils/ws-server';
 import { debug } from '$shared/utils/logger';
 import { clientIpFromConnection } from './client-ip';
+import { sendBinary, sendText } from './ws-wire';
 
-/**
- * Performance configuration
- */
-const CONFIG = {
-	/** Maximum send buffer before dropping frames (bytes) */
-	MAX_BUFFER_SIZE: 1024 * 1024, // 1MB
-	/** Enable backpressure handling */
-	ENABLE_BACKPRESSURE: true,
-	/** Log dropped frames */
-	LOG_DROPPED_FRAMES: true
-};
+/** The action of a serialized `{"action":"…",…}` event, for the traffic meter. */
+function actionOf(message: string): string {
+	const match = /^\{"action":"([^"]+)"/.exec(message);
+	return match ? match[1] : 'unknown';
+}
 
 /**
  * Metrics for monitoring
@@ -54,7 +49,6 @@ interface WSMetrics {
 	totalConnections: number;
 	activeProjects: number;
 	activeUsers: number;
-	droppedFrames: number;
 	totalEmits: number;
 }
 
@@ -117,7 +111,6 @@ class WSServer {
 		totalConnections: 0,
 		activeProjects: 0,
 		activeUsers: 0,
-		droppedFrames: 0,
 		totalEmits: 0
 	};
 
@@ -731,33 +724,22 @@ class WSServer {
 	}
 
 	/**
-	 * Check if connection can receive data (backpressure check)
+	 * Whether a connection can be written to at all.
+	 *
+	 * Deliberately not a backpressure gate. An earlier one dropped events while
+	 * the socket's buffer held more than 1 MB — but it read `getBufferedAmount`
+	 * off Elysia's wrapper, which does not have it, so it never fired. Making it
+	 * fire would be worse than leaving it dead: events are a stream the client
+	 * reassembles (stream deltas, file changes, terminal output), and a silently
+	 * missing one is a wrong screen. What used to fill the buffer — one huge
+	 * reply — is now chunked and drained instead (backend/utils/ws-wire.ts).
 	 */
 	private canSend(conn: WSConnection): boolean {
-		if (!CONFIG.ENABLE_BACKPRESSURE) return true;
-
-		// Check WebSocket ready state
-		if (conn.readyState !== 1) return false;
-
-		// Check buffer size if available (Bun/uWebSockets)
-		const rawWs = conn as any;
-		if (typeof rawWs.getBufferedAmount === 'function') {
-			const buffered = rawWs.getBufferedAmount();
-			if (buffered > CONFIG.MAX_BUFFER_SIZE) {
-				if (CONFIG.LOG_DROPPED_FRAMES) {
-					this.metrics.droppedFrames++;
-					const id = this.resolveId(conn) || 'unknown';
-					debug.warn('websocket', `Backpressure: dropping frame for ${id} (buffer: ${buffered})`);
-				}
-				return false;
-			}
-		}
-
-		return true;
+		return conn.readyState === 1;
 	}
 
 	/**
-	 * Send message to a single connection with backpressure handling
+	 * Send a serialized event to a single connection.
 	 */
 	private sendToConnection(conn: WSConnection, message: string | ArrayBuffer): boolean {
 		if (!this.canSend(conn)) {
@@ -765,11 +747,10 @@ class WSServer {
 		}
 
 		try {
-			// For binary data (ArrayBuffer), wrap in Buffer for Bun/Elysia compatibility
 			if (message instanceof ArrayBuffer) {
-				conn.send(Buffer.from(message));
+				sendBinary(conn, 'binary-event', message);
 			} else {
-				conn.send(message);
+				sendText(conn, actionOf(message), message);
 			}
 			return true;
 		} catch (err) {
@@ -849,6 +830,27 @@ class WSServer {
 			}
 
 			debug.log('websocket', `Emitted ${eventStr}${hasBinary ? ' (binary)' : ''} to ${sentCount}/${room.size} connections in project ${projectId}`);
+		},
+
+		/**
+		 * Emit to the connections of a project room that pass `include` — for a
+		 * stream only some of the room is looking at (a panel's live detail).
+		 */
+		projectWhere: <K extends keyof WSAPI['server']>(
+			projectId: string,
+			include: (connectionId: string) => boolean,
+			event: K,
+			payload: WSAPI['server'][K]
+		): void => {
+			this.metrics.totalEmits++;
+			const room = this.projectRooms.get(projectId);
+			if (!room || room.size === 0) return;
+			let message: string | null = null;
+			for (const [connectionId, wsConn] of room) {
+				if (!include(connectionId)) continue;
+				message ??= JSON.stringify({ action: event, payload });
+				this.sendToConnection(wsConn, message);
+			}
 		},
 
 		/**

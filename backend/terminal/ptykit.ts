@@ -35,13 +35,18 @@ export const ptyKitManager = new PtyKitManager({
 	// refresh/reconnect can still replay their final screen (matches old 5-min window).
 	idleTtl: null,
 	retainExitedMs: 5 * 60_000,
+	// A flood (a build, a dev server's log) is held to one frame per window;
+	// the first chunk after a pause still goes out at once, so typing is not.
+	outputCoalesceMs: 16,
 	env: { sanitize: true, inject: TERMINAL_ENV }
 });
 
 /**
  * Embedded WebSocket server over the manager. No HTTP/Bun mounting — Clopen's
  * tunnel feeds it frames and supplies per-connection `send`. `authorize` enforces
- * project access; the room is the project so every device sees the same output.
+ * project access. The room is the workspace scope, which carries awareness (tabs
+ * opened or closed on any device); a session's output goes only to the devices
+ * that have that tab mounted (PtyKit 0.1.0).
  */
 export const ptyKitServer = createPtyKitServer(ptyKitManager, {
 	room: (ctx) => ctx.namespace,

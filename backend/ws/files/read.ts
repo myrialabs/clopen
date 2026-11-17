@@ -179,6 +179,36 @@ export const readHandler = createRouter()
 		return result;
 	})
 
+	/**
+	 * Size and modification time of several files at once, without their
+	 * contents. The Files panel's safety-net check on focus uses it to re-read
+	 * only the open tabs whose file actually changed, instead of downloading
+	 * every open file again on every alt-tab. `modified` is in the same format
+	 * `files:read-file` returns, so the two compare directly.
+	 */
+	.http('files:read-stats', {
+		data: t.Object({
+			file_paths: t.Array(t.String())
+		}),
+		response: t.Array(t.Object({
+			/** The path as requested. */
+			path: t.String(),
+			exists: t.Boolean(),
+			size: t.Optional(t.Number()),
+			modified: t.Optional(t.String())
+		}))
+	}, async ({ data }) => {
+		return await Promise.all(data.file_paths.map(async (requested) => {
+			try {
+				const stats = await Bun.file(await resolveFilePath(requested)).stat();
+				if (!stats.isFile()) return { path: requested, exists: false };
+				return { path: requested, exists: true, size: stats.size, modified: stats.mtime.toISOString() };
+			} catch {
+				return { path: requested, exists: false };
+			}
+		}));
+	})
+
 	// Read file content at a git ref (e.g. HEAD) for diff comparison
 	.http('files:read-file-at', {
 		data: t.Object({

@@ -266,6 +266,14 @@ export function initAiChanges(): void {
 		void refreshPendingChanges(PENDING_DEBOUNCE_MS);
 	});
 
+	// A burst too large to list (or a rebuilt watcher) arrives as a resync.
+	ws.on('files:resync', (payload: { projectId: string }) => {
+		if (payload.projectId !== currentScopeKey()) return;
+		const sessionId = aiChangesState.sessionId;
+		if (!sessionId || !getSessionProcessState(sessionId).isLoading) return;
+		void refreshPendingChanges(PENDING_DEBOUNCE_MS);
+	});
+
 	// Events sent while the socket was down reached nobody, so re-read rather
 	// than waiting for the next unrelated write.
 	onWsReconnect(() => {

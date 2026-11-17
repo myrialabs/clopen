@@ -2,12 +2,13 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
+import { precompress } from './scripts/vite-precompress';
 
 const frontendPort = parseInt(process.env.CLOPEN_PORT_FRONTEND || '9151');
 const backendPort = parseInt(process.env.CLOPEN_PORT_BACKEND || '9161');
 
 export default defineConfig({
-	plugins: [tailwindcss(), svelte()],
+	plugins: [tailwindcss(), svelte(), precompress()],
 	publicDir: 'static',
 	server: {
 		port: frontendPort,
