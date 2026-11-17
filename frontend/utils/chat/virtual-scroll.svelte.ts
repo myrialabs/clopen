@@ -123,6 +123,27 @@ export function createVirtualScroll(getConfig: () => VSConfig = () => VS_CONFIG_
 	}
 
 	/**
+	 * Older items were inserted at the front of the list. Shift the window by the
+	 * same amount so it keeps covering exactly the items it covered before — the
+	 * DOM does not change; `expandUp` then reveals the new ones.
+	 */
+	function prepend(added: number) {
+		if (added <= 0) return;
+		const wasActive = isActive;
+		totalCount += added;
+		if (wasActive) {
+			windowStart += added;
+			windowEnd += added;
+		} else {
+			// Everything was rendered; now the new items sit above the window.
+			windowStart = added;
+			windowEnd = totalCount;
+			isActive = true;
+		}
+		debug.log('chat', `[VirtualScroll] Prepend +${added}: ${windowStart}..${windowEnd} of ${totalCount}`);
+	}
+
+	/**
 	 * Ensure a specific index is visible in the window.
 	 * Used for edit mode / scroll-to-message.
 	 */
@@ -155,6 +176,7 @@ export function createVirtualScroll(getConfig: () => VSConfig = () => VS_CONFIG_
 		expandDown,
 		trimTop,
 		trimBottom,
+		prepend,
 		ensureVisible,
 	};
 }

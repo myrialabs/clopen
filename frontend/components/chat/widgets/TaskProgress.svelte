@@ -20,18 +20,25 @@
 	 * engines that still send snapshots. See utils/chat/task-progress.ts for why
 	 * the replay is scoped to one SDK session.
 	 */
+	/**
+	 * The branch as far as tasks are concerned: the task-tool messages older than
+	 * what is loaded (the chat pages its history in), then the loaded messages.
+	 * Replaying this gives exactly what replaying the whole branch gave.
+	 */
+	const taskMessages = $derived([...sessionState.taskHistory, ...sessionState.messages]);
+
 	const taskToolTodos = $derived.by((): TodoItem[] | null => {
 		if (!sessionState.currentSession) return null;
-		return replayTaskTools(sessionState.messages);
+		return replayTaskTools(taskMessages);
 	});
 
 	const todoWriteTodos = $derived.by((): TodoItem[] | null => {
-		if (!sessionState.currentSession || sessionState.messages.length === 0) {
+		if (!sessionState.currentSession || taskMessages.length === 0) {
 			return null;
 		}
 
-		for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-			const message = sessionState.messages[i];
+		for (let i = taskMessages.length - 1; i >= 0; i--) {
+			const message = taskMessages[i];
 
 			if (message.type === 'assistant' && 'content' in message) {
 				for (const item of message.content) {
