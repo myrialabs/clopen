@@ -2,6 +2,8 @@ import { getDatabase } from '../index';
 import type { DatabaseMessage } from '$shared/types/database/schema';
 
 import { debug } from '$shared/utils/logger';
+import { removeSessionsFts } from './message-queries';
+
 export const dbUtils = {
 	// Get dashboard statistics
 	getStats(): {
@@ -51,6 +53,7 @@ export const dbUtils = {
 		
 		for (const session of oldSessions) {
 			db.prepare('DELETE FROM messages WHERE session_id = ?').run(session.id);
+			removeSessionsFts('?', session.id);
 			db.prepare('DELETE FROM chat_sessions WHERE id = ?').run(session.id);
 		}
 		

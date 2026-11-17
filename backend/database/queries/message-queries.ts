@@ -26,10 +26,47 @@ function extractSearchableText(msg: UnifiedMessage): string {
 		.join('\n');
 }
 
+/**
+ * The messages_fts mirror is written and deleted only through these helpers.
+ *
+ * FTS5 cannot look a row up by `message_id` (an UNINDEXED column), so a delete
+ * by it walked the whole index on every message save — seconds on a large
+ * database, on the server's only thread. `messages_fts_map` records each
+ * message's FTS rowid, so every delete here is a direct lookup (migration 088).
+ */
+
+/** Remove the FTS rows of the given messages. */
+export function removeMessagesFts(ids: string[]): void {
+	if (ids.length === 0) return;
+	const db = getDatabase();
+	for (let start = 0; start < ids.length; start += 500) {
+		const chunk = ids.slice(start, start + 500);
+		const placeholders = chunk.map(() => '?').join(',');
+		db.prepare(`
+			DELETE FROM messages_fts
+			WHERE rowid IN (SELECT fts_rowid FROM messages_fts_map WHERE message_id IN (${placeholders}))
+		`).run(...chunk);
+		db.prepare(`DELETE FROM messages_fts_map WHERE message_id IN (${placeholders})`).run(...chunk);
+	}
+}
+
+/**
+ * Remove the FTS rows of whole sessions, named by a subquery that returns
+ * session ids (e.g. `SELECT id FROM chat_sessions WHERE project_id = ?`).
+ */
+export function removeSessionsFts(sessionIdsQuery: string, ...params: unknown[]): void {
+	const db = getDatabase();
+	db.prepare(`
+		DELETE FROM messages_fts
+		WHERE rowid IN (SELECT fts_rowid FROM messages_fts_map WHERE session_id IN (${sessionIdsQuery}))
+	`).run(...(params as never[]));
+	db.prepare(`DELETE FROM messages_fts_map WHERE session_id IN (${sessionIdsQuery})`).run(...(params as never[]));
+}
+
 /** Keep the messages_fts mirror in sync with a message's current text content. */
 function syncMessageFts(id: string, sessionId: string, msg: UnifiedMessage): void {
 	const db = getDatabase();
-	db.prepare('DELETE FROM messages_fts WHERE message_id = ?').run(id);
+	removeMessagesFts([id]);
 
 	const text = extractSearchableText(msg).trim();
 	if (!text) return;
@@ -37,10 +74,12 @@ function syncMessageFts(id: string, sessionId: string, msg: UnifiedMessage): voi
 	const session = db.prepare('SELECT project_id FROM chat_sessions WHERE id = ?').get(sessionId) as { project_id: string } | null;
 	if (!session) return;
 
-	db.prepare(`
+	const inserted = db.prepare(`
 		INSERT INTO messages_fts (message_id, session_id, project_id, text)
 		VALUES (?, ?, ?, ?)
-	`).run(id, sessionId, session.project_id, text);
+	`).run(id, sessionId, session.project_id, text) as { lastInsertRowid: number | bigint };
+	db.prepare('INSERT OR REPLACE INTO messages_fts_map (message_id, session_id, fts_rowid) VALUES (?, ?, ?)')
+		.run(id, sessionId, Number(inserted.lastInsertRowid));
 }
 
 export const messageQueries = {
@@ -194,13 +233,13 @@ export const messageQueries = {
 	delete(id: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM messages WHERE id = ?').run(id);
-		db.prepare('DELETE FROM messages_fts WHERE message_id = ?').run(id);
+		removeMessagesFts([id]);
 	},
 
 	deleteBySessionId(sessionId: string): void {
 		const db = getDatabase();
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(sessionId);
-		db.prepare('DELETE FROM messages_fts WHERE session_id = ?').run(sessionId);
+		removeSessionsFts('?', sessionId);
 	},
 
 	deleteAfterTimestamp(sessionId: string, timestamp: string): void {
@@ -214,10 +253,7 @@ export const messageQueries = {
 			WHERE session_id = ? AND created_at >= ?
 		`).run(sessionId, timestamp);
 
-		if (ids.length > 0) {
-			const placeholders = ids.map(() => '?').join(',');
-			db.prepare(`DELETE FROM messages_fts WHERE message_id IN (${placeholders})`).run(...ids.map(r => r.id));
-		}
+		removeMessagesFts(ids.map(r => r.id));
 	},
 
 	/**
