@@ -23,7 +23,7 @@ import { setRateLimit } from '$frontend/stores/ui/rate-limit.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
 import type { StreamingMessage, OptimisticUserMessage, FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
-import { placeDelta } from '$frontend/utils/stream-delta';
+import { applyPartial, applySnapshot, placeSavedMessage, type SettledMap, type StreamSnapshot } from '$frontend/utils/chat/stream-placeholders';
 import { INTERACTIVE_TOOLS, isWaitingForInteractiveInput } from '$shared/utils/interactive-input';
 
 /** Chat service configuration */
@@ -76,6 +76,8 @@ const START_CONFIRM_TIMEOUT_MS = 60_000;
 class ChatService {
   private streams = new Map<string, SessionStreamState>();
   private lastEventSeq = new Map<string, number>(); // Sequence-based deduplication (processId → last seq)
+  /** Streamed blocks a saved message has already replaced, per process (see stream-placeholders.ts). */
+  private settledBlocks: SettledMap = new Map();
 
   static loadingTexts: string[] = [
     'thinking', 'processing', 'analyzing', 'calculating', 'computing',
@@ -334,6 +336,7 @@ class ChatService {
 
       ctx.state.streamCompleted = true;
       ctx.state.processId = null;
+      if (data.processId) this.settledBlocks.delete(data.processId);
       this.clearCancelSafetyTimer(ctx.sessionId);
       this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, ctx.sessionId);
 
@@ -366,6 +369,7 @@ class ChatService {
       }
       ctx.state.streamCompleted = true;
       ctx.state.processId = null;
+      if (data.processId) this.settledBlocks.delete(data.processId);
       this.clearCancelSafetyTimer(ctx.sessionId);
       // Don't clear isCancelling here — it causes a race with presence.
       // The chat:cancelled WS event arrives before broadcastPresence() updates,
@@ -399,6 +403,7 @@ class ChatService {
       // (e.g. from multiple subscriptions or late-arriving events with different processId/seq)
       ctx.state.streamCompleted = true;
       ctx.state.processId = null;
+      if (data.processId) this.settledBlocks.delete(data.processId);
       this.clearCancelSafetyTimer(ctx.sessionId);
       this.setProcessState({ isLoading: false, isWaitingInput: false, isCancelling: false }, ctx.sessionId);
 
@@ -933,60 +938,18 @@ class ChatService {
       }
     }
 
-    // If this is an assistant message, replace the matching non-reasoning
-    // stream_event placeholder (leave any reasoning placeholder alone —
-    // it will be replaced by its own ReasoningMessage).
-    // Only root assistant messages may claim the root text placeholder.
-    // Agent/Workflow child messages already carry parent.toolUseId and must be
-    // pushed intact so the grouper embeds them directly into subActivities.
-    // Replacing a root placeholder with a child briefly renders that child at
-    // the root before the next reactive grouping pass relocates it.
-    if (message.type === 'assistant' && !message.parent?.toolUseId) {
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i];
-        if (msg.type === 'stream_event' && !(msg as StreamingMessage).reasoning) {
-          sessionState.messages[i] = message;
-          this.checkInteractiveTools(message, ctx.sessionId);
-          return;
-        }
-      }
-      // No matching stream_event found, fall through to push
-    }
-
-    // If this is a reasoning message, replace the matching reasoning
-    // stream_event placeholder. Fall back to inserting before the first
-    // non-reasoning stream_event so the display order stays reasoning → text.
-    // Same rule as assistant: a sub-agent's reasoning never claims the root
-    // placeholder — it is pushed intact and folded into its parent tool.
-    if (message.type === 'reasoning' && !message.parent?.toolUseId) {
-      for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-        const msg = sessionState.messages[i];
-        if (msg.type === 'stream_event' && (msg as StreamingMessage).reasoning) {
-          sessionState.messages[i] = message;
-          return;
-        }
-      }
-      const textStreamIdx = (sessionState.messages as FrontendMessage[]).findIndex(
-        m => m.type === 'stream_event' && !(m as StreamingMessage).reasoning
-      );
-      if (textStreamIdx !== -1) {
-        (sessionState.messages as FrontendMessage[]).splice(textStreamIdx, 0, message);
-        return;
-      }
-      // No stream_event yet — fall through to dedup + push
-    }
-
-    // Deduplicate: if a message with the same messageId already exists, update it in place
-    // (e.g., stopReason backfill arrives after initial assistant message was emitted)
-    if (message.messageId) {
-      const existingIdx = (sessionState.messages as FrontendMessage[]).findIndex(
-        (m) => m.type !== 'stream_event' && 'messageId' in m && m.messageId === message.messageId && !('optimistic' in m && m.optimistic)
-      );
-      if (existingIdx !== -1) {
-        (sessionState.messages as FrontendMessage[])[existingIdx] = message;
-        return;
-      }
-    }
+    // A message already in the transcript (the stop-reason re-send, a repeated
+    // delivery) is updated in place by id BEFORE it may claim a placeholder —
+    // otherwise the re-send takes the empty placeholder a late stream event
+    // left behind and the reply shows twice. A root assistant/reasoning message
+    // then replaces its streaming placeholder and settles that block, so no
+    // later event about it can bring a placeholder back. Sub-agent messages
+    // (parent.toolUseId) never claim a root placeholder: they are pushed intact
+    // and the grouper folds them into their parent tool.
+    // See frontend/utils/chat/stream-placeholders.ts.
+    const placed = placeSavedMessage(sessionState.messages as FrontendMessage[], this.settledBlocks, message);
+    if (placed === 'claimed' && message.type === 'assistant') this.checkInteractiveTools(message, ctx.sessionId);
+    if (placed !== 'none') return;
 
     // Detect interactive tool_use blocks (e.g., AskUserQuestion) and set waiting status
     if (message.type === 'assistant') {
@@ -1018,111 +981,15 @@ class ChatService {
   }
 
   /**
-   * The streaming placeholder for one (process, reasoning) pair, if any.
-   */
-  private findStreamPlaceholder(processId: string, reasoning: boolean): StreamingMessage | undefined {
-    for (let i = sessionState.messages.length - 1; i >= 0; i--) {
-      const msg = sessionState.messages[i];
-      if (
-        msg.type === 'stream_event' &&
-        (msg as StreamingMessage).processId === processId &&
-        !!(msg as StreamingMessage).reasoning === reasoning
-      ) {
-        return msg as StreamingMessage;
-      }
-    }
-    return undefined;
-  }
-
-  /**
-   * Insert an empty streaming placeholder.
-   *
-   * A reasoning placeholder goes BEFORE any existing non-reasoning stream_event
-   * so the on-screen order stays reasoning → text within a turn. Without this,
-   * engines that emit a preliminary non-reasoning stream_start at turn
-   * boundaries (e.g. OpenCode) leave a stale empty text placeholder ahead of the
-   * reasoning block, which then gets claimed by the next tool message and
-   * visually swaps reasoning behind the tool.
-   */
-  private insertStreamPlaceholder(
-    processId: string,
-    reasoning: boolean,
-    block: number | undefined,
-    text = '',
-    createdAt = new Date().toISOString()
-  ): StreamingMessage {
-    const placeholder: StreamingMessage = { type: 'stream_event', processId, text, createdAt, reasoning, block };
-    const messages = sessionState.messages as FrontendMessage[];
-    if (reasoning) {
-      const textIdx = messages.findIndex((m) => m.type === 'stream_event' && !(m as StreamingMessage).reasoning);
-      if (textIdx !== -1) {
-        messages.splice(textIdx, 0, placeholder);
-        return messages[textIdx] as StreamingMessage;
-      }
-    }
-    messages.push(placeholder);
-    return messages[messages.length - 1] as StreamingMessage;
-  }
-
-  /**
-   * Handle partial message events (streaming).
-   *
-   * An `update` carries only its delta and where it starts (`offset`), so the
-   * text is rebuilt here: a delta already covered is ignored, one that
-   * overlaps adds only its new tail, and one that starts past the end of what
-   * we hold means frames were missed — the text is re-read from the server
-   * rather than shown with a hole in it. `end` carries the full text and
-   * settles any remaining doubt.
+   * Handle partial message events (streaming) — see applyPartial in
+   * frontend/utils/chat/stream-placeholders.ts. A gap (frames missed) is
+   * repaired by re-reading the live text from the server.
    */
   private handlePartialEvent(data: any, stream: SessionStreamState): void {
     // Ignore partials from a completed/cancelled stream
     if (stream.streamCompleted) return;
-
-    const isReasoning = data.reasoning === true;
-    const block: number | undefined = typeof data.block === 'number' ? data.block : undefined;
-    let placeholder = this.findStreamPlaceholder(data.processId, isReasoning);
-
-    // A newer block replaces the text; a stale block's frames are dropped.
-    if (placeholder && block !== undefined && placeholder.block !== undefined && placeholder.block !== block) {
-      if (block < placeholder.block) return;
-      placeholder.text = '';
-      placeholder.block = block;
-    }
-
-    if (data.eventType === 'start') {
-      if (placeholder) {
-        placeholder.text = '';
-        placeholder.block = block;
-      } else {
-        this.insertStreamPlaceholder(data.processId, isReasoning, block, '', data.timestamp);
-      }
-      return;
-    }
-
-    if (data.eventType === 'end') {
-      if (typeof data.partialText !== 'string') return;
-      if (placeholder) {
-        placeholder.text = data.partialText;
-        placeholder.block = block;
-      } else {
-        this.insertStreamPlaceholder(data.processId, isReasoning, block, data.partialText, data.timestamp);
-      }
-      return;
-    }
-
-    if (data.eventType !== 'update') return;
-    if (!placeholder) {
-      // Missed the start (or joined mid-block): begin empty and let the offset
-      // check below decide whether this delta can be placed.
-      placeholder = this.insertStreamPlaceholder(data.processId, isReasoning, block, '', data.timestamp);
-    }
-    if (placeholder.block === undefined) placeholder.block = block;
-
-    const delta: string = data.deltaText || '';
-    const offset: number = typeof data.offset === 'number' ? data.offset : placeholder.text.length;
-    const placed = placeDelta(placeholder.text, offset, delta);
-    if (placed.kind === 'extended') placeholder.text = placed.text;
-    else if (placed.kind === 'gap') this.resyncStreamText(data.chatSessionId);
+    const result = applyPartial(sessionState.messages as FrontendMessage[], this.settledBlocks, data);
+    if (result === 'gap') this.resyncStreamText(data.chatSessionId);
   }
 
   /** Sessions with a stream-state re-read in flight, so a burst of gaps asks once. */
@@ -1144,41 +1011,14 @@ class ChatService {
   /**
    * Bring the streaming placeholders up to a server snapshot
    * (`chat:stream-state`): used to catch up when joining a running stream and
-   * to repair a gap. A snapshot only ever moves text forward — it is ignored
-   * for a block it is older than, and never shortens text that live frames
-   * have already extended.
+   * to repair a gap. A snapshot taken before events this client has already
+   * applied (`seq` older than the last one seen) may only extend a placeholder
+   * that still exists — see applySnapshot.
    */
-  applyStreamSnapshot(snapshot: {
-    processId: string;
-    currentPartialText?: string;
-    currentReasoningText?: string;
-    partialBlock?: number;
-    reasoningBlock?: number;
-  }): void {
-    const apply = (reasoning: boolean, text: string | undefined, block: number | undefined) => {
-      if (!text) return;
-      const placeholder = this.findStreamPlaceholder(snapshot.processId, reasoning);
-      if (!placeholder) {
-        this.insertStreamPlaceholder(snapshot.processId, reasoning, block, text);
-        return;
-      }
-      if (block !== undefined && placeholder.block !== undefined && block < placeholder.block) return;
-      if (block === placeholder.block && placeholder.text.length > text.length && placeholder.text.startsWith(text)) return;
-      placeholder.text = text;
-      placeholder.block = block;
-    };
-
-    // Reasoning before text, so the display order matches live emission.
-    apply(true, snapshot.currentReasoningText, snapshot.reasoningBlock);
-    apply(false, snapshot.currentPartialText, snapshot.partialBlock);
-
-    // Nothing streamed yet: an empty text placeholder keeps the loading indicator visible.
-    if (!snapshot.currentPartialText && !snapshot.currentReasoningText) {
-      const hasAnyStream = sessionState.messages.some(
-        (m) => m.type === 'stream_event' && (m as StreamingMessage).processId === snapshot.processId
-      );
-      if (!hasAnyStream) this.insertStreamPlaceholder(snapshot.processId, false, snapshot.partialBlock);
-    }
+  applyStreamSnapshot(snapshot: StreamSnapshot & { seq?: number }): void {
+    const lastSeen = this.lastEventSeq.get(snapshot.processId);
+    const stale = typeof snapshot.seq === 'number' && lastSeen !== undefined && snapshot.seq < lastSeen;
+    applySnapshot(sessionState.messages as FrontendMessage[], this.settledBlocks, snapshot, stale);
   }
 
   /**
