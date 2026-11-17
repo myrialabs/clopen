@@ -24,8 +24,10 @@ if (typeof globalThis.Bun === 'undefined') {
 
 import { existsSync, copyFileSync, readFileSync } from 'fs';
 import { join } from 'path';
+import { homedir } from 'os';
 import { loadEnvFile } from '../backend/utils/env';
 import { runGitHelper } from '../backend/git/identity/cli';
+import { stopOnSignals, supervise } from '../shared/utils/process-supervisor';
 
 // CLI Options interface
 interface CLIOptions {
@@ -386,41 +388,45 @@ async function startServer(options: CLIOptions) {
 
 	startSpinner('Starting server...');
 
-	const serverProc = Bun.spawn(['bun', startScript], {
-		cwd: __dirname,
-		stdout: 'pipe',
-		stderr: 'pipe',
-		stdin: 'inherit',
-		env,
-	});
-
-	// Forward subprocess output, stopping spinner on first chunk
+	// Output is forwarded as-is; the first chunk means the server is up.
 	let spinnerActive = true;
-
-	async function pipeStream(stream: ReadableStream<Uint8Array>, target: NodeJS.WriteStream) {
-		const reader = stream.getReader();
-		try {
-			while (true) {
-				const { done, value } = await reader.read();
-				if (done) break;
-				if (spinnerActive) {
-					stopSpinner();
-					spinnerActive = false;
-				}
-				target.write(value);
-			}
-		} finally {
-			reader.releaseLock();
+	const forward = (target: NodeJS.WriteStream) => (chunk: Uint8Array) => {
+		if (spinnerActive) {
+			stopSpinner();
+			spinnerActive = false;
 		}
-	}
+		try {
+			target.write(chunk);
+		} catch {
+			// The terminal is gone; the server keeps running regardless.
+		}
+	};
 
-	await Promise.all([
-		pipeStream(serverProc.stdout, process.stdout),
-		pipeStream(serverProc.stderr, process.stderr),
-		serverProc.exited,
-	]);
+	// Supervised: its own process group, restarted if it stops without being
+	// asked to, stopped with Ctrl+C / SIGTERM (e.g. `docker stop`) as before.
+	// See shared/utils/process-supervisor.ts.
+	const dataDir = env.CLOPEN_DATA_DIR?.trim() || join(homedir(), '.clopen');
+	const server = supervise({
+		name: 'server',
+		cmd: ['bun', startScript],
+		cwd: __dirname,
+		env,
+		onStdout: forward(process.stdout),
+		onStderr: forward(process.stderr),
+		log: (line) => {
+			if (spinnerActive) {
+				stopSpinner();
+				spinnerActive = false;
+			}
+			console.error(line);
+		},
+		reportFile: join(dataDir, 'logs', 'supervisor.log')
+	});
+	stopOnSignals([server]);
 
+	const code = await server.done;
 	if (spinnerActive) stopSpinner();
+	process.exit(code);
 }
 
 // ============================================================
