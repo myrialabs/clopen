@@ -16,6 +16,7 @@ import { ws } from '$backend/utils/ws';
 import { defaultRotation, type DeviceRequest } from '$shared/constants/preview.js';
 import { applyViewport, type EmulationPatch } from './viewport';
 import { debug } from '$shared/utils/logger';
+import { emitToPreviewWatchers, forgetAgentCursor, rememberAgentCursor } from '../../ws/preview/watchers';
 import { sleep } from '$shared/utils/async';
 import { scopeProjectId } from '$shared/utils/workspace-scope';
 import type {
@@ -1786,12 +1787,15 @@ class BrowserPreviewServiceManager {
 		});
 
 		// Forward console events
+		// Console lines are a panel's live detail, as frequent as the page is
+		// chatty: only connections with a Preview open receive them. A panel that
+		// opens later seeds itself from the console history.
 		service.on('preview:browser-console-message', (data) => {
-			ws.emit.project(roomId, 'preview:browser-console-message', data);
+			emitToPreviewWatchers(roomId, 'preview:browser-console-message', data);
 		});
 
 		service.on('preview:browser-console-clear', (data) => {
-			ws.emit.project(roomId, 'preview:browser-console-clear', data);
+			emitToPreviewWatchers(roomId, 'preview:browser-console-clear', data);
 		});
 
 		// Forward dialog events
@@ -1910,6 +1914,7 @@ class BrowserPreviewServiceManager {
 			// No longer pinned: an unwatched tab the agent has let go of is free
 			// to fall asleep on the usual timer.
 			this.services.get(data.projectId)?.noteTabActivity(data.browserTabId);
+			forgetAgentCursor(data.projectId, data.browserTabId);
 			ws.emit.project(data.projectId, 'preview:browser-mcp-control-end', {
 				browserTabId: data.browserTabId,
 				projectId: data.projectId,
@@ -1926,21 +1931,34 @@ class BrowserPreviewServiceManager {
 			});
 		});
 
+		// The agent's cursor moves many times a second while it works and is only
+		// drawn inside a Preview, so its steps go to connections with one open;
+		// where it came to rest is remembered for a Preview that opens later.
 		browserMcpControl.on('cursor-position', (data) => {
 			if (!data.projectId) return;
-			ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-position', {
+			const cursor = {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,
 				pressed: data.pressed ?? false,
 				timestamp: data.timestamp,
 				source: 'mcp' as const
-			});
+			};
+			rememberAgentCursor(data.projectId, cursor);
+			emitToPreviewWatchers(data.projectId, 'preview:browser-mcp-cursor-position', cursor);
 		});
 
 		browserMcpControl.on('cursor-glide', (data) => {
 			if (!data.projectId) return;
-			ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-glide', {
+			rememberAgentCursor(data.projectId, {
+				sessionId: data.tabId,
+				x: data.to.x,
+				y: data.to.y,
+				pressed: data.pressed ?? false,
+				timestamp: data.timestamp,
+				source: 'mcp' as const
+			});
+			emitToPreviewWatchers(data.projectId, 'preview:browser-mcp-cursor-glide', {
 				sessionId: data.tabId,
 				from: data.from,
 				control: data.control,
@@ -1955,7 +1973,7 @@ class BrowserPreviewServiceManager {
 
 		browserMcpControl.on('cursor-click', (data) => {
 			if (!data.projectId) return;
-			ws.emit.project(data.projectId, 'preview:browser-mcp-cursor-click', {
+			emitToPreviewWatchers(data.projectId, 'preview:browser-mcp-cursor-click', {
 				sessionId: data.tabId,
 				x: data.x,
 				y: data.y,

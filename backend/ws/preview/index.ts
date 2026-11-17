@@ -57,6 +57,7 @@ import { streamPreviewHandler } from './browser/webcodecs';
 import { nativeUIPreviewHandler } from './browser/native-ui';
 import { mcpPreviewHandler } from './browser/mcp';
 import { hostPreviewHandler } from './browser/host';
+import { previewWatchHandler } from './watchers';
 
 export const previewRouter = createRouter()
 	.merge(tabPreviewHandler)
@@ -70,6 +71,7 @@ export const previewRouter = createRouter()
 	.merge(nativeUIPreviewHandler)
 	.merge(mcpPreviewHandler)
 	.merge(hostPreviewHandler)
+	.merge(previewWatchHandler)
 	// Server-emitted events (for type safety)
 	.emit('preview:browser-tab-opened', t.Object({
 		// projectId lets the frontend reject events that belong to a project it has

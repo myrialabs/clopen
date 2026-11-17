@@ -453,60 +453,10 @@
 			if (!holdsThisSession()) return;
 
 			if (streamState && streamState.status === 'active' && streamState.processId) {
-				// ── Inject reasoning stream_event (if available) ──
-				// Must come before text so the display order matches live emission.
-				if (streamState.currentReasoningText) {
-					const existingReasoning = sessionState.messages.find(
-						(m: any) => m.type === 'stream_event' && m.processId === streamState.processId && m.reasoning === true
-					);
-
-					if (!existingReasoning) {
-						(sessionState.messages as any[]).push({
-							type: 'stream_event' as const,
-							processId: streamState.processId,
-							text: streamState.currentReasoningText,
-							createdAt: new Date().toISOString(),
-							reasoning: true,
-						});
-					} else {
-						(existingReasoning as any).text = streamState.currentReasoningText;
-					}
-				}
-
-				// ── Inject text stream_event (if available) ──
-				if (streamState.currentPartialText) {
-					const existingText = sessionState.messages.find(
-						(m: any) => m.type === 'stream_event' && m.processId === streamState.processId && m.reasoning !== true
-					);
-
-					if (!existingText) {
-						(sessionState.messages as any[]).push({
-							type: 'stream_event' as const,
-							processId: streamState.processId,
-							text: streamState.currentPartialText,
-							createdAt: new Date().toISOString(),
-							reasoning: false,
-						});
-					} else {
-						(existingText as any).text = streamState.currentPartialText;
-					}
-				}
-
-				// If no partial text/reasoning yet, inject an empty text stream_event so the loading indicator is visible
-				if (!streamState.currentPartialText && !streamState.currentReasoningText) {
-					const hasAnyStream = sessionState.messages.some(
-						(m: any) => m.type === 'stream_event' && m.processId === streamState.processId
-					);
-					if (!hasAnyStream) {
-						(sessionState.messages as any[]).push({
-							type: 'stream_event' as const,
-							processId: streamState.processId,
-							text: '',
-							createdAt: new Date().toISOString(),
-							reasoning: false,
-						});
-					}
-				}
+				// Bring the streaming placeholders up to the server's text. Shared with
+				// the gap repair in chatService, which is what keeps a snapshot from
+				// rewinding text that live deltas have already extended.
+				chatService.applyStreamSnapshot(streamState);
 
 				// Reconnect to live stream events so future partials/messages/complete flow in
 				chatService.reconnectToStream(chatSessionId, streamState.processId);

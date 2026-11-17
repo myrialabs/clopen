@@ -207,20 +207,31 @@ const chatSessionModelState = new Map<string, { engine: string; provider: string
 // In-memory store for account state per chat session (keyed by chatSessionId)
 const chatSessionAccountState = new Map<string, { accountId: number | null; senderId: string }>();
 
+/** Streams currently forwarded to their room — at most one bridge each. */
+const roomBridges = new Map<string, () => void>();
+
 /**
  * Forward one stream's events to its chat session room until the stream ends.
  *
  * Every path that attaches a stream to the room goes through here — the
  * sender's own request, a client re-attaching after a refresh, and a queued
  * message the server starts on its own — so the event wire format exists once.
- * Returns the unsubscribe; a terminal event unsubscribes by itself.
+ *
+ * Idempotent per stream, and not tied to any connection. A bridge emits to the
+ * whole room, so one is all a room ever needs: every client that re-attached
+ * used to add its own, and each frame then reached every device once per
+ * bridge (the client dropped the copies by `seq`, the bandwidth was spent).
+ * Tying a bridge to its connection had the opposite failure: when the sender's
+ * tab closed, its bridge went with it and the other devices still in the room
+ * stopped receiving the turn. It lives until the stream's terminal event.
  */
 export function bridgeStreamToRoom(
 	streamId: string,
 	chatSessionId: string,
 	projectId: string | undefined,
 	options: { presenceOnConnection?: boolean } = {}
-): () => void {
+): void {
+	if (roomBridges.has(streamId)) return;
 	const { presenceOnConnection = true } = options;
 
 	const handleStreamEvent = (event: StreamEvent) => {
@@ -262,7 +273,9 @@ export function bridgeStreamToRoom(
 						chatSessionId,
 						processId: event.processId,
 						eventType: event.data.eventType as any,
-						partialText: event.data.partialText || '',
+						block: event.data.block ?? 0,
+						...(typeof event.data.offset === 'number' && { offset: event.data.offset }),
+						...(typeof event.data.partialText === 'string' && { partialText: event.data.partialText }),
 						deltaText: event.data.deltaText || '',
 						...(event.data.reasoning && { reasoning: true }),
 						timestamp: event.data.timestamp,
@@ -335,8 +348,17 @@ export function bridgeStreamToRoom(
 		}
 	};
 
-	const unsubscribe = streamManager.subscribeToStream(streamId, handleStreamEvent);
-	return unsubscribe;
+	const stopForwarding = streamManager.subscribeToStream(streamId, handleStreamEvent);
+	const unsubscribe = () => {
+		stopForwarding();
+		roomBridges.delete(streamId);
+	};
+	roomBridges.set(streamId, unsubscribe);
+
+	// A stream that ended before it was bridged will never send the terminal
+	// event that removes the bridge.
+	const status = streamManager.getStream(streamId)?.status;
+	if (status && status !== 'active') unsubscribe();
 }
 
 /**
@@ -523,9 +545,8 @@ export const streamHandler = createRouter()
 		});
 		if (!streamId) return;
 
-		// Tied to this connection: it closes with the connection, and the
-		// client's reconnect builds a new one.
-		ws.addCleanup(conn, bridgeStreamToRoom(streamId, data.chatSessionId, projectId));
+		// One bridge per stream, living until the stream ends — see bridgeStreamToRoom.
+		bridgeStreamToRoom(streamId, data.chatSessionId, projectId);
 	})
 
 	// Reconnect to an active stream (after browser refresh / project switch)
@@ -548,7 +569,7 @@ export const streamHandler = createRouter()
 
 			debug.log('chat', 'Reconnecting to active stream:', streamState.streamId);
 
-			ws.addCleanup(conn, bridgeStreamToRoom(streamState.streamId, chatSessionId, projectId, { presenceOnConnection: false }));
+			bridgeStreamToRoom(streamState.streamId, chatSessionId, projectId, { presenceOnConnection: false });
 
 			// Send current state snapshot to chat session room so frontend can catch up
 			ws.emit.chatSession(chatSessionId, 'chat:connection', {
@@ -618,6 +639,9 @@ export const streamHandler = createRouter()
 			messages: t.Array(t.Any()),
 			currentPartialText: t.Optional(t.String()),
 			currentReasoningText: t.Optional(t.String()),
+			/** The blocks those two texts belong to (see `chat:partial`). */
+			partialBlock: t.Optional(t.Number()),
+			reasoningBlock: t.Optional(t.Number()),
 			error: t.Optional(t.String()),
 			startedAt: t.String(),
 			completedAt: t.Optional(t.String())
@@ -663,6 +687,8 @@ export const streamHandler = createRouter()
 			}),
 			currentPartialText: streamState.currentPartialText,
 			currentReasoningText: streamState.currentReasoningText,
+			partialBlock: streamState.partialBlock,
+			reasoningBlock: streamState.reasoningBlock,
 			error: streamState.error,
 			startedAt: streamState.startedAt.toISOString(),
 			completedAt: streamState.completedAt?.toISOString()
@@ -931,7 +957,12 @@ export const streamHandler = createRouter()
 			t.Literal('update'),
 			t.Literal('end')
 		]),
-		partialText: t.String(),
+		/** Changes on every `start`; deltas only apply within their block. */
+		block: t.Number(),
+		/** Length of the block's text before `deltaText` (start/update). */
+		offset: t.Optional(t.Number()),
+		/** The block's full text — on `end` only. */
+		partialText: t.Optional(t.String()),
 		deltaText: t.String(),
 		reasoning: t.Optional(t.Boolean()),
 		timestamp: t.String(),

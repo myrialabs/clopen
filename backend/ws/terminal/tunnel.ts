@@ -4,8 +4,8 @@
  *
  * Inbound client frames arrive on `terminal:pty`; each Clopen connection gets one
  * embedded `PtyKitConnection` whose `send` unicasts frames back on
- * `terminal:pty-out` (RPC responses + reattach replay) while PtyKit's own room
- * registry fans collaborative output out to every viewer. Identity (`userId`) is
+ * `terminal:pty-out` (RPC responses + reattach replay) while PtyKit fans a
+ * session's output out to every connection attached to it. Identity (`userId`) is
  * carried on the connection so `authorize` can enforce project access.
  */
 

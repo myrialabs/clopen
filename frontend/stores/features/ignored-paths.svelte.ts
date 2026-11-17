@@ -70,6 +70,11 @@ export function initIgnoredPaths(): void {
 		if (payload.projectId !== currentScopeKey()) return;
 		refreshIgnoredPaths(150);
 	});
+	// A burst too large to list (or a rebuilt watcher) arrives as a resync.
+	ws.on('files:resync', (payload) => {
+		if (payload.projectId !== currentScopeKey()) return;
+		refreshIgnoredPaths(500);
+	});
 }
 
 export function isPathIgnored(absolutePath: string): boolean {

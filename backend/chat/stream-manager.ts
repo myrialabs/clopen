@@ -78,6 +78,13 @@ export interface StreamState {
 	currentMessage?: UnifiedMessage;
 	currentPartialText?: string;
 	currentReasoningText?: string;
+	/**
+	 * Which streamed block `currentPartialText` / `currentReasoningText` belong
+	 * to. Bumped on every `start`, so a catch-up snapshot of one block can never
+	 * be mistaken for the text of the next.
+	 */
+	partialBlock?: number;
+	reasoningBlock?: number;
 	error?: string;
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
@@ -1106,17 +1113,28 @@ class StreamManager extends EventEmitter {
 					case 'stream_event': {
 						const streamEvt = output as UnifiedStreamEvent;
 
+						// Partials carry the DELTA, not the text so far. Re-sending the
+						// whole accumulated text on every token made a turn cost the sum
+						// of all its prefixes — quadratic in its length, ~115× the text
+						// itself on real chats. `offset` (the length before this delta)
+						// and `block` let a client that joins mid-block or misses a frame
+						// tell exactly what it has and resync instead of guessing; `end`
+						// still carries the full text once, as the reconciliation point.
 						if (streamEvt.event === 'start') {
 							const lifecycle = streamEvt as StreamLifecycleEvent;
+							let block: number;
 							if (lifecycle.reasoning) {
 								streamState.currentReasoningText = '';
+								block = streamState.reasoningBlock = (streamState.reasoningBlock ?? 0) + 1;
 							} else {
 								streamState.currentPartialText = '';
+								block = streamState.partialBlock = (streamState.partialBlock ?? 0) + 1;
 							}
 							this.emitStreamEvent(streamState, 'partial', {
 								processId: streamState.processId,
 								eventType: 'start',
-								partialText: '',
+								block,
+								offset: 0,
 								deltaText: '',
 								...(lifecycle.reasoning && { reasoning: true }),
 								timestamp: new Date().toISOString()
@@ -1124,21 +1142,25 @@ class StreamManager extends EventEmitter {
 						} else if (streamEvt.event === 'delta') {
 							const delta = streamEvt as TextDeltaEvent;
 							if (delta.reasoning) {
-								streamState.currentReasoningText = (streamState.currentReasoningText || '') + delta.text;
+								const before = streamState.currentReasoningText || '';
+								streamState.currentReasoningText = before + delta.text;
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'update',
-									partialText: streamState.currentReasoningText,
+									block: streamState.reasoningBlock ?? 0,
+									offset: before.length,
 									deltaText: delta.text,
 									reasoning: true,
 									timestamp: new Date().toISOString()
 								});
 							} else {
-								streamState.currentPartialText = (streamState.currentPartialText || '') + delta.text;
+								const before = streamState.currentPartialText || '';
+								streamState.currentPartialText = before + delta.text;
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'update',
-									partialText: streamState.currentPartialText,
+									block: streamState.partialBlock ?? 0,
+									offset: before.length,
 									deltaText: delta.text,
 									timestamp: new Date().toISOString()
 								});
@@ -1149,6 +1171,7 @@ class StreamManager extends EventEmitter {
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'end',
+									block: streamState.reasoningBlock ?? 0,
 									partialText: streamState.currentReasoningText,
 									deltaText: '',
 									reasoning: true,
@@ -1159,6 +1182,7 @@ class StreamManager extends EventEmitter {
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'end',
+									block: streamState.partialBlock ?? 0,
 									partialText: streamState.currentPartialText || '',
 									deltaText: '',
 									timestamp: new Date().toISOString()

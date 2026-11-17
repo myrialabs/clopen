@@ -13,7 +13,7 @@
         "@modelcontextprotocol/sdk": "1.31.0",
         "@monaco-editor/loader": "1.7.0",
         "@myrialabs/chatkit": "0.0.3",
-        "@myrialabs/ptykit": "0.0.7",
+        "@myrialabs/ptykit": "0.1.0",
         "@myrialabs/tunnelkit": "0.0.15",
         "@myrialabs/zipkit": "0.0.11",
         "@sinclair/typebox": "0.34.48",
@@ -526,7 +526,7 @@
 
     "@myrialabs/chatkit": ["@myrialabs/chatkit@0.0.3", "", { "dependencies": { "@slack/socket-mode": "^2.0.0", "@slack/web-api": "^7.0.0", "@whiskeysockets/baileys": "^6.7.0", "discord.js": "^14.0.0", "zod": "^3.23.0" }, "optionalDependencies": { "qrcode-terminal": "^0.12.0" }, "bin": { "chatkit": "dist/cli.js" } }, "sha512-QzRhVKyDtyAzeQQ8Y6qbyX9Up0zEvUSEYmDnPl3oKcz2WFISXKiff7Lw8lWKx/DqXlqWVGlsJPTHkm6LAfdoPw=="],
 
-    "@myrialabs/ptykit": ["@myrialabs/ptykit@0.0.7", "", { "dependencies": { "@xterm/addon-clipboard": "^0.2.0", "@xterm/addon-fit": "^0.11.0", "@xterm/addon-ligatures": "^0.10.0", "@xterm/addon-serialize": "^0.14.0", "@xterm/addon-unicode11": "^0.9.0", "@xterm/addon-web-links": "^0.12.0", "@xterm/headless": "^6.0.0", "@xterm/xterm": "^6.0.0" }, "optionalDependencies": { "bun-pty": "^0.4.10", "node-pty": "^1.1.0", "ws": "^8.21.0" }, "peerDependencies": { "svelte": "^5.0.0" }, "optionalPeers": ["svelte"] }, "sha512-1xzeggHiLsT/rBS2XeJsFIr+cDE239z83kNha35G+/8Qi9cEqIJYYvpc+YF0yokBSLMekWui+cCFJLXqq78E2g=="],
+    "@myrialabs/ptykit": ["@myrialabs/ptykit@0.1.0", "", { "dependencies": { "@xterm/addon-clipboard": "^0.2.0", "@xterm/addon-fit": "^0.11.0", "@xterm/addon-ligatures": "^0.10.0", "@xterm/addon-serialize": "^0.14.0", "@xterm/addon-unicode11": "^0.9.0", "@xterm/addon-web-links": "^0.12.0", "@xterm/headless": "^6.0.0", "@xterm/xterm": "^6.0.0" }, "optionalDependencies": { "bun-pty": "^0.4.10", "node-pty": "^1.1.0", "ws": "^8.21.0" }, "peerDependencies": { "svelte": "^5.0.0" }, "optionalPeers": ["svelte"] }, "sha512-h3wxmnM7Vzia2Cy+ZDcqDIiu0gqazBzmbPmMybMM3cAn/4uXER0NaQGuAcr+LpxHX9efXNPrWCML2eqrSbennA=="],
 
     "@myrialabs/tunnelkit": ["@myrialabs/tunnelkit@0.0.15", "", { "bin": { "tunnelkit": "dist/cli.js" } }, "sha512-IxOED4DtZGTnpNy/s0VmFZyaWNFyyVJpN7symy7Dyj6Qu2/7TK8hUsB6gbyrbFrfix/+2ZgwnlIoXkGmYvfAMA=="],
 

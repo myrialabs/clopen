@@ -30,6 +30,8 @@ export interface StreamingMessage {
 	text: string;
 	createdAt: string;
 	reasoning?: boolean;
+	/** The streamed block `text` belongs to (see `chat:partial`). */
+	block?: number;
 }
 
 /**

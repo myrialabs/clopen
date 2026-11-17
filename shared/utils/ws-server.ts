@@ -14,6 +14,7 @@ import type { Elysia } from 'elysia';
 import { t, type TSchema, type Static } from 'elysia';
 import { Value } from '@sinclair/typebox/value';
 import { debug } from './logger';
+import { sendBinary, sendReply, sendText } from '$backend/utils/ws-wire';
 
 // ============================================================================
 // Singleton Encoders (Performance Optimization)
@@ -606,13 +607,13 @@ export class WSRouter<
 			if (isBinaryAction(responseAction, validatedResponse)) {
 				// For binary responses, wrap in success envelope with requestId
 				const wrappedResponse = { success: true, data: validatedResponse, requestId };
-				const binaryMessage = encodeBinaryMessage(responseAction, wrappedResponse);
-				conn.send(Buffer.from(binaryMessage));
+				sendBinary(conn, responseAction, encodeBinaryMessage(responseAction, wrappedResponse));
 				debug.log('websocket', 'HTTP success (binary):', action);
 			} else {
-				// For JSON responses, wrap in success envelope with requestId
+				// For JSON responses, wrap in success envelope with requestId. Large
+				// replies leave in chunks (see sendReply).
 				const wrappedResponse = { success: true, data: validatedResponse, requestId };
-				conn.send(JSON.stringify({ action: responseAction, payload: wrappedResponse }));
+				await sendReply(conn, responseAction, requestId, JSON.stringify({ action: responseAction, payload: wrappedResponse }));
 				debug.log('websocket', 'HTTP success (JSON):', action);
 			}
 		} catch (err) {
@@ -620,7 +621,11 @@ export class WSRouter<
 			const errorMessage = err instanceof Error ? err.message : String(err);
 
 			const errorResponse = { success: false, error: errorMessage, requestId };
-			conn.send(JSON.stringify({ action: responseAction, payload: errorResponse }));
+			try {
+				sendText(conn, responseAction, JSON.stringify({ action: responseAction, payload: errorResponse }));
+			} catch {
+				// Connection may be closed
+			}
 			debug.error('websocket', `HTTP error [${action}]:`, errorMessage);
 		}
 	}
@@ -668,12 +673,12 @@ export class WSRouter<
 						// so ws.http() on the client receives it instead of timing out
 						if (this.httpRoutes.has(action)) {
 							const requestId = payload?.requestId;
-							conn.send(JSON.stringify({
+							sendText(conn, `${action}:response`, JSON.stringify({
 								action: `${action}:response`,
 								payload: { success: false, error: authResult.error, requestId }
 							}));
 						} else {
-							conn.send(JSON.stringify({
+							sendText(conn, 'auth:error', JSON.stringify({
 								action: 'auth:error',
 								payload: { error: authResult.error, blockedAction: action }
 							}));
@@ -709,7 +714,7 @@ export class WSRouter<
 				// have no requestId and still just drop.
 				if (isRequest) {
 					try {
-						conn.send(JSON.stringify({
+						sendText(conn, `${action}:response`, JSON.stringify({
 							action: `${action}:response`,
 							payload: {
 								success: false,
@@ -759,13 +764,11 @@ export class WSRouter<
 	 */
 	asPlugin(path: string = '/ws') {
 		return (app: Elysia) => {
+			// Socket limits (payload size, idle timeout, compression) are NOT set
+			// here: Elysia ignores them on a `.ws()` route and only passes the
+			// app-level `websocket` config to Bun.serve — see WS_SERVER_OPTIONS
+			// in backend/utils/ws-wire.ts.
 			return app.ws(path, {
-				// Allow large binary frames (file uploads, zip extracts).
-				// Bun/uWS default is 16MB which trips EPIPE on the dev proxy
-				// long before the configurable per-file limit kicks in.
-				maxPayloadLength: 1024 * 1024 * 1024, // 1 GiB
-				// Disable inactivity disconnects during long binary transfers.
-				idleTimeout: 960, // seconds (max allowed by uWS)
 				message: (conn, message) => {
 					this.handleMessage(conn, message);
 				},

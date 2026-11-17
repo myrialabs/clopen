@@ -4,7 +4,7 @@
  * HTTP endpoints for session management:
  * - List sessions (all or by project)
  * - Create new session
- * - Get session by ID (with messages)
+ * - Get session by ID
  * - Get or create shared session
  * - Update session (title, reactivate, end)
  * - Delete session
@@ -149,25 +149,21 @@ export const crudHandler = createRouter()
 		return serializeSession(session);
 	})
 
-	// Get session by ID (with messages)
+	// Get session by ID.
+	//
+	// The session only. It used to carry the whole message chain as well, which
+	// no caller read — opening a chat loads its messages through `messages:list`
+	// right after — so every chat open downloaded its entire history twice.
 	.http('sessions:get', {
 		data: t.Object({
 			id: t.String({ minLength: 1 })
 		}),
 		response: t.Object({
-			session: sessionSchema,
-			messages: t.Array(t.Any())
+			session: sessionSchema
 		})
 	}, async ({ data }) => {
 		const session = requireSessionAccess(data.id);
-
-		// Also get messages for this session
-		const messages = messageQueries.getBySessionId(data.id);
-
-		return {
-			session: serializeSession(session),
-			messages
-		};
+		return { session: serializeSession(session) };
 	})
 
 	// Get or create shared session

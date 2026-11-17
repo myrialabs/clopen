@@ -3861,13 +3861,49 @@
 	// this is the self-healing path, invoked both on watcher events and when the
 	// window/tab regains focus. Unsaved edits are never overwritten: a diverged
 	// file is flagged `externallyChanged` instead.
+	//
+	// What it re-reads is proportionate to what is known. With a change list (a
+	// watcher event) only the open tabs it names — or sits inside — are re-read,
+	// and the tree only when a file appeared or vanished in a folder that is on
+	// screen; an edit changes nothing the tree shows. Re-reading the whole tree
+	// and every open file on each event made an agent's turn re-download them
+	// dozens of times. Without a change list (the focus safety net) the tree is
+	// re-read and the tabs are checked by modification time, so only the files
+	// that really changed come down again.
 	async function reconcile(
 		changes: Array<{ path: string; type: 'created' | 'modified' | 'deleted'; timestamp: string }> = [],
 		allowClose = false
 	) {
-		await loadProjectFiles(true);
+		const known = changes.length > 0;
+		const norm = (path: string) => path.replace(/\\/g, '/');
+		const parentOf = (path: string) => norm(path).split('/').slice(0, -1).join('/');
+		const loadedDirs = new Set([norm(projectPath), ...[...expandedFolders].map(norm)]);
+		const changedPaths = changes.map((c) => norm(c.path));
 
-		const tabsSnapshot = [...openTabs];
+		const treeChanged = !known || changes.some((c) => c.type !== 'modified' && loadedDirs.has(parentOf(c.path)));
+		if (treeChanged) await loadProjectFiles(true);
+
+		const touchedByChange = (tabPath: string) => {
+			const path = norm(tabPath);
+			return changedPaths.some((changed) => changed === path || path.startsWith(`${changed}/`));
+		};
+		let candidates = [...openTabs];
+		if (known) {
+			candidates = candidates.filter((tab) => touchedByChange(tab.file.path));
+		} else if (candidates.length > 0) {
+			try {
+				const stats = await ws.http('files:read-stats', { file_paths: candidates.map((tab) => tab.file.path) });
+				const byPath = new Map(stats.map((stat) => [stat.path, stat]));
+				candidates = candidates.filter((tab) => {
+					const stat = byPath.get(tab.file.path);
+					return !stat || !stat.exists || !tab.savedMtime || stat.modified !== tab.savedMtime;
+				});
+			} catch {
+				// Could not ask cheaply — fall back to re-reading every tab.
+			}
+		}
+
+		const tabsSnapshot = candidates;
 		for (const tab of tabsSnapshot) {
 			const hasUnsavedChanges = tab.currentContent !== tab.savedContent;
 
@@ -3934,8 +3970,15 @@
 	// Debounced safety-net reconcile (used by focus/visibility), separate from
 	// the watcher-event debounce so they don't cancel each other.
 	let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+	// Focus is a frequent, cheap event (every alt-tab); a real change while the
+	// window is focused arrives as its own watcher event anyway.
+	const RECONCILE_MIN_INTERVAL_MS = 5000;
+	let lastReconcileAt = 0;
 	function scheduleReconcile() {
 		if (!hasActiveProject || !projectId || !projectPath) return;
+		const now = Date.now();
+		if (now - lastReconcileAt < RECONCILE_MIN_INTERVAL_MS) return;
+		lastReconcileAt = now;
 		if (reconcileTimer) clearTimeout(reconcileTimer);
 		reconcileTimer = setTimeout(() => {
 			reconcileTimer = null;
@@ -4191,7 +4234,10 @@
 				syncTreeWithDiskDeferred();
 				return;
 			}
-			void loadProjectFiles(true);
+			// No change list: the tree is re-read and open tabs are checked by
+			// modification time — the same safety net as regaining focus. A burst
+			// too large to list arrives this way, and it can include open files.
+			void reconcile();
 		});
 
 		const unsubWatching = ws.on('files:watching', (payload) => {

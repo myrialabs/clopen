@@ -14,6 +14,7 @@ import type {
 	BrowserNativePickerInfo
 } from '$frontend/utils/native-ui';
 import type { TabManager } from './tab-manager.svelte';
+import { watchPreview } from '$frontend/services/preview/browser/preview-watch';
 
 export interface NativeUIHandlerConfig {
 	tabManager: TabManager;
@@ -112,6 +113,10 @@ export function createNativeUIHandler(config: NativeUIHandlerConfig) {
 			ws.on('preview:browser-download-image', handleDownloadImage),
 			ws.on('preview:browser-copy-image-to-clipboard', handleCopyImageToClipboard)
 		];
+
+		// Console lines and the agent's cursor only reach a Preview that says it
+		// is open.
+		unsubscribers.push(watchPreview());
 
 		return () => {
 			for (const unsub of unsubscribers) unsub();

@@ -8,6 +8,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { gitService } from '../../git/git-service';
 import { requireProjectWorkspace } from '../access';
 import { debug } from '$shared/utils/logger';
+import { aggregateContributors, contributorKey, CONTRIBUTOR_WINDOW } from '../../git/contributors';
 
 /**
  * Resolve the working directory for a git operation. Defaults to the project
@@ -59,6 +60,57 @@ export const logHandler = createRouter()
 			data.branch,
 			data.allBranches ?? false
 		);
+	})
+
+	/**
+	 * Who authored the last `CONTRIBUTOR_WINDOW` commits, as counts. The panel used
+	 * to download those commits in full on every git change to work this out.
+	 */
+	.http('git:list-contributors', {
+		data: t.Object({
+			projectId: t.String(),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Object({
+			contributors: t.Array(t.Object({
+				key: t.String(),
+				name: t.String(),
+				email: t.String(),
+				count: t.Number(),
+				lastDate: t.String()
+			})),
+			/** Commits sampled — the denominator of each contributor's share. */
+			total: t.Number()
+		})
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		const { commits } = await gitService.getLog(cwd, CONTRIBUTOR_WINDOW, 0);
+		return { contributors: aggregateContributors(commits), total: commits.length };
+	})
+
+	/** One contributor's commits within the same window — read when a row is expanded. */
+	.http('git:list-contributor-commits', {
+		data: t.Object({
+			projectId: t.String(),
+			key: t.String(),
+			repoPath: t.Optional(t.String())
+		}),
+		response: t.Array(t.Object({
+				hash: t.String(),
+				hashShort: t.String(),
+				author: t.String(),
+				authorEmail: t.String(),
+				date: t.String(),
+				message: t.String(),
+				parents: t.Array(t.String()),
+				refs: t.Optional(t.Array(t.String()))
+			}))
+	}, async ({ data, conn }) => {
+		const { root } = requireProjectWorkspace(conn, data.projectId);
+		const cwd = resolveRepoCwd(root, data.repoPath);
+		const { commits } = await gitService.getLog(cwd, CONTRIBUTOR_WINDOW, 0);
+		return commits.filter((commit) => contributorKey(commit) === data.key);
 	})
 
 	/**

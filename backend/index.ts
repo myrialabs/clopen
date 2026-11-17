@@ -98,6 +98,8 @@ import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
 import { flushEpisodicIngest, stopExtractionRunner } from './memory/extract';
 import { stopMemoryMaintenance } from './memory/maintenance';
+import { WS_SERVER_OPTIONS } from './utils/ws-wire';
+import { serveIndexHtml, serveStaticFile } from './http/static-assets';
 
 /** How often (ms) the auth gate re-confirms a connection's session against the DB. */
 const SESSION_REVALIDATE_MS = 15_000;
@@ -161,7 +163,10 @@ const PORT = SERVER_ENV.PORT;
 const HOST = SERVER_ENV.HOST;
 
 // Create Elysia app
-const app = new Elysia()
+// Socket options must be given at the app level: Elysia only passes the
+// server-wide `websocket` config to Bun.serve and silently ignores the same
+// keys on a `.ws()` route (see WS_SERVER_OPTIONS).
+const app = new Elysia({ websocket: WS_SERVER_OPTIONS })
 	// Apply middleware
 	.use(corsMiddleware)
 	.use(securityMiddleware)
@@ -260,27 +265,24 @@ if (!isDevelopment) {
 	// an actual file before serving avoids this issue.
 	const distDir = resolve(process.cwd(), 'dist');
 	const indexHtml = await Bun.file(resolve(distDir, 'index.html')).text();
+	const indexEtag = `W/"${Bun.hash(indexHtml).toString(36)}"`;
 
-	app.all('/*', ({ path }) => {
+	// Caching and compression are decided in backend/http/static-assets.ts.
+	app.all('/*', ({ path, request }) => {
 		// Serve static files from dist/
 		if (path !== '/' && !path.includes('..')) {
 			const filePath = resolve(distDir, path.slice(1));
 			if (filePath.startsWith(distDir)) {
 				try {
 					if (statSync(filePath).isFile()) {
-						const file = Bun.file(filePath);
-						return new Response(file, {
-							headers: { 'Content-Type': file.type || 'application/octet-stream' }
-						});
+						return serveStaticFile(request, path, filePath);
 					}
 				} catch {}
 			}
 		}
 
 		// SPA fallback: serve cached index.html
-		return new Response(indexHtml, {
-			headers: { 'Content-Type': 'text/html; charset=utf-8' }
-		});
+		return serveIndexHtml(request, indexHtml, indexEtag);
 	});
 }
 
