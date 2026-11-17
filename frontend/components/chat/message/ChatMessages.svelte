@@ -1,11 +1,10 @@
 <script lang="ts">
-	import { sessionState } from '$frontend/stores/core/sessions.svelte';
+	import { sessionState, fetchOlderPage, applyOlderPage, isMessageLoaded } from '$frontend/stores/core/sessions.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import ChatMessage from './ChatMessage.svelte';
 	import DateSeparator from './DateSeparator.svelte';
 	import ChatNavigationRail, { type NavItem } from './ChatNavigationRail.svelte';
 	import { onMount, tick } from 'svelte';
-	import { fade } from 'svelte/transition';
 
 	// Import utilities
 	import { shouldFilterMessage } from '$frontend/utils/chat/message-processor';
@@ -15,6 +14,7 @@
 	import { createVirtualScroll, VS_CONFIG_CLASSIC, VS_CONFIG_COMPACT } from '$frontend/utils/chat/virtual-scroll.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
 	import { getChatScroll, setChatScroll } from '$frontend/stores/features/chat-workspace.svelte';
+	import { flushWorkspaceSave } from '$frontend/stores/ui/project-workspace.svelte';
 
 	interface Props {
 		scrollContainer?: HTMLElement | undefined;
@@ -45,6 +45,21 @@
 	const vs = createVirtualScroll(() => settings.chatAppearance === 'compact' ? VS_CONFIG_COMPACT : VS_CONFIG_CLASSIC);
 	let isLoadingOlder = $state(false);
 
+	/**
+	 * Added to every item's index to form its render key. Keys are positional
+	 * (a streaming placeholder must keep its key when the final message replaces
+	 * it), so inserting an older page at the front would shift every key and
+	 * rebuild the whole list. Lowering the offset by the number of inserted items
+	 * keeps each existing item's key — and its DOM — exactly as it was.
+	 */
+	let keyOffset = $state(0);
+
+	/** Start the window and the keys over for a list that was replaced, not extended. */
+	function resetView(count: number) {
+		vs.reset(count);
+		keyOffset = 0;
+	}
+
 	// ========================================
 	// MESSAGE PROCESSING (full pipeline on all messages)
 	// ========================================
@@ -68,7 +83,7 @@
 
 	// Add date separators to windowed messages (with global index offset for stable keys)
 	const messagesWithDateSeparators = $derived.by((): DateSeparatorItem[] => {
-		return addDateSeparators(windowedMessages, vs.isActive ? vs.windowStart : 0);
+		return addDateSeparators(windowedMessages, keyOffset + (vs.isActive ? vs.windowStart : 0));
 	});
 
 	// Whether a message participates in the compact timeline rail (agent / reasoning)
@@ -122,9 +137,11 @@
 		return '';
 	}
 
-	// Nav items for ChatNavigationRail — only real user messages (no synthetic / sub-agent prompts)
+	// Nav items for ChatNavigationRail — every real user prompt on the branch, loaded
+	// or not: the server's prompt index covers the pages not loaded yet, and the
+	// loaded messages add whatever was sent since the index was read.
 	const userNavItems = $derived.by<NavItem[]>(() => {
-		const result: NavItem[] = [];
+		const loaded = new Map<string, { globalIndex: number; text: string }>();
 		filteredMessages.forEach((msg, globalIndex) => {
 			if (msg.type !== 'user') return;
 			if ((msg as any).synthetic) return;
@@ -133,10 +150,103 @@
 			const messageId = 'messageId' in msg ? msg.messageId : undefined;
 			const text = extractUserText(msg);
 			if (!messageId || !text) return;
-			result.push({ globalIndex, messageId, text });
+			loaded.set(messageId, { globalIndex, text });
 		});
+
+		const result: NavItem[] = [];
+		const seen = new Set<string>();
+		for (const entry of sessionState.promptIndex) {
+			if (!entry.text.trim()) continue;
+			const hit = loaded.get(entry.messageId);
+			result.push({ globalIndex: hit?.globalIndex ?? -1, messageId: entry.messageId, text: hit?.text ?? entry.text });
+			seen.add(entry.messageId);
+		}
+		// Loaded prompts the index does not list (sent since it was read) go right
+		// after the nearest loaded prompt before them, keeping the rail in order.
+		for (const [messageId, hit] of loaded) {
+			if (seen.has(messageId)) continue;
+			let at = result.length;
+			for (let i = result.length - 1; i >= 0; i--) {
+				const gi = result[i].globalIndex;
+				if (gi < 0) continue;
+				if (gi < hit.globalIndex) break;
+				at = i;
+			}
+			result.splice(at, 0, { globalIndex: hit.globalIndex, messageId, text: hit.text });
+		}
 		return result;
 	});
+
+	// ========================================
+	// OLDER PAGES
+	// ========================================
+
+	/**
+	 * Fetch the next older page and put it in front of the list without moving
+	 * anything on screen: the window and the keys shift by the number of items
+	 * added, in the same synchronous step as the insert, so the DOM is untouched
+	 * and the auto-scroll effect does not see "new messages". Returns how many
+	 * list items were added.
+	 */
+	async function loadOlderPage(): Promise<number> {
+		const page = await fetchOlderPage();
+		if (!page) return 0;
+		const before = filteredMessages.length;
+		if (applyOlderPage(page) === 0) return 0;
+		const added = filteredMessages.length - before;
+		if (added > 0) {
+			keyOffset -= added;
+			vs.prepend(added);
+		}
+		previousMessageCount = filteredMessages.length;
+		return added;
+	}
+
+	/** Page back until a message is loaded. True when it is (or already was). */
+	async function ensureMessageLoaded(messageId: string): Promise<boolean> {
+		for (let guard = 0; guard < 1000 && !isMessageLoaded(messageId); guard++) {
+			if (!sessionState.hasOlderMessages) return false;
+			const page = await fetchOlderPage();
+			if (!page) return isMessageLoaded(messageId);
+			const before = filteredMessages.length;
+			if (applyOlderPage(page) > 0) {
+				const added = filteredMessages.length - before;
+				keyOffset -= added;
+				vs.prepend(added);
+				previousMessageCount = filteredMessages.length;
+			}
+		}
+		return isMessageLoaded(messageId);
+	}
+
+	/** Index of a message in the rendered list, or -1. */
+	function indexOfMessage(messageId: string): number {
+		return filteredMessages.findIndex((m) => 'messageId' in m && (m as { messageId?: string }).messageId === messageId);
+	}
+
+	/**
+	 * A first page that does not fill the viewport cannot be scrolled, so the
+	 * scroll-driven load would never fire: page back until it can (or there is
+	 * nothing older), keeping the bottom where it was.
+	 */
+	async function fillViewportIfShort() {
+		const el = getScrollEl();
+		if (!el) return;
+		for (let guard = 0; guard < 20; guard++) {
+			const short = el.scrollHeight <= el.clientHeight + vs.loadMoreMargin;
+			if (!short) return;
+			if (vs.isActive && vs.hasMoreAbove) {
+				vs.expandUp();
+			} else if (sessionState.hasOlderMessages) {
+				if ((await loadOlderPage()) === 0) return;
+				if (vs.isActive && vs.hasMoreAbove) vs.expandUp();
+			} else {
+				return;
+			}
+			await tick();
+			if (isUserAtBottom) el.scrollTop = el.scrollHeight;
+		}
+	}
 
 	// ========================================
 	// SCROLL HELPERS
@@ -218,6 +328,55 @@
 		}, 120);
 	}
 
+	/**
+	 * The page is going away (refresh, tab closed or hidden): take the pending
+	 * settle capture now and push the save out, rather than lose the last bit of
+	 * scrolling to the two debounces in between.
+	 */
+	function flushReadingPosition(event: Event) {
+		if (event.type === 'visibilitychange' && document.visibilityState !== 'hidden') return;
+		if (saveScrollTimer) {
+			clearTimeout(saveScrollTimer);
+			saveScrollTimer = null;
+			const el = getScrollEl();
+			if (el) saveReadingPosition(el);
+		}
+		flushWorkspaceSave();
+	}
+
+	/**
+	 * Grow the window upward over already-loaded items, keeping what is on
+	 * screen in place (expand → restore scroll → trim).
+	 */
+	function revealOlder(el: HTMLElement) {
+		isLoadingOlder = true;
+
+		const prevScrollHeight = el.scrollHeight;
+		const prevScrollTop = el.scrollTop;
+
+		const added = vs.expandUp();
+		if (added > 0) {
+			// Phase 1: DOM updates with expanded window (no trim yet)
+			tick().then(() => {
+				requestAnimationFrame(() => {
+					// Restore scroll position based on content added at top
+					const heightAdded = el.scrollHeight - prevScrollHeight;
+					el.scrollTop = prevScrollTop + heightAdded;
+					// Lock scroll to prevent re-triggering from programmatic scroll
+					scrollLockUntil = Date.now() + 200;
+
+					// Phase 2: trim bottom after scroll is settled
+					requestAnimationFrame(() => {
+						vs.trimBottom();
+						setTimeout(() => { isLoadingOlder = false; }, 150);
+					});
+				});
+			});
+		} else {
+			isLoadingOlder = false;
+		}
+	}
+
 	// Scroll detection with bottom position tracking + load more triggers
 	function handleMessagesScroll() {
 		const el = getScrollEl();
@@ -240,39 +399,28 @@
 		// unlocked case so a project switch immediately after still flushes it).
 		saveReadingPosition(el);
 
-		if (!vs.isActive) return;
-
 		const margin = vs.loadMoreMargin;
 
-		// Load older messages when near top
-		if (scrollTop <= margin && vs.hasMoreAbove && !isLoadingOlder) {
-			isLoadingOlder = true;
-
-			const prevScrollHeight = el.scrollHeight;
-			const prevScrollTop = el.scrollTop;
-
-			const added = vs.expandUp();
-			if (added > 0) {
-				// Phase 1: DOM updates with expanded window (no trim yet)
-				tick().then(() => {
-					requestAnimationFrame(() => {
-						// Restore scroll position based on content added at top
-						const heightAdded = el.scrollHeight - prevScrollHeight;
-						el.scrollTop = prevScrollTop + heightAdded;
-						// Lock scroll to prevent re-triggering from programmatic scroll
-						scrollLockUntil = Date.now() + 200;
-
-						// Phase 2: trim bottom after scroll is settled
-						requestAnimationFrame(() => {
-							vs.trimBottom();
-							setTimeout(() => { isLoadingOlder = false; }, 150);
-						});
+		// Load older messages when near top: first from the loaded list (reveal
+		// what the window trimmed), then from the server (the next older page).
+		if (scrollTop <= margin && !isLoadingOlder) {
+			if (vs.isActive && vs.hasMoreAbove) {
+				revealOlder(el);
+			} else if (sessionState.hasOlderMessages) {
+				isLoadingOlder = true;
+				loadOlderPage()
+					.then(async (added) => {
+						await tick();
+						isLoadingOlder = false;
+						if (added > 0 && vs.hasMoreAbove) revealOlder(el);
+					})
+					.catch(() => {
+						isLoadingOlder = false;
 					});
-				});
-			} else {
-				isLoadingOlder = false;
 			}
 		}
+
+		if (!vs.isActive) return;
 
 		// Load newer messages when near bottom
 		const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
@@ -296,7 +444,7 @@
 		// Sync virtual scroll with message count changes
 		if (hasInitiallyScrolled && !suppressAutoScroll) {
 			if (isMessageCountDecreased) {
-				vs.reset(currentMessageCount);
+				resetView(currentMessageCount);
 			} else if (isNewMessage) {
 				vs.sync(currentMessageCount, isUserAtBottom, appState.isLoading);
 			}
@@ -407,9 +555,6 @@
 
 	const isCompact = $derived(settings.chatAppearance === 'compact');
 
-	// Track if we should disable transitions (during restoration)
-	const disableTransitions = $derived(appState.isRestoring || (!hasInitiallyScrolled && filteredMessages.length > 5));
-
 	// Update scroll event listener when internal scroll element changes
 	let currentListenerEl: HTMLElement | null = null;
 	$effect(() => {
@@ -446,12 +591,81 @@
 		return null;
 	}
 
+	/** Input that means the user has taken over the scroll position. */
+	const USER_SCROLL_INPUT = ['wheel', 'touchstart', 'pointerdown', 'keydown'] as const;
+
+	/** How long a restored position is held against late layout. */
+	const HOLD_POSITION_MS = 2000;
+
+	let releaseHold: (() => void) | null = null;
+
+	/**
+	 * Keep a restored position in place while the layout finishes settling.
+	 *
+	 * Aligning once is not enough: after it, messages above the anchor still
+	 * resolve their real height (`content-visibility` lays them out at a 200px
+	 * estimate until they near the viewport), and markdown, code blocks and
+	 * images finish rendering. Chromium compensates for some of that with scroll
+	 * anchoring; Safari has none. Either way the chat ended up somewhere near,
+	 * but not at, the saved position. So the position is re-applied every frame
+	 * for a short while, and given up the moment the user scrolls, clicks or
+	 * types, or the session changes.
+	 *
+	 * `target` is the anchor to hold, or null to hold the bottom.
+	 */
+	function holdPosition(el: HTMLElement, target: { anchorId: string; offset: number } | null) {
+		releaseHold?.();
+		const sessionId = sessionState.currentSession?.id;
+		const until = Date.now() + HOLD_POSITION_MS;
+		let frame = 0;
+		const stop = () => {
+			cancelAnimationFrame(frame);
+			for (const type of USER_SCROLL_INPUT) {
+				el.removeEventListener(type, stop);
+				window.removeEventListener(type, stop);
+			}
+			if (releaseHold === stop) releaseHold = null;
+		};
+		const step = () => {
+			if (Date.now() > until || sessionState.currentSession?.id !== sessionId || editModeState.isEditing) {
+				stop();
+				return;
+			}
+			if (target) {
+				const anchorEl = el.querySelector<HTMLElement>(`[data-message-id="${target.anchorId}"]`);
+				if (!anchorEl) {
+					stop();
+					return;
+				}
+				const delta = anchorEl.getBoundingClientRect().top - el.getBoundingClientRect().top - target.offset;
+				if (Math.abs(delta) > 1) {
+					scrollLockUntil = Date.now() + 200;
+					el.scrollTop += delta;
+				}
+			} else if (el.scrollHeight - el.clientHeight - el.scrollTop > 1) {
+				scrollLockUntil = Date.now() + 200;
+				el.scrollTop = el.scrollHeight;
+			}
+			frame = requestAnimationFrame(step);
+		};
+		for (const type of USER_SCROLL_INPUT) {
+			el.addEventListener(type, stop, { passive: true });
+			// Keyboard scrolling and clicks can land outside the list itself.
+			window.addEventListener(type, stop, { passive: true });
+		}
+		releaseHold = stop;
+		frame = requestAnimationFrame(step);
+	}
+
 	// Restore the session's saved reading position, or fall back to the bottom.
 	// Only restores when the user had genuinely scrolled up — the common
 	// at-bottom case behaves exactly as before. Async: restoring an anchor may
 	// require expanding the virtual window and waiting for the DOM to render.
 	async function applyInitialScroll(el: HTMLElement) {
 		if (editModeState.isEditing) return;
+		// Hold auto-scroll off for the whole (possibly multi-page) positioning;
+		// the callers release it once this resolves.
+		suppressAutoScroll = true;
 		// Lock scroll detection across the (possibly async) positioning so the
 		// scroll events we cause don't flip isUserAtBottom back to true.
 		scrollLockUntil = Date.now() + 800;
@@ -460,9 +674,16 @@
 
 		if (saved && !saved.atBottom && saved.anchorMessageId) {
 			const anchorId = saved.anchorMessageId;
-			const idx = filteredMessages.findIndex(
-				(m) => 'messageId' in m && (m as { messageId?: string }).messageId === anchorId
-			);
+			// The chat opens on its latest page; the message the user was reading
+			// may be older. Page back to it before positioning — this is what
+			// "restore where I was" means once history is paged.
+			if (!isMessageLoaded(anchorId) && sessionState.hasOlderMessages) {
+				await ensureMessageLoaded(anchorId);
+				resetView(filteredMessages.length);
+				previousMessageCount = filteredMessages.length;
+				scrollLockUntil = Date.now() + 800;
+			}
+			const idx = indexOfMessage(anchorId);
 			if (idx >= 0) {
 				isUserAtBottom = false;
 				// Pull the anchor into the virtual window, then wait for it to render.
@@ -490,13 +711,17 @@
 					if (Math.abs(delta) <= 1) break;
 					el.scrollTop += delta;
 				}
-				if (aligned) return;
+				if (aligned) {
+					holdPosition(el, { anchorId, offset: saved.anchorOffset });
+					return;
+				}
 			}
 		}
 
 		// Default / fallback: pin to the bottom.
 		el.scrollTop = el.scrollHeight;
 		isUserAtBottom = true;
+		holdPosition(el, null);
 	}
 
 	// Handle restoration and initial scroll
@@ -524,16 +749,18 @@
 				previousMessageCount = currentMessages;
 
 				// Initialize virtual scroll
-				vs.reset(currentMessages);
+				resetView(currentMessages);
 
 				// Restore the saved reading position (or bottom) while still hidden,
 				// then reveal + re-enable auto-scroll once positioned.
-				applyInitialScroll(el).then(() => {
-					suppressAutoScroll = false;
-					requestAnimationFrame(() => {
-						isContentReady = true;
+				applyInitialScroll(el)
+					.then(() => fillViewportIfShort())
+					.finally(() => {
+						suppressAutoScroll = false;
+						requestAnimationFrame(() => {
+							isContentReady = true;
+						});
 					});
-				});
 			} else if (currentMessages === 0) {
 				// No messages, show immediately
 				isContentReady = true;
@@ -544,12 +771,14 @@
 				setTimeout(() => {
 					const el2 = getScrollEl();
 					if (el2) {
-						vs.reset(filteredMessages.length);
+						resetView(filteredMessages.length);
 						hasInitiallyScrolled = true;
-						applyInitialScroll(el2).then(() => {
-							suppressAutoScroll = false;
-							isContentReady = true;
-						});
+						applyInitialScroll(el2)
+							.then(() => fillViewportIfShort())
+							.finally(() => {
+								suppressAutoScroll = false;
+								isContentReady = true;
+							});
 					} else {
 						suppressAutoScroll = false;
 						isContentReady = true;
@@ -575,9 +804,18 @@
 			return;
 		}
 
+		// An edit restored after a refresh can target a message on a page that is
+		// not loaded yet: page back to it first.
+		if (!isMessageLoaded(messageId) && sessionState.hasOlderMessages) {
+			void ensureMessageLoaded(messageId).then((found) => {
+				if (found) scrollToEditedMessage(messageId, retries);
+			});
+			return;
+		}
+
 		// Ensure message is within the virtual scroll window
 		if (vs.isActive) {
-			const msgIndex = filteredMessages.findIndex(m => 'messageId' in m ? m.messageId === messageId : false);
+			const msgIndex = indexOfMessage(messageId);
 			if (msgIndex >= 0 && (msgIndex < vs.windowStart || msgIndex >= vs.windowEnd)) {
 				vs.ensureVisible(msgIndex);
 				// Wait for DOM to update after window change
@@ -619,9 +857,14 @@
 	// NAV RAIL: JUMP TO USER MESSAGE
 	// ========================================
 
-	function handleNavJump(item: NavItem) {
+	async function handleNavJump(item: NavItem) {
 		const el = getScrollEl();
 		if (!el) return;
+
+		// The prompt may be on a page that is not loaded yet.
+		if (!isMessageLoaded(item.messageId) && !(await ensureMessageLoaded(item.messageId))) return;
+		const index = indexOfMessage(item.messageId);
+		if (index < 0) return;
 
 		// Lock scroll detection so jump doesn't flip isUserAtBottom incorrectly
 		scrollLockUntil = Date.now() + 400;
@@ -634,8 +877,8 @@
 			}
 		};
 
-		if (vs.isActive && (item.globalIndex < vs.windowStart || item.globalIndex >= vs.windowEnd)) {
-			vs.ensureVisible(item.globalIndex);
+		if (vs.isActive && (index < vs.windowStart || index >= vs.windowEnd)) {
+			vs.ensureVisible(index);
 			tick().then(() => {
 				requestAnimationFrame(performScroll);
 			});
@@ -684,6 +927,8 @@
 	onMount(() => {
 		// Reset flags on mount
 		hasInitiallyScrolled = false;
+		window.addEventListener('pagehide', flushReadingPosition);
+		document.addEventListener('visibilitychange', flushReadingPosition);
 
 		// Start with content hidden if restoring
 		if (appState.isRestoring) {
@@ -693,7 +938,7 @@
 			const el = getScrollEl();
 			if (filteredMessages.length > 0 && el) {
 				// Initialize virtual scroll and scroll immediately
-				vs.reset(filteredMessages.length);
+				resetView(filteredMessages.length);
 				el.scrollTop = el.scrollHeight;
 				hasInitiallyScrolled = true;
 				isContentReady = true;
@@ -709,6 +954,9 @@
 				currentListenerEl.removeEventListener('scroll', handleMessagesScroll);
 			}
 			if (saveScrollTimer) clearTimeout(saveScrollTimer);
+			releaseHold?.();
+			window.removeEventListener('pagehide', flushReadingPosition);
+			document.removeEventListener('visibilitychange', flushReadingPosition);
 			hasInitiallyScrolled = false;
 		};
 	});
@@ -726,52 +974,41 @@
 		/>
 	{/if}
 
+	<!-- Loading older messages indicator. An overlay, not part of the list: as an
+	     in-flow row it pushed every message down when it appeared and back up when
+	     it went, which is exactly the jump paging is careful to avoid. -->
+	{#if isLoadingOlder}
+		<div class="pointer-events-none absolute top-2 left-1/2 -translate-x-1/2 z-10">
+			<div class="flex items-center gap-2 rounded-full bg-white/90 dark:bg-slate-900/90 px-3 py-1 text-xs text-slate-400 dark:text-slate-500 shadow-sm">
+				<div class="w-3 h-3 border-2 border-slate-300 dark:border-slate-600 border-t-transparent rounded-full animate-spin"></div>
+				<span>Loading older messages...</span>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Messages container -->
 	<div
 		bind:this={messagesScrollEl}
 		class="flex-1 overflow-y-auto pt-3 pb-14 lg:pb-16 px-3 lg:px-4 {isContentReady ? '' : 'invisible'}"
 		style="{!isContentReady ? 'scroll-behavior: auto' : ''}">
 
-		<!-- Loading older messages indicator -->
-		{#if isLoadingOlder}
-			<div class="flex justify-center py-3">
-				<div class="flex items-center gap-2 text-xs text-slate-400 dark:text-slate-500">
-					<div class="w-3 h-3 border-2 border-slate-300 dark:border-slate-600 border-t-transparent rounded-full animate-spin"></div>
-					<span>Loading older messages...</span>
-				</div>
-			</div>
-		{/if}
-
+		<!-- One render path for every state. Rendering through two branches (no
+		     transition while restoring, fade otherwise) remounted every message
+		     the moment a restore finished — dropping each one's measured height
+		     right while the reading position was being aligned to them. -->
 		{#each messagesWithDateSeparators as item (item.key)}
-			{#if disableTransitions}
-				<!-- No transition during restoration or initial load with many messages -->
-				<div class={isCompact ? '' : 'chat-item'}>
-					{#if item.type === 'date'}
-						<DateSeparator date={item.data} />
-					{:else if item.type === 'message'}
-						{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
-						{@const isLastUser = messageId === lastUserMessageId}
-						{@const rail = railFlagsByKey.get(item.key)}
-						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
-							<ChatMessage message={item.data} isLastUserMessage={isLastUser} railConnectUp={rail?.up ?? false} railConnectDown={rail?.down ?? false} />
-						</div>
-					{/if}
-				</div>
-			{:else}
-				<!-- Normal transition for new messages -->
-				<div class={isCompact ? '' : 'chat-item'} in:fade={{ duration: 300, delay: 0 }} out:fade={{ duration: 200 }}>
-					{#if item.type === 'date'}
-						<DateSeparator date={item.data} />
-					{:else if item.type === 'message'}
-						{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
-						{@const isLastUser = messageId === lastUserMessageId}
-						{@const rail = railFlagsByKey.get(item.key)}
-						<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
-							<ChatMessage message={item.data} isLastUserMessage={isLastUser} railConnectUp={rail?.up ?? false} railConnectDown={rail?.down ?? false} />
-						</div>
-					{/if}
-				</div>
-			{/if}
+			<div class={isCompact ? '' : 'chat-item'}>
+				{#if item.type === 'date'}
+					<DateSeparator date={item.data} />
+				{:else if item.type === 'message'}
+					{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
+					{@const isLastUser = messageId === lastUserMessageId}
+					{@const rail = railFlagsByKey.get(item.key)}
+					<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
+						<ChatMessage message={item.data} isLastUserMessage={isLastUser} railConnectUp={rail?.up ?? false} railConnectDown={rail?.down ?? false} />
+					</div>
+				{/if}
+			</div>
 		{/each}
 
 	</div>

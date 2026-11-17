@@ -84,6 +84,12 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
 let activeProjectId: string | null = null;
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+// A save requested while docks were still hydrating after a switch. It is not
+// written then (it would capture half-loaded state) but it is not forgotten
+// either: scrolling the chat right after switching projects used to be lost
+// the moment the page was refreshed, because nothing asked to save it again.
+let saveDeferred = false;
+
 // True from the moment a switch starts until every dock has finished hydrating.
 // Spans past the barrier now that docks load after reveal, and suppresses saves
 // that would otherwise persist a half-loaded workspace.
@@ -133,6 +139,15 @@ function markSettled(): void {
 	settleTimer = null;
 	settling = false;
 	releaseSettleWaiters();
+	// A change made while the docks were still loading was held back (see
+	// `requestWorkspaceSave`); now that they have all landed it can be saved.
+	resumeDeferredSave();
+}
+
+function resumeDeferredSave(): void {
+	if (!saveDeferred || settling || appState.isSwitching) return;
+	saveDeferred = false;
+	requestWorkspaceSave();
 }
 
 /**
@@ -160,7 +175,10 @@ export function raiseSwitchBarrier(): void {
 
 export function lowerSwitchBarrier(): void {
 	barrierDepth = Math.max(0, barrierDepth - 1);
-	if (barrierDepth === 0) appState.isSwitching = false;
+	if (barrierDepth === 0) {
+		appState.isSwitching = false;
+		resumeDeferredSave();
+	}
 }
 
 // ============================================================
@@ -345,12 +363,35 @@ export function requestWorkspaceSave(): void {
 	// save now would persist transient/cleared state. `settling` extends this
 	// past the reveal, because docks keep hydrating after the barrier drops.
 	// Real edits resume once everything has landed.
-	if (appState.isSwitching || settling) return;
+	if (appState.isSwitching) return;
+	if (settling) {
+		saveDeferred = true;
+		return;
+	}
 	if (saveTimer) clearTimeout(saveTimer);
 	saveTimer = setTimeout(() => {
 		saveTimer = null;
 		flushActiveBlob();
 	}, 400);
+}
+
+/**
+ * Write a pending save now instead of after its debounce — for when the page is
+ * about to go away (refresh, tab closed or backgrounded), which would otherwise
+ * drop the last change made within the debounce window.
+ */
+export function flushWorkspaceSave(): void {
+	if (!saveTimer) return;
+	clearTimeout(saveTimer);
+	saveTimer = null;
+	void flushActiveBlob();
+}
+
+if (typeof window !== 'undefined') {
+	window.addEventListener('pagehide', flushWorkspaceSave);
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'hidden') flushWorkspaceSave();
+	});
 }
 
 /** Flush any pending save immediately (e.g. before switching away). */

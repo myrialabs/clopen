@@ -3,6 +3,7 @@
  *
  * HTTP endpoints for message management:
  * - List messages (with optional include_all for history view)
+ * - Page through the active branch, its prompt index and older task tools
  * - Get message by ID
  * - Resolve which of a session's message ids are saved
  * - Delete message
@@ -13,6 +14,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { messageQueries } from '../../database/queries';
 import { loadMessage } from '$shared/utils/message-formatter';
 import { requireMessageAccess, requireSessionAccess } from '../access';
+import { getMessagePage, getPromptIndex, getTaskHistory } from '../../chat/message-pages';
 
 export const crudHandler = createRouter()
 	// List messages
@@ -32,6 +34,53 @@ export const crudHandler = createRouter()
 			// Default: return only messages in current HEAD path (for Chat view)
 			return messageQueries.getBySessionId(data.session_id);
 		}
+	})
+
+	// One page of the active branch — the chat loads its latest turns and pages
+	// back as the user scrolls up (see backend/chat/message-pages.ts).
+	.http('messages:list-page', {
+		data: t.Object({
+			session_id: t.String({ minLength: 1 }),
+			/** Return the page that ends just before this message; omit for the latest. */
+			before_id: t.Optional(t.String()),
+			/** Minimum page size; the page is extended back to the start of a turn. */
+			limit: t.Optional(t.Number({ minimum: 1, maximum: 500 }))
+		}),
+		response: t.Object({
+			messages: t.Array(t.Any()),
+			hasMore: t.Boolean()
+		})
+	}, async ({ data }) => {
+		requireSessionAccess(data.session_id);
+		return getMessagePage(data.session_id, { beforeId: data.before_id, minCount: data.limit });
+	})
+
+	// Every user prompt on the active branch — the chat's navigation rail.
+	.http('messages:list-prompts', {
+		data: t.Object({
+			session_id: t.String({ minLength: 1 })
+		}),
+		response: t.Array(t.Object({
+			messageId: t.String(),
+			text: t.String(),
+			createdAt: t.String()
+		}))
+	}, async ({ data }) => {
+		requireSessionAccess(data.session_id);
+		return getPromptIndex(data.session_id);
+	})
+
+	// Task-tool calls and results older than a message — the task widget replays
+	// them together with the loaded messages.
+	.http('messages:list-task-history', {
+		data: t.Object({
+			session_id: t.String({ minLength: 1 }),
+			before_id: t.String({ minLength: 1 })
+		}),
+		response: t.Array(t.Any())
+	}, async ({ data }) => {
+		requireSessionAccess(data.session_id);
+		return getTaskHistory(data.session_id, data.before_id);
 	})
 
 	// Get message by ID

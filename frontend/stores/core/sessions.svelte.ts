@@ -65,6 +65,32 @@ interface SessionState {
 	error: string | null;
 	/** True if the current session has message history (even if HEAD is null after restore to initial) */
 	hasMessageHistory: boolean;
+	/**
+	 * Whether the branch has messages older than `messages[0]` that are not
+	 * loaded. A chat loads its latest page and pages back on demand
+	 * (backend/chat/message-pages.ts); see `fetchOlderPage`.
+	 */
+	hasOlderMessages: boolean;
+	/** Every user prompt on the branch, loaded or not — the navigation rail. */
+	promptIndex: PromptIndexEntry[];
+	/**
+	 * Task-tool calls and results older than the loaded messages. The task
+	 * widget replays them with `messages` to get what the whole branch says.
+	 */
+	taskHistory: UnifiedMessage[];
+}
+
+export interface PromptIndexEntry {
+	messageId: string;
+	text: string;
+	createdAt: string;
+}
+
+/** A page of older messages, fetched but not yet applied. */
+export interface OlderPage {
+	sessionId: string;
+	messages: UnifiedMessage[];
+	hasMore: boolean;
 }
 
 // Session state using Svelte 5 runes
@@ -75,7 +101,10 @@ export const sessionState = $state<SessionState>({
 	messagesSessionId: null,
 	isLoading: false,
 	error: null,
-	hasMessageHistory: false
+	hasMessageHistory: false,
+	hasOlderMessages: false,
+	promptIndex: [],
+	taskHistory: []
 });
 
 // ========================================
@@ -181,6 +210,7 @@ export async function setCurrentSession(session: ChatSession | null, skipLoadMes
 		debug.log('session', 'Session set:', session.id);
 	} else {
 		// Clear messages when no session
+		resetBranchExtras();
 		sessionState.messages = [];
 		sessionState.messagesSessionId = null;
 		clearAiChanges();
@@ -256,6 +286,7 @@ export function removeSession(sessionId: string) {
 	// Clear current session if it's the one being removed
 	if (sessionState.currentSession?.id === sessionId) {
 		sessionState.currentSession = null;
+		resetBranchExtras();
 		sessionState.messages = [];
 		sessionState.messagesSessionId = null;
 		clearAiChanges();
@@ -290,21 +321,140 @@ export function updateMessages(messages: FrontendMessage[]) {
 	sessionState.messages = messages;
 }
 
+/** Forget everything loaded about a branch beyond `messages` itself. */
+function resetBranchExtras() {
+	messagesGeneration++;
+	olderPageRequest = null;
+	sessionState.hasOlderMessages = false;
+	sessionState.promptIndex = [];
+	sessionState.taskHistory = [];
+}
+
 export function clearMessages() {
+	resetBranchExtras();
 	sessionState.messages = [];
 	sessionState.messagesSessionId = null;
 	sessionState.hasMessageHistory = false;
 	clearAiChanges();
 }
 
+/**
+ * Bumped whenever `messages` is replaced wholesale, so a page or index that
+ * arrives afterwards for the previous load is dropped instead of mixed in.
+ */
+let messagesGeneration = 0;
+let olderPageRequest: Promise<OlderPage | null> | null = null;
+
+/** Messages a page holds at least (the server extends it to a safe boundary). */
+const PAGE_SIZE = 80;
+
+/** The message id older pages are requested before — the oldest saved one loaded. */
+function oldestLoadedId(): string | null {
+	for (const message of sessionState.messages) {
+		if (message.type === 'stream_event' || 'optimistic' in message) continue;
+		const id = (message as { messageId?: string }).messageId;
+		if (id) return id;
+	}
+	return null;
+}
+
+/** The prompt index and older task tools for the branch now loaded. */
+async function loadBranchExtras(sessionId: string, generation: number) {
+	const beforeId = sessionState.hasOlderMessages ? oldestLoadedId() : null;
+	const [prompts, taskHistory] = await Promise.all([
+		ws.http('messages:list-prompts', { session_id: sessionId }).catch((error) => {
+			debug.warn('session', 'Could not load the prompt index:', error);
+			return [] as PromptIndexEntry[];
+		}),
+		beforeId
+			? ws.http('messages:list-task-history', { session_id: sessionId, before_id: beforeId }).catch((error) => {
+					debug.warn('session', 'Could not load older task history:', error);
+					return [] as UnifiedMessage[];
+				})
+			: Promise.resolve([] as UnifiedMessage[])
+	]);
+	if (generation !== messagesGeneration) return;
+	sessionState.promptIndex = prompts;
+	sessionState.taskHistory = taskHistory as UnifiedMessage[];
+}
+
+/**
+ * Fetch the page of messages just older than the loaded ones, without applying
+ * it. Null when there is nothing older or the chat changed meanwhile. Applying
+ * is separate (`applyOlderPage`) so the caller can shift its view in the same
+ * synchronous step and the list never visibly jumps.
+ */
+export function fetchOlderPage(): Promise<OlderPage | null> {
+	if (olderPageRequest) return olderPageRequest;
+	const sessionId = sessionState.messagesSessionId;
+	const beforeId = oldestLoadedId();
+	if (!sessionId || !beforeId || !sessionState.hasOlderMessages) return Promise.resolve(null);
+
+	const generation = messagesGeneration;
+	const request = ws
+		.http('messages:list-page', { session_id: sessionId, before_id: beforeId, limit: PAGE_SIZE })
+		.then((page) => {
+			if (generation !== messagesGeneration || sessionState.messagesSessionId !== sessionId) return null;
+			return { sessionId, messages: page.messages as UnifiedMessage[], hasMore: page.hasMore };
+		})
+		.catch((error) => {
+			debug.error('session', 'Error loading older messages:', error);
+			return null;
+		})
+		.finally(() => {
+			if (olderPageRequest === request) olderPageRequest = null;
+		});
+	olderPageRequest = request;
+	return request;
+}
+
+/**
+ * Put a fetched older page in front of the loaded messages. Returns how many
+ * messages were added (0 when the page no longer belongs to the chat on screen).
+ */
+export function applyOlderPage(page: OlderPage): number {
+	if (page.sessionId !== sessionState.messagesSessionId) return 0;
+	const loaded = new Set(
+		sessionState.messages.map((message) => (message as { messageId?: string }).messageId).filter(Boolean)
+	);
+	const fresh = page.messages.filter((message) => !loaded.has((message as { messageId?: string }).messageId));
+	sessionState.hasOlderMessages = page.hasMore;
+	if (fresh.length === 0) return 0;
+
+	// Mutate in place: the loaded messages keep their identity (live stream
+	// placeholders are held by reference elsewhere).
+	sessionState.messages.unshift(...fresh);
+
+	// Task history only covers what is NOT loaded.
+	const nowLoaded = new Set(fresh.map((message) => (message as { messageId?: string }).messageId));
+	sessionState.taskHistory = sessionState.taskHistory.filter(
+		(message) => !nowLoaded.has((message as { messageId?: string }).messageId)
+	);
+	return fresh.length;
+}
+
+/** Whether a message is loaded. */
+export function isMessageLoaded(messageId: string): boolean {
+	return sessionState.messages.some((message) => (message as { messageId?: string }).messageId === messageId);
+}
+
+/**
+ * Load a chat's latest page of messages (older ones are paged in on demand)
+ * together with its prompt index and older task history.
+ */
 export async function loadMessagesForSession(sessionId: string) {
 	try {
-		const response = await ws.http('messages:list', { session_id: sessionId });
+		const page = await ws.http('messages:list-page', { session_id: sessionId, limit: PAGE_SIZE });
+		const response = page?.messages;
 
 		if (response && Array.isArray(response)) {
 			// Messages from server already have correct UnifiedMessage shape
+			resetBranchExtras();
+			const generation = messagesGeneration;
 			sessionState.messages = response as UnifiedMessage[];
 			sessionState.messagesSessionId = sessionId;
+			sessionState.hasOlderMessages = page.hasMore;
+			void loadBranchExtras(sessionId, generation);
 
 			if (response.length > 0) {
 				sessionState.hasMessageHistory = true;
@@ -314,12 +464,14 @@ export async function loadMessagesForSession(sessionId: string) {
 				sessionState.hasMessageHistory = Array.isArray(allResponse) && allResponse.length > 0;
 			}
 		} else {
+			resetBranchExtras();
 			sessionState.messages = [];
 			sessionState.messagesSessionId = sessionId;
 			sessionState.hasMessageHistory = false;
 		}
 	} catch (error) {
 		debug.error('session', 'Error loading messages:', error);
+		resetBranchExtras();
 		sessionState.messages = [];
 		sessionState.messagesSessionId = null;
 		sessionState.hasMessageHistory = false;
