@@ -8,7 +8,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { stopOnSignals, supervise } from '../shared/utils/process-supervisor';
+import { stopOnSignals, stopRequestedBySignal, supervise } from '../shared/utils/process-supervisor';
 import { findAvailablePort } from '../backend/utils/port-utils';
 
 const desiredBackend = process.env.CLOPEN_PORT_BACKEND ? parseInt(process.env.CLOPEN_PORT_BACKEND) : 9161;
@@ -78,12 +78,15 @@ const start = (name: keyof typeof COLORS, cmd: string[]) =>
 
 const supervisors = [
 	start('backend', ['bun', '--watch', 'backend/index.ts']),
-	start('frontend', ['bunx', 'vite', 'dev'])
+	start('frontend', ['bun', 'scripts/dev-frontend.ts'])
 ];
 stopOnSignals(supervisors);
 
 // A child that keeps failing is given up on; then there is no dev server left
-// to run, so stop the other one too.
+// to run, so stop the other one too. A stop asked for by Ctrl+C (or a closed
+// terminal) is finished, and exited, by the signal handler instead.
 await Promise.race(supervisors.map((s) => s.done));
-const codes = await Promise.all(supervisors.map((s) => s.stop()));
-process.exit(codes.find((code) => code !== 0) ?? 0);
+if (!stopRequestedBySignal()) {
+	const codes = await Promise.all(supervisors.map((s) => s.stop()));
+	process.exit(codes.find((code) => code !== 0) ?? 0);
+}

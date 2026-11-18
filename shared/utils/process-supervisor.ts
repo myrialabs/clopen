@@ -12,13 +12,19 @@
  *   the difference: a server that received a stray SIGTERM shuts down cleanly
  *   and exits 0. What can is whether this supervisor asked it to stop. A child
  *   that keeps dying (5 times in 60 s) is given up on instead of looping.
- * - **Stopped on request.** SIGINT/SIGTERM to the supervisor are forwarded to
- *   the child's whole group — what a terminal did before the child had a group
- *   of its own — then it gets 15 s to finish before SIGKILL. A second signal
- *   forces it; a second programmatic `stop()` does not. SIGHUP is ignored,
- *   matching the server, which deliberately keeps running when its terminal or
- *   SSH session closes; the supervisor stays with it, and writes to a terminal
- *   that is gone are dropped instead of crashing.
+ * - **Stopped on request, completely.** SIGINT/SIGTERM to the supervisor are
+ *   forwarded to the child's whole group — what a terminal did before the
+ *   child had a group of its own. The stop is over only when the child AND
+ *   every process it started (collected first: some sit in other groups, like
+ *   the preview's Chrome) have exited, so the shell prompt comes back with the
+ *   ports free. Only a process that hangs past `stopTimeoutMs` is SIGKILLed.
+ *   A second Ctrl+C forces; the copy of the first one that `bun run` forwards
+ *   is not a second press (see `stopOnSignals`).
+ * - **Tied to its terminal, unless run in the background.** SIGHUP (the
+ *   terminal or SSH session closed) stops everything when the supervisor was
+ *   started from a terminal. Run without one — `nohup`, a service, a container
+ *   — it is ignored and the server keeps running. Writes to a terminal that is
+ *   gone are dropped instead of crashing.
  * - **Diagnosed.** Each unrequested exit is logged with its code or signal and
  *   the processes started shortly before it (pid, ppid, pgid, command), to the
  *   console and to `reportFile`, so the next occurrence leaves a trail. The OS
@@ -28,6 +34,7 @@
 
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { collectDescendants, parentForwardsSignals, signalAll, waitForExit } from './process-tree';
 
 type Subprocess = ReturnType<typeof Bun.spawn>;
 
@@ -62,6 +69,28 @@ export interface Supervisor {
 
 const IS_WINDOWS = process.platform === 'win32';
 
+/** Tells a supervised child which process supervises it. */
+export const SUPERVISOR_PID_ENV = 'CLOPEN_SUPERVISOR_PID';
+
+/**
+ * In a supervised child: run `onGone` once the supervisor that started it is
+ * gone (its parent pid changes), so the child does not outlive an ungraceful
+ * end of its supervisor. The variable is removed from the environment at once:
+ * everything the child starts inherits it — terminal shells included — and a
+ * dev server started from one would otherwise watch the wrong supervisor.
+ */
+export function watchSupervisor(onGone: () => void, pollMs = 1000): void {
+	const supervisorPid = Number(process.env[SUPERVISOR_PID_ENV]);
+	delete process.env[SUPERVISOR_PID_ENV];
+	if (!(supervisorPid > 0) || process.ppid !== supervisorPid) return;
+	const timer = setInterval(() => {
+		if (process.ppid === supervisorPid) return;
+		clearInterval(timer);
+		onGone();
+	}, pollMs);
+	timer.unref?.();
+}
+
 /** Run `options.cmd` under supervision until it is stopped. */
 export function supervise(options: SupervisedProcessOptions): Supervisor {
 	const log = options.log ?? ((line: string) => console.error(line));
@@ -79,7 +108,10 @@ export function supervise(options: SupervisedProcessOptions): Supervisor {
 	const spawnChild = () => {
 		child = Bun.spawn(options.cmd, {
 			cwd: options.cwd,
-			env: options.env as Record<string, string>,
+			// The child stops itself if this supervisor disappears without stopping
+			// it (see watchSupervisor) — killed outright, a terminal runner's own
+			// SIGKILL — instead of running on, unowned, holding its port.
+			env: { ...(options.env ?? process.env), [SUPERVISOR_PID_ENV]: String(process.pid) } as Record<string, string>,
 			stdin: 'ignore',
 			stdout: options.onStdout ? 'pipe' : 'inherit',
 			stderr: options.onStderr ? 'pipe' : 'inherit',
@@ -95,7 +127,13 @@ export function supervise(options: SupervisedProcessOptions): Supervisor {
 			if (child !== current) return;
 			const signal = current.signalCode ?? null;
 			if (stopping) {
-				resolveDone(code ?? 0);
+				// The child is out; what it started may still be shutting down.
+				const survivors = await waitForExit(stopTree, Math.max(0, stopDeadline - Date.now()));
+				if (survivors.length > 0) {
+					signalAll(survivors, 'SIGKILL');
+					await waitForExit(survivors, 2000);
+				}
+				resolveDone(code ?? (signal ? 1 : 0));
 				return;
 			}
 
@@ -136,25 +174,42 @@ export function supervise(options: SupervisedProcessOptions): Supervisor {
 		}
 	};
 
-	const stop = (signal: NodeJS.Signals = 'SIGTERM'): Promise<number> => {
-		if (stopping) return done;
+	/** The child's descendants when the stop began, and when the stop gives up waiting. */
+	let stopTree: number[] = [];
+	let stopDeadline = 0;
+
+	/** Begin stopping: remember everything the child started, before signalling it. */
+	const beginStop = (): boolean => {
+		if (stopping) return false;
 		stopping = true;
-		if (!child || child.exitCode !== null) {
+		stopDeadline = Date.now() + stopTimeoutMs;
+		if (!child || child.exitCode !== null || child.signalCode !== null) {
 			resolveDone(child?.exitCode ?? 0);
-		} else {
-			// On Windows the child shares the console, so Ctrl+C already reached it;
-			// forwarding would terminate it outright instead of letting it shut down.
-			if (!(IS_WINDOWS && signal === 'SIGINT')) signalGroup(signal);
-			const timer = setTimeout(() => signalGroup('SIGKILL'), stopTimeoutMs);
-			timer.unref?.();
-			void done.then(() => clearTimeout(timer));
+			return false;
 		}
+		stopTree = collectDescendants(child.pid);
+		return true;
+	};
+
+	const forceKill = () => {
+		signalGroup('SIGKILL');
+		signalAll(stopTree, 'SIGKILL');
+	};
+
+	const stop = (signal: NodeJS.Signals = 'SIGTERM'): Promise<number> => {
+		if (!beginStop()) return done;
+		// On Windows the child shares the console, so Ctrl+C already reached it;
+		// forwarding would terminate it outright instead of letting it shut down.
+		if (!(IS_WINDOWS && signal === 'SIGINT')) signalGroup(signal);
+		const timer = setTimeout(forceKill, stopTimeoutMs);
+		timer.unref?.();
+		void done.then(() => clearTimeout(timer));
 		return done;
 	};
 
 	const kill = (): Promise<number> => {
-		void stop('SIGKILL');
-		signalGroup('SIGKILL');
+		beginStop();
+		forceKill();
 		return done;
 	};
 
@@ -167,25 +222,68 @@ export function supervise(options: SupervisedProcessOptions): Supervisor {
  * all down, with the first non-zero code. Returns a function that stops them
  * the same way (for callers that end on their own terms).
  */
+/** Set once a signal asked the supervisors to stop; that handler then owns the exit. */
+let signalStopRequested = false;
+
+/** Whether a signal (Ctrl+C, SIGTERM, a closed terminal) is stopping everything. */
+export function stopRequestedBySignal(): boolean {
+	return signalStopRequested;
+}
+
 export function stopOnSignals(supervisors: Supervisor[]): (signal?: NodeJS.Signals) => Promise<number> {
 	const stopAll = async (signal: NodeJS.Signals = 'SIGTERM') => {
 		const codes = await Promise.all(supervisors.map((s) => s.stop(signal)));
 		return codes.find((code) => code !== 0) ?? 0;
 	};
-	let received = 0;
+	// Ctrl+C reaches the whole foreground group. Under `bun run` that is the
+	// runner AND this process, and the runner forwards its copy — so the first
+	// press arrives twice, 1 ms apart (later presses once). That copy is not a
+	// second press: treating it as one used to SIGKILL every child on a single
+	// Ctrl+C, and `bun run`, on its own second SIGINT, then killed this process
+	// and returned the prompt with the children orphaned and their ports held.
+	let runnerCopyPending = parentForwardsSignals();
+	let presses = 0;
+	const log = (line: string) => {
+		try {
+			process.stderr.write(`${line}\n`);
+		} catch {
+			// The terminal is gone.
+		}
+	};
+	const begin = (signal: NodeJS.Signals) => {
+		signalStopRequested = true;
+		log('\nStopping… (press Ctrl+C again to force)');
+		// A stop that was asked for and completed is a clean exit, whatever
+		// code the children ended with on the way (130 after SIGINT made `bun
+		// run` report the stop as an error). Forced, it reports the interrupt.
+		void stopAll(signal).then(() => process.exit(presses > 1 ? 130 : 0));
+	};
 	for (const signal of ['SIGINT', 'SIGTERM'] as const) {
 		process.on(signal, () => {
-			received++;
-			// A second Ctrl+C means "stop waiting".
-			if (received > 1) {
-				for (const supervisor of supervisors) void supervisor.kill();
+			if (signal === 'SIGINT' && presses === 1 && runnerCopyPending) {
+				runnerCopyPending = false;
 				return;
 			}
-			void stopAll(signal).then((code) => process.exit(code));
+			presses++;
+			if (presses === 1) {
+				begin(signal);
+				return;
+			}
+			// A second press means "stop waiting": everything goes now, and the
+			// exit still waits until it is gone.
+			log('Forcing stop…');
+			for (const supervisor of supervisors) void supervisor.kill();
 		});
 	}
-	// The terminal closed: keep supervising (the server keeps running too).
-	process.on('SIGHUP', () => {});
+	// The terminal closed. Started from one, everything goes with it — leaving
+	// a server running behind a closed tab is what users did not expect. Run in
+	// the background (`nohup`, a service: no terminal on stdout), it keeps going.
+	const startedInTerminal = process.stdout.isTTY === true;
+	process.on('SIGHUP', () => {
+		if (!startedInTerminal || presses > 0) return;
+		presses++;
+		begin('SIGTERM');
+	});
 	for (const stream of [process.stdout, process.stderr]) {
 		stream.on('error', () => {
 			// EIO/EPIPE once the terminal is gone — nothing left to write to.

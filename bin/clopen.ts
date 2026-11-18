@@ -27,7 +27,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import { loadEnvFile } from '../backend/utils/env';
 import { runGitHelper } from '../backend/git/identity/cli';
-import { stopOnSignals, supervise } from '../shared/utils/process-supervisor';
+import { stopOnSignals, stopRequestedBySignal, supervise } from '../shared/utils/process-supervisor';
 
 // CLI Options interface
 interface CLIOptions {
@@ -426,7 +426,8 @@ async function startServer(options: CLIOptions) {
 
 	const code = await server.done;
 	if (spinnerActive) stopSpinner();
-	process.exit(code);
+	// A stop asked for by Ctrl+C (or a closed terminal) exits from its handler.
+	if (!stopRequestedBySignal()) process.exit(code);
 }
 
 // ============================================================

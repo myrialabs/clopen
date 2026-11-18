@@ -6,7 +6,7 @@
  */
 
 import { afterAll, describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -94,6 +94,76 @@ describe.if(posix)('supervise', () => {
 		await sleep(150);
 		expect(out.lines.filter((line) => line.startsWith('grandchild='))).toHaveLength(1); // not restarted
 		expect(() => process.kill(grandchild, 0)).toThrow(); // the grandchild went with it
+	});
+
+	/**
+	 * A child whose grandchild lives in another process group (like the
+	 * preview's Chrome): on SIGTERM the child asks the grandchild to stop and
+	 * exits at once; the grandchild takes `drainMs` (or ignores it).
+	 */
+	function childWithDetachedGrandchild(name: string, drainMs: number | 'ignore'): string[] {
+		const grandchild = join(dir, `${name}-grandchild.ts`);
+		writeFileSync(
+			grandchild,
+			drainMs === 'ignore'
+				? `process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000);`
+				: `process.on('SIGTERM', () => setTimeout(() => process.exit(0), ${drainMs})); console.log('ready'); setInterval(() => {}, 1000);`
+		);
+		const child = join(dir, `${name}-child.ts`);
+		writeFileSync(
+			child,
+			`const g = Bun.spawn(['bun', ${JSON.stringify(grandchild)}], { detached: true, stdout: 'pipe' });
+			for await (const chunk of g.stdout) { if (new TextDecoder().decode(chunk).includes('ready')) break; }
+			console.log('grandchild=' + g.pid);
+			process.on('SIGTERM', () => { g.kill('SIGTERM'); process.exit(0); });
+			setInterval(() => {}, 1000);`
+		);
+		return ['bun', child];
+	}
+
+	test('a stop is over only once what the child started in other groups has exited', async () => {
+		const out = collect();
+		const s = supervise({ name: 't', cmd: childWithDetachedGrandchild('drain', 400), onStdout: out.sink, log: () => {} });
+		await waitFor(() => out.lines.some((line) => line.startsWith('grandchild=')), 10_000);
+		const grandchild = Number(out.lines.find((line) => line.startsWith('grandchild='))!.split('=')[1]);
+
+		const started = Date.now();
+		await s.stop('SIGTERM');
+		expect(Date.now() - started).toBeGreaterThanOrEqual(350);
+		expect(() => process.kill(grandchild, 0)).toThrow();
+	});
+
+	test('a process that hangs past the stop timeout is killed', async () => {
+		const out = collect();
+		const s = supervise({ name: 't', cmd: childWithDetachedGrandchild('hang', 'ignore'), onStdout: out.sink, log: () => {}, stopTimeoutMs: 600 });
+		await waitFor(() => out.lines.some((line) => line.startsWith('grandchild=')), 10_000);
+		const grandchild = Number(out.lines.find((line) => line.startsWith('grandchild='))!.split('=')[1]);
+
+		await s.stop('SIGTERM');
+		expect(() => process.kill(grandchild, 0)).toThrow();
+	});
+
+	test('a supervised child stops itself when its supervisor is gone', async () => {
+		const marker = join(dir, 'supervisor-gone');
+		const child = join(dir, 'watching-child.ts');
+		writeFileSync(
+			child,
+			`import { watchSupervisor } from ${JSON.stringify(join(import.meta.dir, 'process-supervisor.ts'))};
+			watchSupervisor(() => { require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'gone'); process.exit(0); }, 100);
+			console.log('watching'); setInterval(() => {}, 1000);`
+		);
+		const supervisor = join(dir, 'doomed-supervisor.ts');
+		writeFileSync(
+			supervisor,
+			`import { supervise } from ${JSON.stringify(join(import.meta.dir, 'process-supervisor.ts'))};
+			supervise({ name: 'c', cmd: ['bun', ${JSON.stringify(child)}], log: () => {} });`
+		);
+		const proc = Bun.spawn(['bun', supervisor], { stdout: 'pipe' });
+		for await (const chunk of proc.stdout) if (new TextDecoder().decode(chunk).includes('watching')) break;
+
+		proc.kill('SIGKILL'); // gone without stopping anything
+		await waitFor(() => existsSync(marker), 5000);
+		expect(readFileSync(marker, 'utf8')).toBe('gone');
 	});
 
 	test('gives up on a child that keeps dying', async () => {

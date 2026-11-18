@@ -33,6 +33,10 @@ import { runGitHelper } from './git/identity/cli';
 }
 
 import { Elysia } from 'elysia';
+import { watchSupervisor } from '$shared/utils/process-supervisor';
+import { collectDescendants, signalAll } from '$shared/utils/process-tree';
+import { ptyKitManager } from './terminal/ptykit';
+import { tunnelKit } from './tunnel/tunnel-config';
 import { corsMiddleware } from './middleware/cors';
 import { errorHandlerMiddleware } from './middleware/error-handler';
 import { loggerMiddleware } from './middleware/logger';
@@ -367,6 +371,14 @@ async function startServer() {
 	});
 }
 
+// Supervised (bin/clopen.ts, scripts/dev.ts): if the supervisor disappears
+// without stopping us, stop anyway rather than keep the port unowned. Read
+// before startServer spawns anything that would inherit the variable.
+watchSupervisor(() => {
+	debug.warn('server', 'Supervisor is gone — shutting down');
+	void gracefulShutdown();
+});
+
 startServer().catch((error) => {
 	console.error('❌ Failed to start server:', error);
 	process.exit(1);
@@ -379,12 +391,15 @@ async function gracefulShutdown() {
 	if (isShuttingDown) return;
 	isShuttingDown = true;
 
-	// Force exit after 5 seconds — prevents port from being held by slow cleanup
-	// during bun --watch restarts, which causes ECONNREFUSED on the Vite WS proxy.
+	// The port is released first thing (app.stop below), so the rest takes the
+	// time it actually needs. This only bounds a step that hangs: whatever this
+	// process started is then killed with it — the preview's Chrome sits in a
+	// process group of its own and would otherwise outlive us.
 	const forceExitTimer = setTimeout(() => {
-		debug.warn('server', '⚠️ Shutdown timeout — forcing exit to release port');
+		debug.warn('server', '⚠️ Shutdown timeout — forcing exit');
+		signalAll(collectDescendants(process.pid), 'SIGKILL');
 		process.exit(1);
-	}, 5_000);
+	}, 12_000);
 
 	console.log('\n🛑 Shutting down server...');
 	try {
@@ -404,6 +419,12 @@ async function gracefulShutdown() {
 		// transport so their remote sessions and bound ports are released now.
 		await sshForwardManager.stopAll();
 		sshClientPool.closeAll();
+		// Terminal tabs: each session's shell and everything started from it
+		// (a dev server, a background job) ends with the server.
+		ptyKitManager.dispose();
+		// Tunnels: cloudflared drains before it exits; wait for it so nothing is
+		// left serving this server's public URL.
+		await tunnelKit.stopAll();
 		// Dispose rate limiter timer
 		authRateLimiter.dispose();
 		// Dispose expired session cleanup timer
@@ -445,11 +466,17 @@ async function gracefulShutdown() {
 process.on('SIGINT', gracefulShutdown);
 process.on('SIGTERM', gracefulShutdown);
 
-// Ignore SIGHUP — sent when the controlling terminal closes or an SSH session
-// disconnects. Without a handler Bun exits immediately; we want the server to
-// keep running (e.g. started in a background tab or remote shell).
+// SIGHUP: the controlling terminal or SSH session closed. Started in a
+// terminal, the server goes with it, like any program run there. Without one
+// on stdout — supervised (the supervisor decides), `nohup`, a service — it
+// keeps running. Without a handler Bun would exit abruptly instead.
+const startedInTerminal = process.stdout.isTTY === true;
 process.on('SIGHUP', () => {
-	debug.log('server', 'Received SIGHUP — ignoring (server stays running)');
+	if (startedInTerminal) {
+		void gracefulShutdown();
+		return;
+	}
+	debug.log('server', 'Received SIGHUP — no terminal attached, server stays running');
 });
 
 // Safety net: prevent server crash from unhandled promise rejections.
