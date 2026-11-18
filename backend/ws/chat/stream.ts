@@ -636,7 +636,11 @@ export const streamHandler = createRouter()
 				t.Literal('cancelled')
 			]),
 			processId: t.String(),
-			messages: t.Array(t.Any()),
+			/**
+			 * The stream's event sequence when this snapshot was taken. A client
+			 * that already applied a newer event treats the snapshot as stale.
+			 */
+			seq: t.Optional(t.Number()),
 			currentPartialText: t.Optional(t.String()),
 			currentReasoningText: t.Optional(t.String()),
 			/** The blocks those two texts belong to (see `chat:partial`). */
@@ -664,7 +668,6 @@ export const streamHandler = createRouter()
 				streamId: data.chatSessionId || '',
 				status: 'completed' as const,
 				processId: '',
-				messages: [],
 				currentPartialText: undefined,
 				currentReasoningText: undefined,
 				error: undefined,
@@ -677,14 +680,12 @@ export const streamHandler = createRouter()
 			streamId: streamState.streamId,
 			status: streamState.status,
 			processId: streamState.processId,
-			// Trim sub-agent noise from the catch-up buffer too (see trimSubAgentForWire).
-			// Buffer entries wrap the UnifiedMessage under `.message`; leave the rest intact.
-			messages: streamState.messages.map(entry => {
-				const wrapped = entry as { message?: UnifiedMessage };
-				return wrapped?.message
-					? { ...wrapped, message: trimSubAgentForWire(wrapped.message) }
-					: entry;
-			}),
+			// No message history here: the transcript is loaded through
+			// messages:list-page, and a long turn's history (screenshots
+			// included) made this reply megabytes — sent in chunks that newer
+			// live events overtook, so the snapshot landed after the messages
+			// it predated.
+			seq: streamState.eventSeq,
 			currentPartialText: streamState.currentPartialText,
 			currentReasoningText: streamState.currentReasoningText,
 			partialBlock: streamState.partialBlock,

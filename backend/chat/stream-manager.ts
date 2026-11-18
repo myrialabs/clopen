@@ -1166,24 +1166,31 @@ class StreamManager extends EventEmitter {
 								});
 							}
 						} else if (streamEvt.event === 'stop') {
+							// `end` re-sends a block's full text once, as the reconciliation
+							// point. Only for a block still being streamed: once its saved
+							// message has gone out (which clears the text below), the block is
+							// settled and an `end` for it could only bring a stale copy back.
+							// A reasoning stop never ends the text block.
 							const lifecycle = streamEvt as StreamLifecycleEvent;
-							if (lifecycle.reasoning && streamState.currentReasoningText) {
-								this.emitStreamEvent(streamState, 'partial', {
-									processId: streamState.processId,
-									eventType: 'end',
-									block: streamState.reasoningBlock ?? 0,
-									partialText: streamState.currentReasoningText,
-									deltaText: '',
-									reasoning: true,
-									timestamp: new Date().toISOString()
-								});
+							if (lifecycle.reasoning) {
+								if (streamState.currentReasoningText) {
+									this.emitStreamEvent(streamState, 'partial', {
+										processId: streamState.processId,
+										eventType: 'end',
+										block: streamState.reasoningBlock ?? 0,
+										partialText: streamState.currentReasoningText,
+										deltaText: '',
+										reasoning: true,
+										timestamp: new Date().toISOString()
+									});
+								}
 								streamState.currentReasoningText = '';
-							} else {
+							} else if (streamState.currentPartialText) {
 								this.emitStreamEvent(streamState, 'partial', {
 									processId: streamState.processId,
 									eventType: 'end',
 									block: streamState.partialBlock ?? 0,
-									partialText: streamState.currentPartialText || '',
+									partialText: streamState.currentPartialText,
 									deltaText: '',
 									timestamp: new Date().toISOString()
 								});
@@ -1240,6 +1247,13 @@ class StreamManager extends EventEmitter {
 						const usage = assistantMsg.usage;
 						const messageTimestamp = assistantMsg.createdAt;
 
+						// The text this message settles stops being "live" before it is
+						// saved, so a catch-up snapshot can never carry text whose saved
+						// message a reloaded transcript already shows. Only a root message
+						// settles the root's live text — a sub-agent's (parent-tagged) one
+						// finishing must not wipe the main turn's partial.
+						if (!assistantMsg.parent.toolUseId) streamState.currentPartialText = undefined;
+
 						let savedMsgId: string | undefined;
 						let savedParentId: string | null = null;
 						if (chatSessionId) {
@@ -1251,8 +1265,6 @@ class StreamManager extends EventEmitter {
 							savedMsgId = saved?.id;
 							savedParentId = saved?.parent_message_id || null;
 						}
-
-						if (!assistantMsg.parent.toolUseId) streamState.currentPartialText = undefined;
 
 						streamState.messages.push({
 							processId: streamState.processId,
