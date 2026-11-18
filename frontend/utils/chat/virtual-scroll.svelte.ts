@@ -3,16 +3,17 @@
  *
  * Manages a sliding window over the full message list,
  * only rendering a subset to the DOM for performance.
- * No placeholder divs — uses scroll position preservation instead.
+ * No placeholder divs — the component keeps the reading position in place
+ * across every expand/trim (see the anchor keeper in ChatMessages).
  */
 
 import { debug } from '$shared/utils/logger';
 
 export const VS_CONFIG_CLASSIC = {
 	/** Max messages rendered at once */
-	WINDOW_SIZE: 20,
+	WINDOW_SIZE: 30,
 	/** Messages to load when hitting a sentinel */
-	BUFFER_SIZE: 5,
+	BUFFER_SIZE: 10,
 	/** Distance in px before sentinel to trigger load more */
 	LOAD_MORE_MARGIN: 600,
 } as const;
@@ -61,10 +62,16 @@ export function createVirtualScroll(getConfig: () => VSConfig = () => VS_CONFIG_
 
 	/**
 	 * Sync with new total (messages added during streaming).
-	 * Keeps window anchored to bottom when appropriate.
+	 *
+	 * A window that reached the end grows to include the new messages; it is
+	 * trimmed back to WINDOW_SIZE only for a reader at the bottom (the rest is
+	 * trimmed by the edges as they scroll). A window over older messages stays
+	 * exactly where it is — moving it to the end because a turn is streaming
+	 * replaced everything the reader was looking at.
 	 */
-	function sync(newTotal: number, isAtBottom: boolean, isStreaming: boolean) {
+	function sync(newTotal: number, isAtBottom: boolean) {
 		const { WINDOW_SIZE } = getConfig();
+		const wasAtEnd = windowEnd >= totalCount;
 		totalCount = newTotal;
 
 		if (newTotal <= WINDOW_SIZE) {
@@ -76,9 +83,9 @@ export function createVirtualScroll(getConfig: () => VSConfig = () => VS_CONFIG_
 
 		isActive = true;
 
-		if (isAtBottom || isStreaming) {
+		if (wasAtEnd) {
 			windowEnd = newTotal;
-			if (windowEnd - windowStart > WINDOW_SIZE) {
+			if (isAtBottom && windowEnd - windowStart > WINDOW_SIZE) {
 				windowStart = windowEnd - WINDOW_SIZE;
 			}
 		}
@@ -108,18 +115,23 @@ export function createVirtualScroll(getConfig: () => VSConfig = () => VS_CONFIG_
 		return count;
 	}
 
-	/** Trim bottom to keep window at WINDOW_SIZE. */
-	function trimBottom() {
+	/**
+	 * Trim bottom toward WINDOW_SIZE, dropping at most `max` items — the caller
+	 * passes how many are safely off screen so nothing visible disappears.
+	 */
+	function trimBottom(max = Infinity) {
 		const { WINDOW_SIZE } = getConfig();
-		if (windowEnd - windowStart <= WINDOW_SIZE) return;
-		windowEnd = windowStart + WINDOW_SIZE;
+		const excess = Math.min(windowEnd - windowStart - WINDOW_SIZE, max);
+		if (excess <= 0) return;
+		windowEnd -= excess;
 	}
 
-	/** Trim top to keep window at WINDOW_SIZE. */
-	function trimTop() {
+	/** Trim top toward WINDOW_SIZE, dropping at most `max` items (see trimBottom). */
+	function trimTop(max = Infinity) {
 		const { WINDOW_SIZE } = getConfig();
-		if (windowEnd - windowStart <= WINDOW_SIZE) return;
-		windowStart = windowEnd - WINDOW_SIZE;
+		const excess = Math.min(windowEnd - windowStart - WINDOW_SIZE, max);
+		if (excess <= 0) return;
+		windowStart += excess;
 	}
 
 	/**
@@ -170,6 +182,7 @@ export function createVirtualScroll(getConfig: () => VSConfig = () => VS_CONFIG_
 		get hasMoreAbove() { return windowStart > 0; },
 		get hasMoreBelow() { return windowEnd < totalCount; },
 		get loadMoreMargin() { return getConfig().LOAD_MORE_MARGIN; },
+		get bufferSize() { return getConfig().BUFFER_SIZE; },
 		reset,
 		sync,
 		expandUp,
