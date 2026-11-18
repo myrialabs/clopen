@@ -58,6 +58,7 @@
 	function resetView(count: number) {
 		vs.reset(count);
 		keyOffset = 0;
+		keptAnchor = null;
 	}
 
 	// ========================================
@@ -81,9 +82,12 @@
 		return filteredMessages.slice(vs.windowStart, vs.windowEnd);
 	});
 
+	/** Index in filteredMessages of the first rendered message. */
+	const windowBase = $derived(vs.isActive ? vs.windowStart : 0);
+
 	// Add date separators to windowed messages (with global index offset for stable keys)
 	const messagesWithDateSeparators = $derived.by((): DateSeparatorItem[] => {
-		return addDateSeparators(windowedMessages, keyOffset + (vs.isActive ? vs.windowStart : 0));
+		return addDateSeparators(windowedMessages, keyOffset + windowBase);
 	});
 
 	// Whether a message participates in the compact timeline rail (agent / reasoning)
@@ -186,11 +190,12 @@
 	 * anything on screen: the window and the keys shift by the number of items
 	 * added, in the same synchronous step as the insert, so the DOM is untouched
 	 * and the auto-scroll effect does not see "new messages". Returns how many
-	 * list items were added.
+	 * list items were added, or null when no page came back. With `untilId` the
+	 * page reaches back to that message in the same request.
 	 */
-	async function loadOlderPage(): Promise<number> {
-		const page = await fetchOlderPage();
-		if (!page) return 0;
+	async function loadOlderPage(untilId?: string): Promise<number | null> {
+		const page = await fetchOlderPage(untilId);
+		if (!page) return null;
 		const before = filteredMessages.length;
 		if (applyOlderPage(page) === 0) return 0;
 		const added = filteredMessages.length - before;
@@ -202,21 +207,36 @@
 		return added;
 	}
 
-	/** Page back until a message is loaded. True when it is (or already was). */
+	/**
+	 * Load back to a message. True when it is (or already was) loaded. Usually
+	 * one request; a loop only because a page already in flight (a prefetch) is
+	 * shared and may stop short of the message.
+	 */
 	async function ensureMessageLoaded(messageId: string): Promise<boolean> {
-		for (let guard = 0; guard < 1000 && !isMessageLoaded(messageId); guard++) {
+		for (let guard = 0; guard < 50 && !isMessageLoaded(messageId); guard++) {
 			if (!sessionState.hasOlderMessages) return false;
-			const page = await fetchOlderPage();
-			if (!page) return isMessageLoaded(messageId);
-			const before = filteredMessages.length;
-			if (applyOlderPage(page) > 0) {
-				const added = filteredMessages.length - before;
-				keyOffset -= added;
-				vs.prepend(added);
-				previousMessageCount = filteredMessages.length;
-			}
+			if ((await loadOlderPage(messageId)) === null) break;
 		}
 		return isMessageLoaded(messageId);
+	}
+
+	/**
+	 * Page the server in the background while the user is still a few screens
+	 * away from the top, so the next page is usually there before they reach it.
+	 * Applying it is invisible: the window shifts with the insert.
+	 */
+	let isPrefetchingOlder = false;
+	function prefetchOlderIfNear(el: HTMLElement) {
+		if (isPrefetchingOlder || !sessionState.hasOlderMessages) return;
+		const hiddenAbove = vs.isActive ? vs.windowStart : 0;
+		if (hiddenAbove > vs.bufferSize * 2) return;
+		if (el.scrollTop > Math.max(vs.loadMoreMargin * 3, el.clientHeight * 1.5)) return;
+		isPrefetchingOlder = true;
+		void loadOlderPage()
+			.catch(() => null)
+			.finally(() => {
+				isPrefetchingOlder = false;
+			});
 	}
 
 	/** Index of a message in the rendered list, or -1. */
@@ -238,7 +258,7 @@
 			if (vs.isActive && vs.hasMoreAbove) {
 				vs.expandUp();
 			} else if (sessionState.hasOlderMessages) {
-				if ((await loadOlderPage()) === 0) return;
+				if (!(await loadOlderPage())) return;
 				if (vs.isActive && vs.hasMoreAbove) vs.expandUp();
 			} else {
 				return;
@@ -261,10 +281,25 @@
 		return messagesScrollEl ?? scrollContainer;
 	}
 
+	/**
+	 * Whether the reader is at the end of the chat: near the bottom of what is
+	 * rendered AND nothing newer is held back by the window. Near the bottom of
+	 * an older window is not "at the bottom" — following new messages from there
+	 * would yank the window to the end.
+	 */
+	function isAtBottom(el: HTMLElement, threshold = 200): boolean {
+		if (vs.hasMoreBelow) return false;
+		return el.scrollTop + el.clientHeight >= el.scrollHeight - threshold;
+	}
+
 	// Auto-scroll to bottom when new messages arrive
 	function scrollMessagesToBottom(smooth = true) {
 		const el = getScrollEl();
 		if (el) {
+			// The anchor keeper must pin to the bottom while this (possibly smooth)
+			// scroll is still on its way there.
+			pinIntentUntil = Date.now() + 600;
+			keptPinned = true;
 			// During streaming, always use instant scroll to avoid jitter
 			// caused by smooth animation being outpaced by rapid DOM updates
 			const useSmooth = smooth && !appState.isLoading;
@@ -288,8 +323,7 @@
 		if (appState.isRestoring || suppressAutoScroll) return;
 		const sid = sessionState.currentSession?.id;
 		if (!sid) return;
-		const { scrollTop, scrollHeight, clientHeight } = el;
-		const atBottom = scrollTop + clientHeight >= scrollHeight - 200;
+		const atBottom = isAtBottom(el);
 		if (atBottom) {
 			setChatScroll(sid, { atBottom: true, anchorMessageId: null, anchorOffset: 0 });
 		} else {
@@ -320,10 +354,7 @@
 			if (!el) return;
 			// The lock has expired by now; refresh isUserAtBottom too so live
 			// auto-scroll follows from the user's real position.
-			if (Date.now() >= scrollLockUntil) {
-				const { scrollTop, scrollHeight, clientHeight } = el;
-				isUserAtBottom = scrollTop + clientHeight >= scrollHeight - 200;
-			}
+			if (Date.now() >= scrollLockUntil) isUserAtBottom = isAtBottom(el);
 			saveReadingPosition(el);
 		}, 120);
 	}
@@ -344,36 +375,177 @@
 		flushWorkspaceSave();
 	}
 
+	// ========================================
+	// ANCHOR KEEPER
+	// ========================================
+
 	/**
-	 * Grow the window upward over already-loaded items, keeping what is on
-	 * screen in place (expand → restore scroll → trim).
+	 * Keeps what the reader is looking at in place whenever the content changes
+	 * size: the window revealing or trimming items at either end, an older page
+	 * landing, markdown/code/images finishing their render, the panel resizing.
+	 *
+	 * The browser's own scroll anchoring is switched off (`overflow-anchor:
+	 * none`) — Safari has none at all, and two mechanisms correcting the same
+	 * scroll fight each other. Instead the first visible message is recorded on
+	 * every scroll, and a ResizeObserver on the list puts it back at the same
+	 * offset before the frame is painted. Changes below the anchor move nothing,
+	 * so they cost nothing. A reader pinned to the bottom stays pinned instead.
 	 */
-	function revealOlder(el: HTMLElement) {
-		isLoadingOlder = true;
+	let keptAnchor: { id: string; offset: number } | null = null;
+	let keptPinned = true;
+	/** A programmatic scroll to the bottom is in progress — keep pinning. */
+	let pinIntentUntil = 0;
+	let listEl: HTMLElement | undefined = $state();
 
-		const prevScrollHeight = el.scrollHeight;
-		const prevScrollTop = el.scrollTop;
+	function captureAnchor(el: HTMLElement) {
+		keptPinned = Date.now() < pinIntentUntil || isAtBottom(el, 2);
+		keptAnchor = keptPinned ? null : captureChatAnchor(el);
+	}
 
-		const added = vs.expandUp();
-		if (added > 0) {
-			// Phase 1: DOM updates with expanded window (no trim yet)
-			tick().then(() => {
-				requestAnimationFrame(() => {
-					// Restore scroll position based on content added at top
-					const heightAdded = el.scrollHeight - prevScrollHeight;
-					el.scrollTop = prevScrollTop + heightAdded;
-					// Lock scroll to prevent re-triggering from programmatic scroll
-					scrollLockUntil = Date.now() + 200;
+	function keepAnchor() {
+		const el = getScrollEl();
+		// The initial restore owns the scroll while it runs.
+		if (!el || !hasInitiallyScrolled || suppressAutoScroll) return;
+		// A position hold is running: keep ITS target, right away rather than
+		// on its next frame, so a change landing mid-frame never paints shifted.
+		if (releaseHold) {
+			if (heldTarget === 'bottom') {
+				if (el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight;
+			} else if (heldTarget) {
+				const node = el.querySelector<HTMLElement>(`[data-message-id="${heldTarget.anchorId}"]`);
+				if (!node) return;
+				const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - heldTarget.offset;
+				if (Math.abs(delta) > 1) el.scrollTop += delta;
+			}
+			return;
+		}
+		if (keptPinned) {
+			if (editModeState.isEditing) return;
+			if (el.scrollHeight - el.clientHeight - el.scrollTop > 1) el.scrollTop = el.scrollHeight;
+			return;
+		}
+		if (!keptAnchor) return;
+		const node = el.querySelector<HTMLElement>(`[data-message-id="${keptAnchor.id}"]`);
+		if (!node) return;
+		const delta = node.getBoundingClientRect().top - el.getBoundingClientRect().top - keptAnchor.offset;
+		if (Math.abs(delta) >= 1) el.scrollTop += delta;
+	}
 
-					// Phase 2: trim bottom after scroll is settled
-					requestAnimationFrame(() => {
-						vs.trimBottom();
-						setTimeout(() => { isLoadingOlder = false; }, 150);
-					});
-				});
-			});
+	$effect(() => {
+		const el = messagesScrollEl;
+		const list = listEl;
+		if (!el || !list) return;
+		const observer = new ResizeObserver(() => keepAnchor());
+		observer.observe(list);
+		observer.observe(el);
+		// The reader taking over cancels a pending pin to the bottom.
+		const takeOver = () => {
+			pinIntentUntil = 0;
+		};
+		for (const type of ['wheel', 'touchstart', 'keydown'] as const) {
+			el.addEventListener(type, takeOver, { passive: true });
+		}
+		return () => {
+			observer.disconnect();
+			for (const type of ['wheel', 'touchstart', 'keydown'] as const) {
+				el.removeEventListener(type, takeOver);
+			}
+		};
+	});
+
+	// ========================================
+	// EDGES: REVEAL / LOAD MORE
+	// ========================================
+
+	/**
+	 * Rendered items wholly beyond the viewport (plus a margin) at one end —
+	 * the most the window may drop there without anything visible vanishing.
+	 */
+	function countOffscreen(el: HTMLElement, side: 'above' | 'below'): number {
+		const nodes = el.querySelectorAll<HTMLElement>('[data-vs-item]');
+		const rect = el.getBoundingClientRect();
+		const margin = vs.loadMoreMargin;
+		let count = 0;
+		if (side === 'below') {
+			for (let i = nodes.length - 1; i >= 0; i--) {
+				if (nodes[i].getBoundingClientRect().top <= rect.bottom + margin) break;
+				count++;
+			}
 		} else {
+			for (let i = 0; i < nodes.length; i++) {
+				if (nodes[i].getBoundingClientRect().bottom >= rect.top - margin) break;
+				count++;
+			}
+		}
+		return count;
+	}
+
+	let isEdgeBusy = false;
+
+	/** Run one window change, let it render, then look at the edges again. */
+	async function runEdge(change: () => void) {
+		isEdgeBusy = true;
+		try {
+			change();
+			await tick();
+			await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+		} finally {
+			isEdgeBusy = false;
+		}
+		checkEdges();
+	}
+
+	/** Fetch the next older page while the reader waits at the top. */
+	async function loadOlderAtTop() {
+		isEdgeBusy = true;
+		isLoadingOlder = true;
+		try {
+			await loadOlderPage();
+			await tick();
+		} catch {
+			// fetchOlderPage already logged it; the next scroll retries.
+		} finally {
 			isLoadingOlder = false;
+			isEdgeBusy = false;
+		}
+		checkEdges();
+	}
+
+	/**
+	 * Reveal or load whatever is next to the reader at either end. Called on
+	 * every scroll AND after every load/reveal finishes: scrolling into the top
+	 * while a page was still on its way left nothing to trigger the next step,
+	 * so the chat sat stuck at the top until the user scrolled again.
+	 */
+	function checkEdges() {
+		const el = getScrollEl();
+		if (!el || isEdgeBusy || !hasInitiallyScrolled || suppressAutoScroll) return;
+		const margin = vs.loadMoreMargin;
+		const { scrollTop, scrollHeight, clientHeight } = el;
+
+		prefetchOlderIfNear(el);
+
+		if (scrollTop <= margin) {
+			if (vs.isActive && vs.hasMoreAbove) {
+				const spare = countOffscreen(el, 'below');
+				void runEdge(() => {
+					vs.expandUp();
+					vs.trimBottom(spare);
+				});
+				return;
+			}
+			if (sessionState.hasOlderMessages) {
+				void loadOlderAtTop();
+				return;
+			}
+		}
+
+		if (vs.isActive && vs.hasMoreBelow && scrollHeight - scrollTop - clientHeight <= margin) {
+			const spare = countOffscreen(el, 'above');
+			void runEdge(() => {
+				vs.expandDown();
+				vs.trimTop(spare);
+			});
 		}
 	}
 
@@ -382,58 +554,51 @@
 		const el = getScrollEl();
 		if (!el) return;
 
+		captureAnchor(el);
+
 		// While the lock is active we can't trust scroll events to reflect user
 		// intent (they may be echoes of our own programmatic scroll), so leave
-		// isUserAtBottom and load-more untouched — but DO schedule a settle-capture
-		// so a real user scroll during the lock still updates the saved position.
+		// isUserAtBottom untouched — but DO schedule a settle-capture so a real
+		// user scroll during the lock still updates the saved position.
 		if (Date.now() < scrollLockUntil) {
 			scheduleReadingPositionSave();
+			checkEdges();
 			return;
 		}
 
-		const { scrollTop, scrollHeight, clientHeight } = el;
-		const threshold = 200;
-		isUserAtBottom = scrollTop + clientHeight >= scrollHeight - threshold;
+		isUserAtBottom = isAtBottom(el);
 
 		// Remember this session's reading position (synchronous in the common,
 		// unlocked case so a project switch immediately after still flushes it).
 		saveReadingPosition(el);
 
-		const margin = vs.loadMoreMargin;
-
-		// Load older messages when near top: first from the loaded list (reveal
-		// what the window trimmed), then from the server (the next older page).
-		if (scrollTop <= margin && !isLoadingOlder) {
-			if (vs.isActive && vs.hasMoreAbove) {
-				revealOlder(el);
-			} else if (sessionState.hasOlderMessages) {
-				isLoadingOlder = true;
-				loadOlderPage()
-					.then(async (added) => {
-						await tick();
-						isLoadingOlder = false;
-						if (added > 0 && vs.hasMoreAbove) revealOlder(el);
-					})
-					.catch(() => {
-						isLoadingOlder = false;
-					});
-			}
-		}
-
-		if (!vs.isActive) return;
-
-		// Load newer messages when near bottom
-		const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
-		if (distanceFromBottom <= margin && vs.hasMoreBelow) {
-			vs.expandDown();
-			// Trim top immediately — removed content is above viewport
-			vs.trimTop();
-		}
+		checkEdges();
 	}
 
 	// ========================================
 	// AUTO-SCROLL & VIRTUAL SCROLL SYNC
 	// ========================================
+
+	/**
+	 * A cheap stand-in for a tool result's size, enough to notice it arriving or
+	 * growing. Serialising every result (screenshots included) on every streamed
+	 * token and every loaded page was a large share of the chat's main-thread
+	 * time once a session got long.
+	 */
+	function resultSignature(result: unknown): number {
+		const content = (result as { content?: unknown } | null)?.content ?? result;
+		if (typeof content === 'string') return content.length;
+		if (!Array.isArray(content)) return 1;
+		let size = content.length;
+		for (const part of content) {
+			const p = part as { text?: unknown; data?: unknown; source?: { data?: unknown } } | null;
+			if (typeof p?.text === 'string') size += p.text.length;
+			else if (typeof p?.data === 'string') size += p.data.length;
+			else if (typeof p?.source?.data === 'string') size += p.source.data.length;
+			else size += 1;
+		}
+		return size;
+	}
 
 	// Auto-scroll: track message count and partial message updates
 	$effect(() => {
@@ -446,7 +611,7 @@
 			if (isMessageCountDecreased) {
 				resetView(currentMessageCount);
 			} else if (isNewMessage) {
-				vs.sync(currentMessageCount, isUserAtBottom, appState.isLoading);
+				vs.sync(currentMessageCount, isUserAtBottom);
 			}
 		}
 
@@ -482,7 +647,7 @@
 			for (const item of message.content) {
 				if (item?.type !== 'tool_use') continue;
 				if (item.result) {
-					currentToolResultsHash += `${item.id}:${JSON.stringify(item.result).length}|`;
+					currentToolResultsHash += `${item.id}:${resultSignature(item.result)}|`;
 				}
 				if (item.subActivities?.length) {
 					currentSubAgentHash += `${item.id}:${item.subActivities.length}|`;
@@ -598,18 +763,17 @@
 	const HOLD_POSITION_MS = 2000;
 
 	let releaseHold: (() => void) | null = null;
+	/** What the running hold keeps in place (the anchor keeper applies it too). */
+	let heldTarget: { anchorId: string; offset: number } | 'bottom' | null = null;
 
 	/**
 	 * Keep a restored position in place while the layout finishes settling.
 	 *
-	 * Aligning once is not enough: after it, messages above the anchor still
-	 * resolve their real height (`content-visibility` lays them out at a 200px
-	 * estimate until they near the viewport), and markdown, code blocks and
-	 * images finish rendering. Chromium compensates for some of that with scroll
-	 * anchoring; Safari has none. Either way the chat ended up somewhere near,
-	 * but not at, the saved position. So the position is re-applied every frame
-	 * for a short while, and given up the moment the user scrolls, clicks or
-	 * types, or the session changes.
+	 * Aligning once is not enough: after it, markdown, code blocks and images
+	 * around the anchor finish rendering, and the window may reveal more items
+	 * above it. So the position is re-applied every frame for a short while,
+	 * and given up the moment the user scrolls, clicks or types, or the session
+	 * changes — the anchor keeper takes over from there.
 	 *
 	 * `target` is the anchor to hold, or null to hold the bottom.
 	 */
@@ -624,7 +788,12 @@
 				el.removeEventListener(type, stop);
 				window.removeEventListener(type, stop);
 			}
-			if (releaseHold === stop) releaseHold = null;
+			if (releaseHold === stop) {
+				releaseHold = null;
+				heldTarget = null;
+				// Hand the position back to the anchor keeper.
+				captureAnchor(el);
+			}
 		};
 		const step = () => {
 			if (Date.now() > until || sessionState.currentSession?.id !== sessionId || editModeState.isEditing) {
@@ -654,6 +823,7 @@
 			window.addEventListener(type, stop, { passive: true });
 		}
 		releaseHold = stop;
+		heldTarget = target ?? 'bottom';
 		frame = requestAnimationFrame(step);
 	}
 
@@ -691,14 +861,11 @@
 				await tick();
 
 				// Align the anchor to its saved offset, then RE-ALIGN across several
-				// frames. Messages use `content-visibility: auto` with a 200px
-				// intrinsic-size estimate, so those above the anchor are laid out as
-				// short placeholders until they near the viewport — once they render
-				// at their real height (often far more than 200px for long messages)
-				// they shove the anchor away from where we just put it. Each pass
-				// re-measures and corrects until the position stabilizes, keeping the
-				// lock raised so these programmatic scrolls aren't mistaken for user
-				// input.
+				// frames: messages that just mounted are still settling their real
+				// height (markdown, code, images) and shove the anchor away from where
+				// we just put it. Each pass re-measures and corrects until the position
+				// stabilizes, keeping the lock raised so these programmatic scrolls
+				// aren't mistaken for user input.
 				let aligned = false;
 				for (let pass = 0; pass < 12; pass++) {
 					await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -757,6 +924,7 @@
 					.then(() => fillViewportIfShort())
 					.finally(() => {
 						suppressAutoScroll = false;
+						checkEdges();
 						requestAnimationFrame(() => {
 							isContentReady = true;
 						});
@@ -777,6 +945,7 @@
 							.then(() => fillViewportIfShort())
 							.finally(() => {
 								suppressAutoScroll = false;
+								checkEdges();
 								isContentReady = true;
 							});
 					} else {
@@ -857,33 +1026,46 @@
 	// NAV RAIL: JUMP TO USER MESSAGE
 	// ========================================
 
+	/** Where a jumped-to prompt lands, from the top of the list. */
+	const NAV_JUMP_OFFSET = 24;
+
+	/** The prompt a jump is on its way to — the rail shows it as loading. */
+	let navPendingId = $state<string | null>(null);
+	/** Bumped by every jump, so a slower earlier one never lands after a later one. */
+	let navJumpToken = 0;
+
 	async function handleNavJump(item: NavItem) {
 		const el = getScrollEl();
 		if (!el) return;
+		const token = ++navJumpToken;
+		navPendingId = item.messageId;
+		try {
+			// The prompt may be on a page that is not loaded yet.
+			if (!isMessageLoaded(item.messageId) && !(await ensureMessageLoaded(item.messageId))) return;
+			if (token !== navJumpToken) return;
+			const index = indexOfMessage(item.messageId);
+			if (index < 0) return;
 
-		// The prompt may be on a page that is not loaded yet.
-		if (!isMessageLoaded(item.messageId) && !(await ensureMessageLoaded(item.messageId))) return;
-		const index = indexOfMessage(item.messageId);
-		if (index < 0) return;
-
-		// Lock scroll detection so jump doesn't flip isUserAtBottom incorrectly
-		scrollLockUntil = Date.now() + 400;
-
-		const performScroll = () => {
-			const target = el.querySelector<HTMLElement>(`[data-message-id="${item.messageId}"]`);
-			if (target) {
-				const top = target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - 24;
-				el.scrollTo({ top, behavior: 'auto' });
+			if (vs.isActive && (index < vs.windowStart || index >= vs.windowEnd)) {
+				vs.ensureVisible(index);
+				await tick();
+				if (token !== navJumpToken) return;
 			}
-		};
 
-		if (vs.isActive && (index < vs.windowStart || index >= vs.windowEnd)) {
-			vs.ensureVisible(index);
-			tick().then(() => {
-				requestAnimationFrame(performScroll);
-			});
-		} else {
-			performScroll();
+			const target = el.querySelector<HTMLElement>(`[data-message-id="${item.messageId}"]`);
+			if (!target) return;
+			// Lock scroll detection so the jump doesn't flip isUserAtBottom.
+			scrollLockUntil = Date.now() + 400;
+			pinIntentUntil = 0;
+			keptPinned = false;
+			isUserAtBottom = false;
+			el.scrollTop += target.getBoundingClientRect().top - el.getBoundingClientRect().top - NAV_JUMP_OFFSET;
+			// Messages around the target are still settling (markdown, code,
+			// images) and the window may reveal more above it: hold it in place
+			// until it is stable or the user takes over.
+			holdPosition(el, { anchorId: item.messageId, offset: NAV_JUMP_OFFSET });
+		} finally {
+			if (token === navJumpToken) navPendingId = null;
 		}
 	}
 
@@ -891,26 +1073,22 @@
 		const el = getScrollEl();
 		if (!el || filteredMessages.length === 0) return;
 
+		// Supersede a jump still loading, and any position being held.
+		navJumpToken++;
+		navPendingId = null;
+		releaseHold?.();
+
 		const lastIndex = filteredMessages.length - 1;
 
-		// Re-scroll across frames: content-visibility'd items resolve their
-		// real height only after they come on-screen, growing scrollHeight.
 		const performScroll = () => {
 			scrollLockUntil = Date.now() + 600;
-			let attempts = 3;
-			const step = () => {
-				el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-				attempts--;
-				if (attempts > 0) {
-					requestAnimationFrame(step);
-				} else {
-					isUserAtBottom = true;
-				}
-			};
-			step();
+			el.scrollTop = el.scrollHeight;
+			isUserAtBottom = true;
+			// Late layout below is followed by the hold (and the anchor keeper after it).
+			holdPosition(el, null);
 		};
 
-		if (vs.isActive && (lastIndex < vs.windowStart || lastIndex >= vs.windowEnd)) {
+		if (vs.isActive && vs.hasMoreBelow) {
 			vs.ensureVisible(lastIndex);
 			tick().then(() => {
 				requestAnimationFrame(performScroll);
@@ -968,6 +1146,7 @@
 		<ChatNavigationRail
 			scrollEl={messagesScrollEl}
 			items={userNavItems}
+			pendingId={navPendingId}
 			{isUserAtBottom}
 			onJump={handleNavJump}
 			onJumpToBottom={handleNavJumpToBottom}
@@ -989,34 +1168,41 @@
 	<!-- Messages container -->
 	<div
 		bind:this={messagesScrollEl}
-		class="flex-1 overflow-y-auto pt-3 pb-14 lg:pb-16 px-3 lg:px-4 {isContentReady ? '' : 'invisible'}"
+		class="chat-scroll flex-1 overflow-y-auto pt-3 pb-14 lg:pb-16 px-3 lg:px-4 {isContentReady ? '' : 'invisible'}"
 		style="{!isContentReady ? 'scroll-behavior: auto' : ''}">
 
 		<!-- One render path for every state. Rendering through two branches (no
 		     transition while restoring, fade otherwise) remounted every message
 		     the moment a restore finished — dropping each one's measured height
-		     right while the reading position was being aligned to them. -->
+		     right while the reading position was being aligned to them.
+		     The wrapper is what the anchor keeper watches for size changes. -->
+		<div bind:this={listEl}>
 		{#each messagesWithDateSeparators as item (item.key)}
-			<div class={isCompact ? '' : 'chat-item'}>
+			<div>
 				{#if item.type === 'date'}
 					<DateSeparator date={item.data} />
 				{:else if item.type === 'message'}
 					{@const messageId = 'messageId' in item.data ? item.data.messageId : undefined}
 					{@const isLastUser = messageId === lastUserMessageId}
 					{@const rail = railFlagsByKey.get(item.key)}
-					<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId}>
+					<!-- data-msg-index: the message's place in the whole list, so the nav
+					     rail can tell which prompt's section is on screen even when that
+					     prompt itself is outside the rendered window. -->
+					<div class={isCompact ? 'mb-2' : 'mb-2 lg:mb-4'} data-message-id={messageId} data-msg-index={windowBase + (item.position ?? 0)} data-vs-item>
 						<ChatMessage message={item.data} isLastUserMessage={isLastUser} railConnectUp={rail?.up ?? false} railConnectDown={rail?.down ?? false} />
 					</div>
 				{/if}
 			</div>
 		{/each}
+		</div>
 
 	</div>
 </div>
 
 <style>
-	.chat-item {
-		content-visibility: auto;
-		contain-intrinsic-size: auto 200px;
+	/* The anchor keeper holds the reading position on every browser alike;
+	   native scroll anchoring would correct the same scroll a second time. */
+	.chat-scroll {
+		overflow-anchor: none;
 	}
 </style>

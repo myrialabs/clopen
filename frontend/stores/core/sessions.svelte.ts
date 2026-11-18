@@ -382,9 +382,12 @@ async function loadBranchExtras(sessionId: string, generation: number) {
  * Fetch the page of messages just older than the loaded ones, without applying
  * it. Null when there is nothing older or the chat changed meanwhile. Applying
  * is separate (`applyOlderPage`) so the caller can shift its view in the same
- * synchronous step and the list never visibly jumps.
+ * synchronous step and the list never visibly jumps. With `untilId` the page
+ * reaches back to that message in the same request.
  */
-export function fetchOlderPage(): Promise<OlderPage | null> {
+export function fetchOlderPage(untilId?: string): Promise<OlderPage | null> {
+	// A request already in flight is shared; a caller that needs to reach a
+	// specific message simply asks again once it lands.
 	if (olderPageRequest) return olderPageRequest;
 	const sessionId = sessionState.messagesSessionId;
 	const beforeId = oldestLoadedId();
@@ -392,7 +395,12 @@ export function fetchOlderPage(): Promise<OlderPage | null> {
 
 	const generation = messagesGeneration;
 	const request = ws
-		.http('messages:list-page', { session_id: sessionId, before_id: beforeId, limit: PAGE_SIZE })
+		.http('messages:list-page', {
+			session_id: sessionId,
+			before_id: beforeId,
+			limit: PAGE_SIZE,
+			...(untilId ? { until_id: untilId } : {})
+		})
 		.then((page) => {
 			if (generation !== messagesGeneration || sessionState.messagesSessionId !== sessionId) return null;
 			return { sessionId, messages: page.messages as UnifiedMessage[], hasMore: page.hasMore };

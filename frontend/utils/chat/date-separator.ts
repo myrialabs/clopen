@@ -5,6 +5,8 @@ export interface DateSeparatorItem {
   type: 'message' | 'date';
   data: any;
   key: string;
+  /** For messages: position within the slice passed in. */
+  position?: number;
 }
 
 // Add date separators to messages
@@ -31,7 +33,8 @@ export function addDateSeparators(messages: FrontendMessage[], startIndex: numbe
     result.push({
       type: 'message',
       data: message,
-      key: `message-${startIndex + index}`
+      key: `message-${startIndex + index}`,
+      position: index
     });
   });
 

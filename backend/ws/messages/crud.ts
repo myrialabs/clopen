@@ -43,6 +43,8 @@ export const crudHandler = createRouter()
 			session_id: t.String({ minLength: 1 }),
 			/** Return the page that ends just before this message; omit for the latest. */
 			before_id: t.Optional(t.String()),
+			/** Also reach back to this message (a jump to an old prompt). */
+			until_id: t.Optional(t.String()),
 			/** Minimum page size; the page is extended back to the start of a turn. */
 			limit: t.Optional(t.Number({ minimum: 1, maximum: 500 }))
 		}),
@@ -52,7 +54,7 @@ export const crudHandler = createRouter()
 		})
 	}, async ({ data }) => {
 		requireSessionAccess(data.session_id);
-		return getMessagePage(data.session_id, { beforeId: data.before_id, minCount: data.limit });
+		return getMessagePage(data.session_id, { beforeId: data.before_id, untilId: data.until_id, minCount: data.limit });
 	})
 
 	// Every user prompt on the active branch — the chat's navigation rail.

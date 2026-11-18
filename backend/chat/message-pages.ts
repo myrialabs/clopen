@@ -88,10 +88,12 @@ function headOf(sessionId: string): string | null {
 /**
  * One page of the active branch, ending just before `beforeId` (or at the head
  * when absent). Holds at least `minCount` messages and always begins at a turn.
+ * With `untilId` it also reaches back to that message, so a jump to an old
+ * prompt is one request instead of a page-by-page walk.
  */
 export function getMessagePage(
 	sessionId: string,
-	options: { beforeId?: string; minCount?: number } = {}
+	options: { beforeId?: string; minCount?: number; untilId?: string } = {}
 ): MessagePage {
 	const minCount = Math.max(1, options.minCount ?? DEFAULT_PAGE_SIZE);
 	const byId = getDatabase().prepare('SELECT * FROM messages WHERE id = ? AND session_id = ?');
@@ -107,6 +109,7 @@ export function getMessagePage(
 
 	const messages: UnifiedMessage[] = [];
 	const boundary = new BoundaryTracker();
+	let reachedUntil = !options.untilId;
 	while (cursor) {
 		const row = byId.get(cursor, sessionId) as DatabaseMessage | null;
 		if (!row) {
@@ -116,8 +119,9 @@ export function getMessagePage(
 		const message = JSON.parse(row.data) as UnifiedMessage;
 		messages.push(message);
 		cursor = row.parent_message_id ?? null;
+		if (row.id === options.untilId) reachedUntil = true;
 		const mayStartHere = boundary.add(message);
-		if (messages.length >= minCount && mayStartHere) break;
+		if (messages.length >= minCount && reachedUntil && mayStartHere) break;
 	}
 
 	return {

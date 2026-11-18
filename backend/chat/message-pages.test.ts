@@ -120,6 +120,23 @@ describe('getMessagePage', () => {
 		expect(collected).toEqual(ids);
 	});
 
+	it('reaches back to a requested message in one page, contiguous with the loaded ones', () => {
+		const session = newSession();
+		const ids = buildBranch(session, 12, 2); // 6 messages per turn
+
+		const latest = getMessagePage(session, { minCount: 7 });
+		const before = (latest.messages[0] as { messageId: string }).messageId;
+		const target = ids[7]; // inside turn 1, far older than one page
+		const page = getMessagePage(session, { beforeId: before, minCount: 7, untilId: target });
+		const pageIds = page.messages.map((message) => (message as { messageId: string }).messageId);
+
+		expect(pageIds).toContain(target);
+		const start = ids.indexOf(pageIds[0]);
+		expect(start).toBeLessThanOrEqual(7);
+		expect([...pageIds, ...latest.messages.map((m) => (m as { messageId: string }).messageId)]).toEqual(ids.slice(start));
+		expect(page.hasMore).toBe(true);
+	});
+
 	it('answers an empty page for a session with no messages, or an unknown cursor', () => {
 		const session = newSession();
 		expect(getMessagePage(session)).toEqual({ messages: [], hasMore: false });
