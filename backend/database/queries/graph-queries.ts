@@ -1545,36 +1545,6 @@ export const graphQueries = {
 	},
 
 	/**
-	 * The same listing, narrowed to a rectangle of the persisted layout.
-	 *
-	 * This is what opening a bin reads, and it is why the view can be complete
-	 * without being unbounded: zooming into part of the map costs that part. The
-	 * bounds come from the layout's own coordinate space, which the client already
-	 * holds — every mark it drew carries the cell it stands for.
-	 */
-	listInRegion(
-		filter: GraphListFilter & { limit?: number },
-		region: { minX: number; maxX: number; minY: number; maxY: number }
-	): GraphNode[] {
-		const { where, params } = buildNodeFilter(filter);
-		where.push(
-			`id IN (SELECT node_id FROM graph_layout
-			        WHERE x >= ? AND x <= ? AND y >= ? AND y <= ?)`
-		);
-		params.push(region.minX, region.maxX, region.minY, region.maxY);
-		params.push(filter.limit ?? 2000);
-
-		const rows = getDatabase()
-			.prepare(
-				`SELECT * FROM graph_nodes WHERE ${where.join(' AND ')}
-				 ORDER BY pinned DESC, weight DESC, updated_at DESC
-				 LIMIT ?`
-			)
-			.all(...params) as GraphNodeRow[];
-		return rows.map(toNode);
-	},
-
-	/**
 	 * Whether the graph holds any live memory at all.
 	 *
 	 * `EXISTS`, not `COUNT`, because the only caller runs on every turn and only
@@ -1906,11 +1876,14 @@ export interface GraphLayoutRow {
 	x: number;
 	y: number;
 	/**
-	 * 1 when the force simulation computed this position, 0 when it is a guess
-	 * from the community's neighbourhood. See migration 067 for why the two must
-	 * stay distinguishable.
+	 * 1 when the position is a real one — computed by the simulation or by the
+	 * arrival solver — and 0 when it is not usable. See migration 067 for why the
+	 * two must stay distinguishable; the pass no longer writes 0, but rows from
+	 * before it may still hold it, and those are treated as unplaced.
 	 */
 	placed: number;
+	/** Connections in the graph the pass laid out, stored and derived. Sizes the node. */
+	degree: number;
 }
 
 /** How many nodes match a filter, and the rectangle their layout occupies. */
@@ -1924,51 +1897,91 @@ export interface GraphLayoutExtent {
 	maxY: number;
 }
 
-/** The grid a binned view is rolled up to, in layout coordinates. */
-export interface GraphBinGrid {
-	originX: number;
-	originY: number;
-	cellWidth: number;
-	cellHeight: number;
+/** A rectangle of layout space, half-open: `[minX, maxX) × [minY, maxY)`. */
+export interface GraphLayoutRect {
+	minX: number;
+	maxX: number;
+	minY: number;
+	maxY: number;
 }
 
-/** One occupied cell: how many it holds, where they average, and which speaks for it. */
-export interface GraphBinRow {
-	cellX: number;
-	cellY: number;
-	members: number;
-	x: number;
-	y: number;
-	/** The most reinforced member — the mark itself when `members` is 1. */
+/** A square grid laid over layout space — tiles at one zoom level, or cells inside them. */
+export interface GraphLayoutGrid {
+	originX: number;
+	originY: number;
+	size: number;
+}
+
+/** A memory as a tile carries it: enough to draw and hover, nothing to inspect. */
+export interface GraphTileNodeRow {
 	id: string;
 	label: string;
 	community: number;
+	degree: number;
+	x: number;
+	y: number;
 }
 
-export interface GraphBinEdgeRow {
-	srcX: number;
-	srcY: number;
-	dstX: number;
-	dstY: number;
+/** One occupied cell of a crowded tile, with the member that speaks for it. */
+export interface GraphTileCellRow extends GraphTileNodeRow {
+	cellX: number;
+	cellY: number;
+	members: number;
+}
+
+/** An edge leaving a tile's memory, with where its far end sits. */
+export interface GraphTileEdgeRow {
+	source: string;
+	target: string;
+	weight: number;
+	targetX: number;
+	targetY: number;
+}
+
+/** Edges between the cells of a crowded tile and the cells they reach. */
+export interface GraphTileCellEdgeRow {
+	sourceCellX: number;
+	sourceCellY: number;
+	targetCellX: number;
+	targetCellY: number;
 	weight: number;
 }
 
+/** Longest caption a tile carries; the full text belongs to the inspector. */
+const TILE_LABEL_MAX = 80;
+
 /**
- * Reading and writing the persisted arrangement (see migration 067).
+ * Every edge touching a set of nodes, from both of the places edges live, and
+ * oriented so `s` is always the member of the set.
+ *
+ * Stored edges come from `graph_edges` directly rather than from the layout
+ * pass, so a connection a model records is drawn on the next fetch instead of
+ * after the next pass. Derived ones come from `graph_layout_edges`, which the
+ * pass keeps (see migration 089). Both are read through their own indexes, one
+ * lookup per id per column.
+ */
+const PAIRS_OF = (set: string): string => `
+	SELECT e.src_id AS s, e.dst_id AS t, e.weight AS w FROM ${set} ids JOIN graph_edges e ON e.src_id = ids.id
+	UNION ALL SELECT e.dst_id, e.src_id, e.weight FROM ${set} ids JOIN graph_edges e ON e.dst_id = ids.id
+	UNION ALL SELECT d.src_id, d.dst_id, d.weight FROM ${set} ids JOIN graph_layout_edges d ON d.src_id = ids.id
+	UNION ALL SELECT d.dst_id, d.src_id, d.weight FROM ${set} ids JOIN graph_layout_edges d ON d.dst_id = ids.id`;
+
+/**
+ * Reading and writing the persisted arrangement (see migrations 067 and 089).
  *
  * Kept apart from `graphQueries` because it answers a different question:
  * `graphQueries` is about what is remembered, this is about how it is drawn.
- * Every row here is derived and disposable — deleting the table costs one
+ * Every row here is derived and disposable — deleting the tables costs one
  * background pass and no memory.
  */
 export const graphLayoutQueries = {
-	/** Positions and communities for a set of nodes. */
+	/** Positions, communities and degrees for a set of nodes. */
 	read(nodeIds: string[]): Map<string, GraphLayoutRow> {
 		const result = new Map<string, GraphLayoutRow>();
 		if (nodeIds.length === 0) return result;
 		const rows = getDatabase()
 			.prepare(
-				`SELECT node_id AS nodeId, community, x, y, placed FROM graph_layout
+				`SELECT node_id AS nodeId, community, x, y, placed, degree FROM graph_layout
 				 WHERE node_id IN ${ID_SET}`
 			)
 			.all(idSet(nodeIds)) as GraphLayoutRow[];
@@ -1976,21 +1989,66 @@ export const graphLayoutQueries = {
 		return result;
 	},
 
+	/**
+	 * Memories that are no longer live — archived or superseded — for the pass
+	 * to place.
+	 *
+	 * The pass arranges live memories, but "show archived" draws these too, and a
+	 * memory with no position cannot be drawn. `all` asks for every one of them,
+	 * which a cold pass needs because it draws a new map; otherwise only those
+	 * with no usable position yet. Capped, most recent first, because the
+	 * forgotten pile is allowed to grow far beyond anything worth drawing.
+	 */
+	retiredIds(all: boolean, limit = 20_000): string[] {
+		const rows = getDatabase()
+			.prepare(
+				`SELECT n.id AS id FROM graph_nodes n
+				 LEFT JOIN graph_layout l ON l.node_id = n.id
+				 WHERE (n.archived_at IS NOT NULL OR n.superseded_by IS NOT NULL)
+				   AND (? = 1 OR l.node_id IS NULL OR l.placed = 0)
+				 ORDER BY n.updated_at DESC, n.id ASC
+				 LIMIT ?`
+			)
+			.all(all ? 1 : 0, limit) as { id: string }[];
+		return rows.map(row => row.id).sort();
+	},
+
 	/** Replace the arrangement for the nodes given, in one transaction. */
 	writeMany(rows: GraphLayoutRow[]): number {
 		if (rows.length === 0) return 0;
 		return graphQueries.transaction(() => {
 			const statement = getDatabase().prepare(
-				`INSERT INTO graph_layout (node_id, community, x, y, placed, updated_at)
-				 VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+				`INSERT INTO graph_layout (node_id, community, x, y, placed, degree, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 				 ON CONFLICT(node_id) DO UPDATE SET
 				   community = excluded.community, x = excluded.x, y = excluded.y,
-				   placed = excluded.placed, updated_at = CURRENT_TIMESTAMP`
+				   placed = excluded.placed, degree = excluded.degree, updated_at = CURRENT_TIMESTAMP`
 			);
 			for (const row of rows) {
-				statement.run(row.nodeId, row.community, row.x, row.y, row.placed);
+				statement.run(row.nodeId, row.community, row.x, row.y, row.placed, row.degree);
 			}
 			return rows.length;
+		});
+	},
+
+	/**
+	 * Replace every derived edge with the set the pass just laid out on.
+	 *
+	 * Wholesale rather than diffed: the set is a function of the whole graph — one
+	 * memory joining a subject re-chains that subject's members — so there is no
+	 * cheaper correct answer than the new set itself.
+	 */
+	replaceDerivedEdges(edges: { srcId: string; dstId: string; weight: number }[]): void {
+		graphQueries.transaction(() => {
+			const db = getDatabase();
+			db.prepare(`DELETE FROM graph_layout_edges`).run();
+			const statement = db.prepare(
+				`INSERT OR REPLACE INTO graph_layout_edges (src_id, dst_id, weight) VALUES (?, ?, ?)`
+			);
+			for (const edge of edges) {
+				const [a, b] = edge.srcId < edge.dstId ? [edge.srcId, edge.dstId] : [edge.dstId, edge.srcId];
+				statement.run(a, b, edge.weight);
+			}
 		});
 	},
 
@@ -2019,39 +2077,102 @@ export const graphLayoutQueries = {
 		return rows.map(row => row.id);
 	},
 
+	/**
+	 * A cheap fingerprint of everything the edges of the layout graph come from.
+	 *
+	 * Reinforcement rings the change doorbell on every recall without moving a
+	 * node or an edge, so the pass compares this before doing any work. Counts and
+	 * the highest id are enough: rows are inserted and deleted, never rewritten in
+	 * place in a way that changes what they connect.
+	 */
+	sourceFingerprint(): string {
+		const row = getDatabase()
+			.prepare(
+				`SELECT (SELECT COUNT(*) FROM graph_edges) AS edges,
+				        (SELECT COALESCE(MAX(id), 0) FROM graph_edges) AS lastEdge,
+				        (SELECT COUNT(*) FROM graph_node_entities) AS entities,
+				        (SELECT COUNT(*) FROM graph_node_paths) AS paths`
+			)
+			.get() as { edges: number; lastEdge: number; entities: number; paths: number };
+		return `${row.edges}:${row.lastEdge}:${row.entities}:${row.paths}`;
+	},
+
 	/** Whether any live node is still waiting to be placed. */
 	hasUnplaced(): boolean {
 		const row = getDatabase()
 			.prepare(
 				`SELECT 1 AS present FROM graph_nodes n
 				 LEFT JOIN graph_layout l ON l.node_id = n.id
-				 WHERE n.archived_at IS NULL AND n.superseded_by IS NULL AND l.node_id IS NULL
+				 WHERE n.archived_at IS NULL AND n.superseded_by IS NULL
+				   AND (l.node_id IS NULL OR l.placed = 0)
 				 LIMIT 1`
 			)
 			.get() as { present: number } | null;
 		return row !== null && row !== undefined;
 	},
 
+	/**
+	 * The rectangle every placed row occupies — live or not — and the largest
+	 * coordinate magnitude in it.
+	 *
+	 * The magnitude is what catches a corrupted arrangement: a healthy one spans
+	 * thousands of units, and anything near the float range means a pass diverged.
+	 */
+	bounds(): (GraphLayoutRect & { count: number; magnitude: number }) | null {
+		const row = getDatabase()
+			.prepare(
+				`SELECT COUNT(*) AS count, MIN(x) AS minX, MAX(x) AS maxX, MIN(y) AS minY, MAX(y) AS maxY,
+				        MAX(MAX(ABS(x)), MAX(ABS(y))) AS magnitude
+				 FROM graph_layout WHERE placed = 1`
+			)
+			.get() as {
+			count: number;
+			minX: number | null;
+			maxX: number | null;
+			minY: number | null;
+			maxY: number | null;
+			magnitude: number | null;
+		};
+		if (!row || row.count === 0 || row.minX === null || row.maxX === null || row.minY === null || row.maxY === null) {
+			return null;
+		}
+		return {
+			count: row.count,
+			minX: row.minX,
+			maxX: row.maxX,
+			minY: row.minY,
+			maxY: row.maxY,
+			magnitude: row.magnitude ?? 0
+		};
+	},
+
 	/** Rows whose node no longer exists. Foreign keys are not always enforced. */
 	pruneOrphans(): number {
-		const result = getDatabase()
+		const db = getDatabase();
+		db.prepare(
+			`DELETE FROM graph_layout_edges
+			 WHERE src_id NOT IN (SELECT id FROM graph_nodes) OR dst_id NOT IN (SELECT id FROM graph_nodes)`
+		).run();
+		const result = db
 			.prepare(`DELETE FROM graph_layout WHERE node_id NOT IN (SELECT id FROM graph_nodes)`)
 			.run() as { changes?: number };
 		return Number(result.changes ?? 0);
 	},
 
-	/** Drop the whole arrangement — used when the graph is purged. */
+	/** Drop the whole arrangement — used when the graph is purged or the pass changes. */
 	clear(): void {
-		getDatabase().prepare(`DELETE FROM graph_layout`).run();
+		const db = getDatabase();
+		db.prepare(`DELETE FROM graph_layout_edges`).run();
+		db.prepare(`DELETE FROM graph_layout`).run();
 	},
 
 	/**
 	 * How many nodes match, and the rectangle their arrangement occupies.
 	 *
-	 * One pass answering both, because the two are always wanted together: the
-	 * count decides whether the view has to bin at all, and the extent is what the
-	 * grid is laid over. `MIN`/`MAX` skip NULLs, so a node still waiting to be
-	 * placed is counted without dragging the bounds toward the origin.
+	 * The count is what the header reports and the rectangle is what "Fit" frames
+	 * — the filtered part of the map rather than the whole of it. `MIN`/`MAX` skip
+	 * NULLs, so a node still waiting to be placed is counted without dragging the
+	 * bounds toward the origin.
 	 */
 	extent(filter: GraphListFilter): GraphLayoutExtent {
 		const { where, params } = buildNodeFilter(filter, 'n.');
@@ -2060,9 +2181,11 @@ export const graphLayoutQueries = {
 		const row = getDatabase()
 			.prepare(
 				`SELECT COUNT(*) AS total,
-				        SUM(CASE WHEN l.node_id IS NULL THEN 1 ELSE 0 END) AS unplaced,
-				        MIN(l.x) AS minX, MAX(l.x) AS maxX,
-				        MIN(l.y) AS minY, MAX(l.y) AS maxY
+				        SUM(CASE WHEN l.node_id IS NULL OR l.placed = 0 THEN 1 ELSE 0 END) AS unplaced,
+				        MIN(CASE WHEN l.placed = 1 THEN l.x END) AS minX,
+				        MAX(CASE WHEN l.placed = 1 THEN l.x END) AS maxX,
+				        MIN(CASE WHEN l.placed = 1 THEN l.y END) AS minY,
+				        MAX(CASE WHEN l.placed = 1 THEN l.y END) AS maxY
 				 FROM graph_nodes n
 				 LEFT JOIN graph_layout l ON l.node_id = n.id
 				 ${clause}`
@@ -2087,107 +2210,241 @@ export const graphLayoutQueries = {
 	},
 
 	/**
-	 * One row per occupied cell of the grid: its size, its centroid, and its most
-	 * reinforced member.
+	 * How many matching memories fall in each tile of `grid` inside `rect`.
 	 *
-	 * The count of rows is bounded by the grid, not by the store — that is the
-	 * whole point. A cell holding one memory comes back with `members = 1` and
-	 * that memory's id, so the caller can return the memory ITSELF rather than a
-	 * bin standing for it; below the render budget that is every cell, and the
-	 * view is bit-for-bit the flat one.
-	 *
-	 * `CAST(... AS INTEGER)` truncates toward zero, which would fold the cells on
-	 * either side of the origin into one — the grid is therefore anchored at the
-	 * arrangement's minimum, so every offset it sees is positive.
+	 * Asked once per request over the union of the tiles wanted, so the caller can
+	 * decide per tile whether it fits its budget before reading a single label.
+	 * `CAST` truncates toward zero, which is only a floor for non-negative input —
+	 * the world box is anchored below every placed row, so it always is.
 	 */
-	binnedNodes(filter: GraphListFilter, grid: GraphBinGrid): GraphBinRow[] {
+	tileCounts(filter: GraphListFilter, grid: GraphLayoutGrid, rect: GraphLayoutRect): { tileX: number; tileY: number; count: number }[] {
 		const { where, params } = buildNodeFilter(filter, 'n.');
-		const clause = where.length ? `WHERE ${where.join(' AND ')}` : '';
-
+		const clause = where.length ? `AND ${where.join(' AND ')}` : '';
 		return getDatabase()
 			.prepare(
-				`SELECT cellX, cellY, members, cx AS x, cy AS y, id, label, community
+				`SELECT CAST((l.x - ?) / ? AS INTEGER) AS tileX,
+				        CAST((l.y - ?) / ? AS INTEGER) AS tileY,
+				        COUNT(*) AS count
+				 FROM graph_layout l
+				 INNER JOIN graph_nodes n ON n.id = l.node_id
+				 WHERE l.placed = 1 AND l.x >= ? AND l.x < ? AND l.y >= ? AND l.y < ? ${clause}
+				 GROUP BY 1, 2`
+			)
+			.all(
+				grid.originX,
+				grid.size,
+				grid.originY,
+				grid.size,
+				rect.minX,
+				rect.maxX,
+				rect.minY,
+				rect.maxY,
+				...params
+			) as { tileX: number; tileY: number; count: number }[];
+	},
+
+	/** Every matching memory inside a rectangle, drawn individually. */
+	tileNodes(filter: GraphListFilter, rect: GraphLayoutRect, limit: number): GraphTileNodeRow[] {
+		const { where, params } = buildNodeFilter(filter, 'n.');
+		const clause = where.length ? `AND ${where.join(' AND ')}` : '';
+		return getDatabase()
+			.prepare(
+				`SELECT n.id AS id, substr(n.label, 1, ?) AS label, l.community AS community,
+				        l.degree AS degree, l.x AS x, l.y AS y
+				 FROM graph_layout l
+				 INNER JOIN graph_nodes n ON n.id = l.node_id
+				 WHERE l.placed = 1 AND l.x >= ? AND l.x < ? AND l.y >= ? AND l.y < ? ${clause}
+				 ORDER BY n.pinned DESC, n.weight DESC, n.updated_at DESC, n.id ASC
+				 LIMIT ?`
+			)
+			.all(TILE_LABEL_MAX, rect.minX, rect.maxX, rect.minY, rect.maxY, ...params, limit) as GraphTileNodeRow[];
+	},
+
+	/**
+	 * A crowded tile folded into the cells of `cells`: one row per occupied cell,
+	 * with its size, its centroid and its most reinforced member.
+	 *
+	 * Cell coordinates are GLOBAL — counted from the world origin, not the tile —
+	 * so an edge from any tile can name the cell it lands in without knowing which
+	 * tile that cell belongs to.
+	 */
+	tileCells(filter: GraphListFilter, rect: GraphLayoutRect, cells: GraphLayoutGrid): GraphTileCellRow[] {
+		const { where, params } = buildNodeFilter(filter, 'n.');
+		const clause = where.length ? `AND ${where.join(' AND ')}` : '';
+		return getDatabase()
+			.prepare(
+				`SELECT cellX, cellY, members, cx AS x, cy AS y, id, label, community, degree
 				 FROM (
-				   SELECT cellX, cellY, id, label, community,
-				          COUNT(*) OVER (PARTITION BY cellX, cellY) AS members,
-				          AVG(x) OVER (PARTITION BY cellX, cellY) AS cx,
-				          AVG(y) OVER (PARTITION BY cellX, cellY) AS cy,
+				   SELECT cellX, cellY, id, label, community, degree,
+				          COUNT(*) OVER cell AS members,
+				          AVG(x) OVER cell AS cx,
+				          AVG(y) OVER cell AS cy,
 				          ROW_NUMBER() OVER (
 				            PARTITION BY cellX, cellY
-				            ORDER BY pinned DESC, weight DESC, updated_at DESC
+				            ORDER BY pinned DESC, weight DESC, updated_at DESC, id ASC
 				          ) AS rn
 				   FROM (
 				     SELECT CAST((l.x - ?) / ? AS INTEGER) AS cellX,
 				            CAST((l.y - ?) / ? AS INTEGER) AS cellY,
-				            l.x AS x, l.y AS y, l.community AS community,
-				            n.id AS id, n.label AS label,
+				            l.x AS x, l.y AS y, l.community AS community, l.degree AS degree,
+				            n.id AS id, substr(n.label, 1, ?) AS label,
 				            n.pinned AS pinned, n.weight AS weight, n.updated_at AS updated_at
-				     FROM graph_nodes n
-				     INNER JOIN graph_layout l ON l.node_id = n.id
-				     ${clause}
+				     FROM graph_layout l
+				     INNER JOIN graph_nodes n ON n.id = l.node_id
+				     WHERE l.placed = 1 AND l.x >= ? AND l.x < ? AND l.y >= ? AND l.y < ? ${clause}
 				   )
+				   WINDOW cell AS (PARTITION BY cellX, cellY)
 				 )
 				 WHERE rn = 1`
 			)
 			.all(
-				grid.originX,
-				grid.cellWidth,
-				grid.originY,
-				grid.cellHeight,
+				cells.originX,
+				cells.size,
+				cells.originY,
+				cells.size,
+				TILE_LABEL_MAX,
+				rect.minX,
+				rect.maxX,
+				rect.minY,
+				rect.maxY,
 				...params
-			) as GraphBinRow[];
+			) as GraphTileCellRow[];
 	},
 
 	/**
-	 * Edges rolled up to the same grid, so the binned picture keeps its structure.
+	 * Edges touching a set of memories, each with where its far end sits.
 	 *
-	 * Stored edges only. The derived ones (see `derivedEdges`) exist to hold a
-	 * subject's memories together, and the layout pass already consumed them —
-	 * their effect is in the POSITIONS, which is where it belongs at this
-	 * resolution. Recomputing them here would mean handing this query the id of
-	 * every matching node, which is the unbounded thing the grid exists to avoid.
-	 *
-	 * Edges inside a single cell are dropped: both ends are the same mark.
+	 * The far end is filtered exactly like the near one, so an edge never leads
+	 * into a memory the current filter hides — and it must have a position, or
+	 * there is nowhere to draw it to.
 	 */
-	binnedEdges(filter: GraphListFilter, grid: GraphBinGrid, limit: number): GraphBinEdgeRow[] {
-		const src = buildNodeFilter(filter, 'na.');
-		const dst = buildNodeFilter(filter, 'nb.');
-		const conditions = [...src.where, ...dst.where];
-		const clause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-
+	edgesTouching(filter: GraphListFilter, nodeIds: string[], limit: number): GraphTileEdgeRow[] {
+		if (nodeIds.length === 0) return [];
+		const { where, params } = buildNodeFilter(filter, 'nb.');
+		const clause = where.length ? `AND ${where.join(' AND ')}` : '';
 		return getDatabase()
 			.prepare(
-				`SELECT srcX, srcY, dstX, dstY, SUM(weight) AS weight
+				`WITH wanted(id) AS (SELECT value FROM json_each(?)),
+				      pairs(s, t, w) AS (${PAIRS_OF('wanted')})
+				 SELECT p.s AS source, p.t AS target, MAX(p.w) AS weight, l.x AS targetX, l.y AS targetY
+				 FROM pairs p
+				 INNER JOIN graph_layout l ON l.node_id = p.t
+				 INNER JOIN graph_nodes nb ON nb.id = p.t
+				 WHERE p.s != p.t AND l.placed = 1 ${clause}
+				 GROUP BY p.s, p.t
+				 ORDER BY weight DESC
+				 LIMIT ?`
+			)
+			.all(idSet(nodeIds), ...params, limit) as GraphTileEdgeRow[];
+	},
+
+	/**
+	 * Edges leaving a crowded tile, rolled up to the cells at both ends.
+	 *
+	 * Same sources and the same filtering as `edgesTouching`, aggregated so a tile
+	 * of ten thousand memories costs a few hundred lines rather than ten thousand.
+	 * Edges that stay inside one cell are dropped: both ends are the same mark.
+	 */
+	cellEdges(filter: GraphListFilter, rect: GraphLayoutRect, cells: GraphLayoutGrid, limit: number): GraphTileCellEdgeRow[] {
+		const near = buildNodeFilter(filter, 'n.');
+		const far = buildNodeFilter(filter, 'nb.');
+		const nearClause = near.where.length ? `AND ${near.where.join(' AND ')}` : '';
+		const farClause = far.where.length ? `AND ${far.where.join(' AND ')}` : '';
+		return getDatabase()
+			.prepare(
+				`WITH inside(id) AS (
+				        SELECT n.id FROM graph_layout l
+				        INNER JOIN graph_nodes n ON n.id = l.node_id
+				        WHERE l.placed = 1 AND l.x >= ? AND l.x < ? AND l.y >= ? AND l.y < ? ${nearClause}
+				      ),
+				      pairs(s, t, w) AS (${PAIRS_OF('inside')})
+				 SELECT sourceCellX, sourceCellY, targetCellX, targetCellY, SUM(w) AS weight
 				 FROM (
-				   SELECT CAST((la.x - ?) / ? AS INTEGER) AS srcX,
-				          CAST((la.y - ?) / ? AS INTEGER) AS srcY,
-				          CAST((lb.x - ?) / ? AS INTEGER) AS dstX,
-				          CAST((lb.y - ?) / ? AS INTEGER) AS dstY,
-				          e.weight AS weight
-				   FROM graph_edges e
-				   INNER JOIN graph_layout la ON la.node_id = e.src_id
-				   INNER JOIN graph_layout lb ON lb.node_id = e.dst_id
-				   INNER JOIN graph_nodes na ON na.id = e.src_id
-				   INNER JOIN graph_nodes nb ON nb.id = e.dst_id
-				   ${clause}
+				   SELECT CAST((la.x - ?) / ? AS INTEGER) AS sourceCellX,
+				          CAST((la.y - ?) / ? AS INTEGER) AS sourceCellY,
+				          CAST((lb.x - ?) / ? AS INTEGER) AS targetCellX,
+				          CAST((lb.y - ?) / ? AS INTEGER) AS targetCellY,
+				          p.w AS w
+				   FROM pairs p
+				   INNER JOIN graph_layout la ON la.node_id = p.s
+				   INNER JOIN graph_layout lb ON lb.node_id = p.t
+				   INNER JOIN graph_nodes nb ON nb.id = p.t
+				   WHERE p.s != p.t AND lb.placed = 1 ${farClause}
 				 )
-				 WHERE NOT (srcX = dstX AND srcY = dstY)
+				 WHERE NOT (sourceCellX = targetCellX AND sourceCellY = targetCellY)
 				 GROUP BY 1, 2, 3, 4
 				 ORDER BY weight DESC
 				 LIMIT ?`
 			)
 			.all(
-				grid.originX,
-				grid.cellWidth,
-				grid.originY,
-				grid.cellHeight,
-				grid.originX,
-				grid.cellWidth,
-				grid.originY,
-				grid.cellHeight,
-				...src.params,
-				...dst.params,
+				rect.minX,
+				rect.maxX,
+				rect.minY,
+				rect.maxY,
+				...near.params,
+				cells.originX,
+				cells.size,
+				cells.originY,
+				cells.size,
+				cells.originX,
+				cells.size,
+				cells.originY,
+				cells.size,
+				...far.params,
 				limit
-			) as GraphBinEdgeRow[];
+			) as GraphTileCellEdgeRow[];
+	},
+
+	/**
+	 * Where particular memories are, whatever is loaded around them.
+	 *
+	 * What lets the view go TO something it has not drawn — a search result, a
+	 * connection in the inspector, a step back through history. Unfiltered on
+	 * purpose: the caller already decided these ids are worth showing.
+	 */
+	locate(nodeIds: string[]): GraphTileNodeRow[] {
+		if (nodeIds.length === 0) return [];
+		return getDatabase()
+			.prepare(
+				`SELECT n.id AS id, substr(n.label, 1, ?) AS label, l.community AS community,
+				        l.degree AS degree, l.x AS x, l.y AS y
+				 FROM json_each(?) ids
+				 INNER JOIN graph_nodes n ON n.id = ids.value
+				 INNER JOIN graph_layout l ON l.node_id = n.id
+				 WHERE l.placed = 1`
+			)
+			.all(TILE_LABEL_MAX, idSet(nodeIds)) as GraphTileNodeRow[];
+	},
+
+	/**
+	 * The degree that counts as "fully connected" for sizing, over what matches.
+	 *
+	 * The 95th percentile rather than the maximum — one hub with a hundred edges
+	 * would otherwise flatten every ordinary node to the floor. Computed over the
+	 * whole filtered set, never over a tile, or a memory would change size as the
+	 * tiles around it loaded.
+	 */
+	degreeScale(filter: GraphListFilter): number {
+		const { where, params } = buildNodeFilter(filter, 'n.');
+		const clause = where.length ? `AND ${where.join(' AND ')}` : '';
+		const db = getDatabase();
+		const count = (
+			db
+				.prepare(
+					`SELECT COUNT(*) AS c FROM graph_layout l INNER JOIN graph_nodes n ON n.id = l.node_id
+					 WHERE l.placed = 1 ${clause}`
+				)
+				.get(...params) as { c: number }
+		).c;
+		if (count === 0) return 1;
+		const row = db
+			.prepare(
+				`SELECT l.degree AS degree FROM graph_layout l INNER JOIN graph_nodes n ON n.id = l.node_id
+				 WHERE l.placed = 1 ${clause}
+				 ORDER BY l.degree ASC
+				 LIMIT 1 OFFSET ?`
+			)
+			.get(...params, Math.min(count - 1, Math.floor(count * 0.95))) as { degree: number } | null;
+		return Math.max(1, row?.degree ?? 1);
 	}
 };

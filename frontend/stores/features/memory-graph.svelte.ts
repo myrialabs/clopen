@@ -1,16 +1,17 @@
 /**
  * Memory Graph Store
  *
- * Backs the Memory modal: the graph view, the selected node's neighbourhood, and
- * hybrid search. It is a view over server state — the graph is
- * instance-global and every engine writes to it — so nothing is cached
+ * Backs the Memory modal: what the map covers, the selected node's
+ * neighbourhood, and hybrid search. It is a view over server state — the graph
+ * is instance-global and every engine writes to it — so nothing is cached
  * optimistically: a mutation refetches, because another session may have
  * changed the same node between renders.
  *
- * Community assignment and node degree arrive precomputed from the server
- * (`backend/memory/view.ts`); clustering on the client would fight the force
- * simulation for the main thread on exactly the low-powered devices this has to
- * stay usable on.
+ * The map itself is served as tiles (see `backend/memory/view.ts`), and the
+ * canvas asks for the ones it is looking at. This store holds what the tiles
+ * are relative to — the meta: world, epoch, counts — plus a `revision` that
+ * moves whenever what the tiles would say has changed, so the canvas knows to
+ * fetch the ones on screen again.
  */
 
 import ws, { onWsReconnect } from '$frontend/utils/ws';
@@ -19,10 +20,11 @@ import type {
 	MemoryQueueStatus,
 	MemoryDraft,
 	GraphNode,
-	GraphRegion,
 	GraphScope,
 	GraphSource,
-	GraphView,
+	GraphTileNode,
+	GraphTilesResponse,
+	GraphViewMeta,
 	RetrievalHit
 } from '$shared/types/memory';
 
@@ -94,130 +96,37 @@ export const EPISODIC_SUBKINDS = [
 	'entity'
 ] as const;
 
-const EMPTY_VIEW: GraphView = {
-	level: 'flat',
-	nodes: [],
-	edges: [],
-	bins: [],
-	binEdges: [],
-	region: null,
-	totalNodes: 0,
-	truncated: false
-};
-
-/**
- * A fingerprint of everything the canvas actually DRAWS.
- *
- * It lives here rather than in the canvas because it belongs to a FETCH, not to
- * a render: computed once when a response lands, it used to be recomputed inside
- * a reactive effect — hashing every label of every node again on any store write
- * that happened to invalidate the effect.
- *
- * Every field that feeds a colour, a size or a caption is folded in, and nothing
- * else: `weight` and `rel` are absent because no drawn property is derived from
- * them, and including them would buy repaints that change no pixels. Positions
- * are absent too, but for a different reason — they move a node without changing
- * what it IS, so they are watched separately by `layoutSignatureOf` and applied
- * without a rebuild.
- *
- * Hashed rather than concatenated: the ids alone are a string joined from up to
- * three thousand entries, and adding labels would build a few hundred kilobytes
- * on every refetch to then throw it away.
- */
-function signatureOf(view: GraphView): string {
-	let hash = 2166136261;
-	const feed = (value: string | number): void => {
-		const text = typeof value === 'number' ? value.toString(36) : value;
-		for (let i = 0; i < text.length; i++) {
-			hash ^= text.charCodeAt(i);
-			hash = Math.imul(hash, 16777619);
-		}
-		// A field separator, so ("ab","c") and ("a","bc") cannot collide.
-		hash ^= 0x1f;
-		hash = Math.imul(hash, 16777619);
-	};
-
-	for (const node of view.nodes) {
-		feed(node.id);
-		feed(node.label);
-		feed(node.community);
-		feed(node.degree);
-	}
-	for (const edge of view.edges) {
-		feed(edge.source);
-		feed(edge.target);
-	}
-	for (const bin of view.bins) {
-		feed(bin.id);
-		feed(bin.label);
-		feed(bin.members);
-		feed(bin.community);
-	}
-	for (const edge of view.binEdges) {
-		feed(edge.source);
-		feed(edge.target);
-	}
-	return `${view.level}:${view.nodes.length}:${view.edges.length}:${view.bins.length}:${(hash >>> 0).toString(36)}`;
-}
-
-/**
- * A fingerprint of WHERE things are, kept apart from what they are.
- *
- * The two change on different schedules and want different responses. A changed
- * node set has to rebuild the graph; a changed arrangement must not, because a
- * rebuild resets the camera and replays the entrance — and the arrangement
- * changes on its own, seconds after any memory is recorded, when the background
- * layout pass lands.
- *
- * Without this the canvas never saw those positions at all: the node-set
- * signature was identical, so a graph the client had laid out for itself stayed
- * on screen until the modal was closed and reopened.
- */
-function layoutSignatureOf(view: GraphView): string {
-	let hash = 2166136261;
-	const feed = (value: number): void => {
-		// Rounded, so a position that moved a fraction of a pixel does not read as
-		// news. The layout pass re-settles slightly on every run.
-		const text = Math.round(value).toString(36);
-		for (let i = 0; i < text.length; i++) {
-			hash ^= text.charCodeAt(i);
-			hash = Math.imul(hash, 16777619);
-		}
-		hash ^= 0x1f;
-		hash = Math.imul(hash, 16777619);
-	};
-
-	let placed = 0;
-	for (const node of view.nodes) {
-		if (node.x === undefined || node.y === undefined) continue;
-		placed++;
-		feed(node.x);
-		feed(node.y);
-	}
-	for (const bin of view.bins) {
-		feed(bin.x);
-		feed(bin.y);
-	}
-	return `${placed}:${(hash >>> 0).toString(36)}`;
-}
-
 /** Forgotten memories fetched per page. The list is a review queue, not a feed. */
 const FORGOTTEN_PAGE = 200;
 
-let view = $state<GraphView>(EMPTY_VIEW);
-let viewSignature = $state(signatureOf(EMPTY_VIEW));
-let layoutSignature = $state(layoutSignatureOf(EMPTY_VIEW));
+/** What the map covers under the current filter; null until first fetched. */
+let meta = $state<GraphViewMeta | null>(null);
 let loading = $state(false);
 
 /**
- * The part of the layout being looked at closely, when a crowded mark was opened.
+ * Moves whenever the tiles on screen may say something different — a write, a
+ * layout pass, a filter change, a mutation from this client.
  *
- * NAVIGATION, not filtering, which is why it does not live in `filter`: a filter
- * narrows what exists, this chooses what to look at closely. Changing a filter
- * clears it, because the rectangle was read off an arrangement the new filter
- * may not produce.
+ * A counter rather than a signature of the data, because the data is not here:
+ * it is in whichever tiles the canvas happens to be showing, and only the
+ * canvas can refetch those.
  */
-let region = $state<GraphRegion | null>(null);
+let revision = $state(0);
+
+/**
+ * Memories that must be on the map whatever the tiles around them say: the
+ * selected one, its connections, and the search results.
+ *
+ * They are the things the user is looking FOR, and the tile they sit in may be
+ * folded into a cluster or not loaded at all. Drawing them on top keeps
+ * selection, hover and highlight working on exactly what was asked about.
+ */
+let pinned = $state<GraphTileNode[]>([]);
+/** The edges from the selected memory to its listed connections. */
+let pinnedEdges = $state<{ source: string; target: string }[]>([]);
+let searchPinned: GraphTileNode[] = [];
+let selectionPinned: GraphTileNode[] = [];
+
 let stats = $state<MemoryStats | null>(null);
 let selected = $state<NodeDetail | null>(null);
 let selectedLoading = $state(false);
@@ -237,7 +146,7 @@ let filter = $state<MemoryFilter>({
 let status = $state<MemoryQueueStatus | null>(null);
 
 /**
- * Which graph fetch is the current one.
+ * Which meta fetch is the current one.
  *
  * Refreshes overlap routinely — a filter change while a `memory:changed` refetch
  * is still in flight — and nothing about a WebSocket request guarantees the
@@ -246,6 +155,57 @@ let status = $state<MemoryQueueStatus | null>(null);
  * and stays there until something triggers yet another refresh.
  */
 let refreshSeq = 0;
+let selectSeq = 0;
+let searchSeq = 0;
+
+/** The filter as the graph requests send it. */
+function filterParams(): {
+	projectIds?: string[];
+	subkinds?: string[];
+	sources?: GraphSource[];
+	includeArchived: boolean;
+} {
+	return {
+		...(filter.projectIds !== null && { projectIds: filter.projectIds }),
+		...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
+		...(filter.sources.length > 0 && { sources: filter.sources }),
+		includeArchived: filter.includeArchived
+	};
+}
+
+/**
+ * Everything in the meta whose change means the tiles on screen may be out of
+ * date. The PLACED count rather than the total: a memory that has just been
+ * written has no position yet, so it is in no tile until the pass that places
+ * it moves the stamp — refetching for it any earlier fetches the same tiles.
+ */
+function metaSignature(value: GraphViewMeta): string {
+	return JSON.stringify([
+		value.epoch,
+		value.stamp,
+		value.total - value.unplaced,
+		value.degreeScale,
+		value.world,
+		value.extent
+	]);
+}
+
+function republishPinned(): void {
+	const byId = new Map<string, GraphTileNode>();
+	for (const node of [...selectionPinned, ...searchPinned]) byId.set(node.id, node);
+	pinned = [...byId.values()];
+}
+
+async function locate(nodeIds: string[]): Promise<GraphTileNode[]> {
+	if (nodeIds.length === 0) return [];
+	try {
+		const result = (await ws.http('memory:locate', { nodeIds })) as { nodes: GraphTileNode[] };
+		return result.nodes;
+	} catch (error) {
+		debug.error('settings', 'Failed to locate memory nodes:', error);
+		return [];
+	}
+}
 
 /** The forgotten list: archived and superseded memories, and what is selected. */
 let forgotten = $state<GraphNode[]>([]);
@@ -261,12 +221,13 @@ let forgottenSelection = $state<Set<string>>(new Set());
 let hoveredId = $state<string | null>(null);
 
 export const memoryGraphStore = {
-	get view() { return view; },
-	/** Changes exactly when the drawn graph changes; see `signatureOf`. */
-	get viewSignature() { return viewSignature; },
-	/** Changes when the persisted arrangement moves; see `layoutSignatureOf`. */
-	get layoutSignature() { return layoutSignature; },
-	get region() { return region; },
+	get meta() { return meta; },
+	/** Moves whenever the tiles on screen should be fetched again. */
+	get revision() { return revision; },
+	/** A key for the current filter — tiles fetched under another are not these. */
+	get filterKey() { return JSON.stringify(filterParams()); },
+	get pinned() { return pinned; },
+	get pinnedEdges() { return pinnedEdges; },
 	get loading() { return loading; },
 	get stats() { return stats; },
 	get selected() { return selected; },
@@ -307,66 +268,76 @@ export const memoryGraphStore = {
 
 	setFilter(patch: Partial<MemoryFilter>): void {
 		filter = { ...filter, ...patch };
-		// The rectangle was read off an arrangement this filter may not produce, so
-		// keeping it would zoom the new graph to a patch of the old one's plane.
-		region = null;
-		void this.refresh();
+		void this.refresh({ force: true });
+		// The results were retrieved under the old filter, so they may name
+		// memories this one hides.
+		if (searchQuery.trim()) void this.search(searchQuery);
 	},
 
 	/**
-	 * Zoom into one crowded mark, drawing the memories it stands for.
+	 * Re-read what the map covers, and tell the canvas to refetch its tiles if
+	 * what they would say has changed.
 	 *
-	 * REPLACES rather than accumulates. Holding several unrelated rectangles at
-	 * once has no coherent picture to draw and would make "back" undo them one at
-	 * a time — a history nobody asked to build. One region, and the whole graph is
-	 * always one step away.
+	 * "Changed" is decided by the meta — epoch, layout stamp, counts — because the
+	 * change doorbell rings for every write, including reinforcement on every
+	 * recall, which moves nothing on the map. Refetching every tile on screen for
+	 * those was a multi-megabyte stall every few seconds while a conversation ran.
+	 * `force` is for this client's own mutations: an edited label changes a tile
+	 * without changing any count.
+	 *
+	 * The revision moves when the answer lands rather than when it is asked for,
+	 * so the canvas refetches against the epoch and world it is about to be told
+	 * about rather than the ones it already had.
 	 */
-	focusRegion(next: GraphRegion): void {
-		region = next;
-		void this.refresh();
-	},
-
-	/** Back to the whole graph. */
-	clearRegion(): void {
-		if (!region) return;
-		region = null;
-		selected = null;
-		void this.refresh();
-	},
-
-	async refresh(): Promise<void> {
+	async refresh(options: { force?: boolean } = {}): Promise<void> {
 		const seq = ++refreshSeq;
 		loading = true;
 		try {
-			const next = (await ws.http('memory:graph', {
-				...(filter.projectIds !== null && { projectIds: filter.projectIds }),
-				...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
-				...(filter.sources.length > 0 && { sources: filter.sources }),
-				...(region !== null && { region }),
-				includeArchived: filter.includeArchived
-			})) as GraphView;
+			const next = (await ws.http('memory:graph', filterParams())) as GraphViewMeta;
 			// A newer fetch has already been issued, so this answer describes a filter
 			// or a moment the user has moved on from. Dropping it is the whole point.
 			if (seq !== refreshSeq) return;
-			view = next;
-			viewSignature = signatureOf(next);
-			layoutSignature = layoutSignatureOf(next);
-			// The server decides the resolution — a graph can fall back to the flat
-			// view while its arrangement is still being computed — so what it
-			// answered with is the truth about what is drawn, not what was asked.
-			region = next.region;
+			const changed = options.force || meta === null || metaSignature(meta) !== metaSignature(next);
+			meta = next;
+			if (changed) revision++;
 		} catch (error) {
 			if (seq !== refreshSeq) return;
 			debug.error('settings', 'Failed to load memory graph:', error);
-			view = EMPTY_VIEW;
-			viewSignature = signatureOf(EMPTY_VIEW);
-			layoutSignature = layoutSignatureOf(EMPTY_VIEW);
 		} finally {
 			// Still loading, as far as the user is concerned — the request that
 			// overtook this one has not answered yet.
 			if (seq === refreshSeq) loading = false;
 		}
 	},
+
+	/**
+	 * Some tiles of the map, at one zoom level, under the current filter.
+	 *
+	 * Called by the canvas, which is the only thing that knows what is on screen.
+	 * A `stale` answer means the map changed since the meta was read; the meta is
+	 * refetched, and the revision it bumps makes the canvas ask again.
+	 */
+	async fetchTiles(request: {
+		epoch: number;
+		z: number;
+		tiles: { x: number; y: number }[];
+		budget: number;
+	}): Promise<GraphTilesResponse | null> {
+		try {
+			const response = (await ws.http('memory:graph-tiles', {
+				...filterParams(),
+				...request
+			})) as GraphTilesResponse;
+			if (response.stale) void this.refresh({ force: true });
+			return response;
+		} catch (error) {
+			debug.error('settings', 'Failed to load memory graph tiles:', error);
+			return null;
+		}
+	},
+
+	/** Where memories are on the map, for going to one the canvas has not drawn. */
+	locate,
 
 	/**
 	 * Poll-free: this is refetched when the server says the queue moved, and once
@@ -399,8 +370,12 @@ export const memoryGraphStore = {
 	},
 
 	async select(nodeId: string | null, hops = 1): Promise<void> {
+		const seq = ++selectSeq;
 		if (!nodeId) {
 			selected = null;
+			selectionPinned = [];
+			pinnedEdges = [];
+			republishPinned();
 			return;
 		}
 		selectedLoading = true;
@@ -409,22 +384,43 @@ export const memoryGraphStore = {
 				node: GraphNode | null;
 				neighbours: { node: GraphNode; hops: number }[];
 			};
+			if (seq !== selectSeq) return;
 			// A node can vanish between the click and the fetch (another session
 			// forgot it), which is a cleared selection rather than an error.
 			selected = detail.node ? { node: detail.node, neighbours: detail.neighbours } : null;
+
+			// The selection and what it connects to are drawn whatever the tiles say,
+			// so its neighbourhood lights up even where the map is folded or not
+			// loaded yet.
+			const direct = detail.neighbours.filter(entry => entry.hops === 1).map(entry => entry.node.id);
+			const located = detail.node ? await locate([detail.node.id, ...direct]) : [];
+			if (seq !== selectSeq) return;
+			selectionPinned = located;
+			const present = new Set(located.map(node => node.id));
+			pinnedEdges = present.has(nodeId)
+				? direct.filter(id => present.has(id)).map(target => ({ source: nodeId, target }))
+				: [];
+			republishPinned();
 		} catch (error) {
+			if (seq !== selectSeq) return;
 			debug.error('settings', 'Failed to load memory node:', error);
 			selected = null;
+			selectionPinned = [];
+			pinnedEdges = [];
+			republishPinned();
 		} finally {
-			selectedLoading = false;
+			if (seq === selectSeq) selectedLoading = false;
 		}
 	},
 
 	async search(query: string): Promise<void> {
+		const seq = ++searchSeq;
 		searchQuery = query;
 		const trimmed = query.trim();
 		if (!trimmed) {
 			searchHits = [];
+			searchPinned = [];
+			republishPinned();
 			return;
 		}
 
@@ -432,25 +428,36 @@ export const memoryGraphStore = {
 		try {
 			const result = (await ws.http('memory:search', {
 				query: trimmed,
-				...(filter.projectIds !== null && { projectIds: filter.projectIds }),
-				...(filter.subkinds.length > 0 && { subkinds: filter.subkinds }),
-				...(filter.sources.length > 0 && { sources: filter.sources }),
-				includeArchived: filter.includeArchived,
+				...filterParams(),
 				limit: 30
 			})) as { hits: RetrievalHit[]; vectorUsed: boolean };
+			if (seq !== searchSeq) return;
 			searchHits = result.hits;
 			vectorUsed = result.vectorUsed;
+			// Results are drawn on the map whatever the tiles say, so every one of
+			// them can be hovered, highlighted and gone to.
+			const located = await locate(result.hits.map(hit => hit.node.id));
+			if (seq !== searchSeq) return;
+			searchPinned = located;
+			republishPinned();
 		} catch (error) {
+			if (seq !== searchSeq) return;
 			debug.error('settings', 'Memory search failed:', error);
 			searchHits = [];
+			searchPinned = [];
+			republishPinned();
 		} finally {
-			searching = false;
+			if (seq === searchSeq) searching = false;
 		}
 	},
 
 	clearSearch(): void {
+		searchSeq++;
 		searchQuery = '';
 		searchHits = [];
+		searchPinned = [];
+		searching = false;
+		republishPinned();
 	},
 
 	async saveNode(
@@ -459,13 +466,13 @@ export const memoryGraphStore = {
 	): Promise<void> {
 		await ws.http('memory:save-node', { nodeId, ...patch });
 		// The label may have changed, so the graph view's node caption is stale too.
-		await Promise.all([this.select(nodeId), this.refresh()]);
+		await Promise.all([this.select(nodeId), this.refresh({ force: true })]);
 	},
 
 	async archiveNode(nodeId: string): Promise<void> {
 		await ws.http('memory:archive-node', { nodeId });
-		selected = null;
-		await Promise.all([this.refresh(), this.refreshStats()]);
+		await this.select(null);
+		await Promise.all([this.refresh({ force: true }), this.refreshStats()]);
 	},
 
 	/**
@@ -479,7 +486,7 @@ export const memoryGraphStore = {
 		if (nodeIds.length === 0) return 0;
 		const result = (await ws.http('memory:restore-nodes', { nodeIds })) as { restored: number };
 		forgottenSelection = new Set();
-		await Promise.all([this.refresh(), this.refreshStats(), this.refreshForgotten()]);
+		await Promise.all([this.refresh({ force: true }), this.refreshStats(), this.refreshForgotten()]);
 		if (nodeIds.length === 1) await this.select(nodeIds[0]);
 		return result.restored;
 	},
@@ -522,7 +529,7 @@ export const memoryGraphStore = {
 			pinned: input.pinned ?? false,
 			...(input.reinforceId && { reinforceId: input.reinforceId })
 		})) as { node: GraphNode | null };
-		await Promise.all([this.refresh(), this.refreshStats()]);
+		await Promise.all([this.refresh({ force: true }), this.refreshStats()]);
 		return result.node;
 	},
 
@@ -570,7 +577,7 @@ export const memoryGraphStore = {
 
 		const result = (await ws.http('memory:delete-nodes', { nodeIds })) as { deleted: number };
 		forgottenSelection = new Set();
-		await Promise.all([this.refreshForgotten(), this.refresh(), this.refreshStats()]);
+		await Promise.all([this.refreshForgotten(), this.refresh({ force: true }), this.refreshStats()]);
 		return result.deleted;
 	},
 
@@ -583,9 +590,9 @@ export const memoryGraphStore = {
 			...(projectIds !== undefined && { projectIds })
 		})) as { nodes: number; edges: number };
 
-		selected = null;
-		searchHits = [];
-		await Promise.all([this.refresh(), this.refreshStats(), this.refreshForgotten()]);
+		await this.select(null);
+		this.clearSearch();
+		await Promise.all([this.refresh({ force: true }), this.refreshStats(), this.refreshForgotten()]);
 		return result;
 	},
 
@@ -634,7 +641,7 @@ export const memoryGraphStore = {
 		// without a refetch on the way back the graph is silently stale with no
 		// event left to correct it.
 		const offReconnect = onWsReconnect(() => {
-			void this.refresh();
+			void this.refresh({ force: true });
 			void this.refreshStats();
 			void this.refreshStatus();
 		});

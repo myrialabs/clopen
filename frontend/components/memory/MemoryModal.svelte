@@ -31,7 +31,7 @@
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { showAlert, showConfirm } from '$frontend/stores/ui/dialog.svelte';
 	import { EPISODIC_SUBKINDS } from '$frontend/stores/features/memory-graph.svelte';
-	import type { GraphRegion, GraphSource } from '$shared/types/memory';
+	import type { GraphSource } from '$shared/types/memory';
 
 	interface Props {
 		isOpen: boolean;
@@ -95,29 +95,33 @@
 	let purgeScope = $state<'selection' | 'all'>('all');
 	let purgeTyped = $state('');
 
+	/**
+	 * Clusters on screen right now, as the canvas reports them. Only ever non-zero
+	 * when the screen holds more memories than it can draw, and zooming in is what
+	 * resolves them — so the hint below says so only while it is true.
+	 */
+	let clustersOnScreen = $state(0);
+
 	const isMobile = $derived(windowWidth < 768);
-	const view = $derived(memoryGraphStore.view);
+	const meta = $derived(memoryGraphStore.meta);
 	const stats = $derived(memoryGraphStore.stats);
 	const selected = $derived(memoryGraphStore.selected);
 	const hits = $derived(memoryGraphStore.searchHits);
 	/**
-	 * Hits always highlight, at either resolution. A memory that survived the grid
-	 * as its own mark lights up exactly as it always did; one that was merged into
-	 * a crowd simply has no mark of its own to light, and the results list is where
-	 * it is reached from. That degrades quietly, which the community grouping did
-	 * not — there every hit was invisible.
+	 * Hits always highlight. The canvas draws every result on top of whatever the
+	 * tiles around it say, so a hit inside a folded or unloaded part of the map
+	 * still has a mark of its own to light.
 	 */
 	const highlightIds = $derived(hits.map(hit => hit.node.id));
-	const region = $derived(memoryGraphStore.region);
-	/** Marks on the canvas: memories drawn individually, plus the merged ones. */
-	const drawnCount = $derived(view.nodes.length + view.bins.length);
-	/** How many memories the merged marks stand for, for the header's tooltip. */
-	const mergedCount = $derived(view.bins.reduce((sum, bin) => sum + bin.members, 0));
+	/** Memories matching the filter — what the header counts. */
+	const totalCount = $derived(meta?.total ?? 0);
 	const filter = $derived(memoryGraphStore.filter);
 	const forgotten = $derived(memoryGraphStore.forgotten);
 	const forgottenSelection = $derived(memoryGraphStore.forgottenSelection);
 	/** Any narrowing beyond the default, so the filter button can say so. */
 	const activeFilterCount = $derived(filter.subkinds.length + filter.sources.length);
+	/** Whether an empty graph is the store being empty or the filter excluding it. */
+	const narrowed = $derived(activeFilterCount > 0 || filter.projectIds !== null);
 	/** Projects offered by the multi-select, with their path to tell namesakes apart. */
 	const projectOptions = $derived(
 		projectState.projects.map(project => ({
@@ -228,32 +232,11 @@
 		void memoryGraphStore.refreshForgotten();
 	});
 
-	/** `bin:12:34` — a crowd of memories rather than one of them. */
-	function binRegionOf(nodeId: string): GraphRegion | null {
-		if (!nodeId.startsWith('bin:')) return null;
-		return view.bins.find(bin => bin.id === nodeId)?.region ?? null;
-	}
-
 	function visit(nodeId: string | null): void {
 		if (!nodeId) {
 			history = [];
 			historyIndex = -1;
 			void memoryGraphStore.select(null);
-			return;
-		}
-
-		// A merged mark has nothing to inspect — it stands for several memories
-		// rather than being one — so choosing it zooms into the patch of the map it
-		// covers.
-		const binRegion = binRegionOf(nodeId);
-		if (binRegion) {
-			history = [];
-			historyIndex = -1;
-			// The inspector is showing a memory from wherever the user was before.
-			// Leaving it open next to a patch that does not contain it is the kind of
-			// stale panel that makes a view feel like it lost track of itself.
-			void memoryGraphStore.select(null);
-			memoryGraphStore.focusRegion(binRegion);
 			return;
 		}
 
@@ -271,7 +254,7 @@
 		if (next < 0 || next >= history.length) return;
 		historyIndex = next;
 		void memoryGraphStore.select(history[next]);
-		canvas?.focusNode(history[next]);
+		void canvas?.focusNode(history[next]);
 	}
 
 	function handleSearchInput(): void {
@@ -297,7 +280,7 @@
 	 */
 	function visitAndFocus(nodeId: string): void {
 		visit(nodeId);
-		canvas?.focusNode(nodeId);
+		void canvas?.focusNode(nodeId);
 	}
 
 	/**
@@ -607,28 +590,20 @@
 				<MemoryStatus variant="bar" />
 
 				<!--
-					A bare number in a header is a riddle. This one said "142 of 310" with
-					nothing to say what was being counted or why the two differed — it is
-					how many nodes are DRAWN against how many match the filter, which
-					matters precisely when the graph is too large to draw. Now it carries an
-					icon, a unit and a title that explains the gap.
+					A bare number in a header is a riddle, so it carries an icon, a unit and
+					a title. It counts what MATCHES — every one of them is on the map, and
+					the title says so, including the few a layout pass has not placed yet.
 				-->
-				{#if drawnCount > 0}
+				{#if totalCount > 0}
 					<span
 						class="hidden sm:inline-flex items-center gap-1 px-1.5 py-1 rounded-md
 						       text-[10px] text-slate-500 dark:text-slate-400 bg-slate-100/70 dark:bg-slate-800/70"
-						title={view.level === 'binned'
-							? `${view.totalNodes} memories and code entities, all of them in the picture. ${mergedCount} sit close enough together to share ${view.bins.length} marks — click one to zoom in.`
-							: view.truncated
-								? `Showing the ${view.nodes.length} most reinforced of ${view.totalNodes} matching memories. Narrow the filter to see the rest.`
-								: `${view.nodes.length} memories and code entities`}
+						title={meta && meta.unplaced > 0
+							? `${totalCount} memories. ${meta.unplaced} just arrived and appear once they have been given a place on the map.`
+							: `${totalCount} memories, all of them on the map`}
 					>
 						<Icon name="lucide:circle-dot" class="w-3 h-3 opacity-70" />
-						{#if view.level === 'binned'}
-							{view.totalNodes}
-						{:else}
-							{view.nodes.length}{view.truncated ? ` / ${view.totalNodes}` : ''}
-						{/if}
+						{totalCount}
 					</span>
 				{/if}
 				{#if stats && !stats.embedding.ready}
@@ -671,17 +646,34 @@
 
 		<div bind:this={body} bind:clientHeight={bodyHeight} class="flex-1 min-h-0 flex relative">
 			<div class="flex-1 min-w-0 flex flex-col relative">
-				{#if !canvasReady || (memoryGraphStore.loading && drawnCount === 0)}
+				{#if !canvasReady || meta === null}
 					<!-- Held back until the modal has finished opening; see `canvasReady`. -->
 					<div class="flex-1 flex items-center justify-center"><LoadingSpinner /></div>
-				{:else if drawnCount === 0}
+				{:else if totalCount === 0}
 					<div class="flex-1 flex flex-col items-center justify-center gap-2 text-slate-400 px-6 text-center">
 						<Icon name="lucide:brain" class="w-10 h-10 opacity-25" />
-						<span class="text-sm font-medium">No memories yet</span>
-						<span class="text-xs max-w-[260px] leading-relaxed">
-							This fills itself as you work — what gets decided, what breaks and the files involved
-							are recorded after each conversation.
-						</span>
+						{#if narrowed}
+							<span class="text-sm font-medium">Nothing matches these filters</span>
+							<span class="text-xs max-w-[260px] leading-relaxed">
+								Widen the project or filter selection to see more of what is remembered.
+							</span>
+						{:else}
+							<span class="text-sm font-medium">No memories yet</span>
+							<span class="text-xs max-w-[260px] leading-relaxed">
+								This fills itself as you work — what gets decided, what breaks and the files involved
+								are recorded after each conversation.
+							</span>
+						{/if}
+					</div>
+				{:else if meta.world === null}
+					<!--
+						Memories exist but none has a place yet — a fresh install, or the first
+						open after the arrangement was rebuilt. The pass is already running;
+						the map appears the moment it lands.
+					-->
+					<div class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-400 px-6 text-center">
+						<LoadingSpinner />
+						<span class="text-xs max-w-[260px] leading-relaxed">Arranging {totalCount} memories…</span>
 					</div>
 				{:else}
 					<MemoryGraphCanvas
@@ -690,26 +682,15 @@
 						{highlightIds}
 						bottomInset={canvasBottomInset}
 						onSelect={visit}
+						onScene={(scene) => (clustersOnScreen = scene.clusters)}
 					/>
 				{/if}
 
-				{#if canvasReady && region}
-					<button
-						onclick={() => memoryGraphStore.clearRegion()}
-						class="absolute bottom-3 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-2.5 py-1
-						       rounded-full border border-slate-200 dark:border-slate-800
-						       bg-white/90 dark:bg-slate-900/90 text-[10px] text-slate-500 dark:text-slate-400
-						       hover:text-slate-800 dark:hover:text-slate-100 shadow-sm backdrop-blur-sm
-						       whitespace-nowrap"
-					>
-						<Icon name="lucide:arrow-left" class="w-3 h-3" />
-						Back to everything
-					</button>
-				{:else if canvasReady && view.level === 'binned'}
+				{#if canvasReady && meta?.world && clustersOnScreen > 0}
 					<!--
-						Said once, quietly, at the bottom of the canvas rather than as a
-						banner. The whole graph is already on screen — this only explains
-						the larger marks, which are the one thing that is not literal.
+						Said once, quietly, and only while it is true. Clusters appear only
+						when the screen holds more memories than it can draw at once, and
+						zooming in resolves them — nothing has to be clicked open.
 					-->
 					<div
 						class="absolute bottom-3 left-1/2 -translate-x-1/2 px-2.5 py-1 rounded-full
@@ -717,7 +698,7 @@
 						       text-[10px] text-slate-500 dark:text-slate-400 shadow-sm backdrop-blur-sm
 						       pointer-events-none whitespace-nowrap"
 					>
-						{view.bins.length} crowded spots · click one to zoom in
+						Dense areas are grouped · zoom in to see every memory
 					</div>
 				{/if}
 

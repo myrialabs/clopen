@@ -87,6 +87,7 @@ import * as migration085 from './085_add_home_projects';
 import * as migration086 from './086_single_owner';
 import * as migration087 from './087_create_blob_line_stats';
 import * as migration088 from './088_create_messages_fts_map';
+import * as migration089 from './089_add_memory_layout_tiles';
 
 // Export all migrations in order
 export const migrations = [
@@ -617,6 +618,12 @@ export const migrations = [
 		description: migration088.description,
 		up: migration088.up,
 		down: migration088.down
+	},
+	{
+		id: '089',
+		description: migration089.description,
+		up: migration089.up,
+		down: migration089.down
 	}
 ];
 
