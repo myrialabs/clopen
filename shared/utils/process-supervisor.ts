@@ -241,7 +241,8 @@ export function stopOnSignals(supervisors: Supervisor[]): (signal?: NodeJS.Signa
 	// second press: treating it as one used to SIGKILL every child on a single
 	// Ctrl+C, and `bun run`, on its own second SIGINT, then killed this process
 	// and returned the prompt with the children orphaned and their ports held.
-	let runnerCopyPending = parentForwardsSignals();
+	// Set at the end, once every handler is in place (see there).
+	let runnerCopyPending = false;
 	let presses = 0;
 	const log = (line: string) => {
 		try {
@@ -289,6 +290,12 @@ export function stopOnSignals(supervisors: Supervisor[]): (signal?: NodeJS.Signa
 			// EIO/EPIPE once the terminal is gone — nothing left to write to.
 		});
 	}
+	// Only now, with every handler installed: this runs `ps`, and until a
+	// handler exists a signal takes its default action — SIGHUP or SIGINT
+	// killed this process outright and left the child running unsupervised.
+	// A signal that arrives meanwhile is queued, and its handler runs after
+	// this returns, so it still sees the right value.
+	runnerCopyPending = parentForwardsSignals();
 	return stopAll;
 }
 

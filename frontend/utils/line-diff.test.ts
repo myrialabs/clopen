@@ -152,7 +152,10 @@ describe('invariants', () => {
 				'c',
 				...Array.from({ length: 10000 }, (_, i) => (i % 2 ? 'a' : 'b'))
 			]],
-			['fully reversed', lines(20000), lines(20000).reverse()]
+			// Myers' worst case (nearly every line moved): its cost grows with the
+			// square of the size, so 20000 lines took 3–5 s, against bun's 5 s
+			// test timeout on a CI runner. The invariant does not depend on size.
+			['fully reversed', lines(4000), lines(4000).reverse()]
 		];
 
 		for (const [label, head, current] of cases) {

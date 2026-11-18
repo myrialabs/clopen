@@ -42,12 +42,15 @@ async function writeGenerated(pairs: Array<[string, string]>): Promise<string> {
 }
 
 async function gitConfig(key: string, configPath: string, cwd: string): Promise<string> {
+	// GIT_CONFIG_COUNT/KEY_n/VALUE_n outrank every config file. A shell Clopen
+	// started carries the user's identity in them, which would answer instead
+	// of the file under test.
+	const env = Object.fromEntries(
+		Object.entries(process.env).filter(([name]) => !/^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(name))
+	);
 	const proc = Bun.spawn(['git', 'config', '--get', key], {
 		cwd,
-		env: { ...process.env, GIT_CONFIG_GLOBAL: configPath, GIT_CONFIG_SYSTEM: '/dev/null' } as Record<
-			string,
-			string
-		>,
+		env: { ...env, GIT_CONFIG_GLOBAL: configPath, GIT_CONFIG_SYSTEM: '/dev/null' } as Record<string, string>,
 		stdout: 'pipe',
 		stderr: 'pipe'
 	});
