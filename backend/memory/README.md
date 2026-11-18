@@ -308,7 +308,8 @@ graph_node_entities      subjects a memory is about (an ATTRIBUTE, not nodes)
 graph_node_paths         files a memory is about (likewise)
 graph_vectors            one int8 vector per node, 260 bytes at 256 dims
 graph_nodes_fts          FTS5 mirror for BM25
-graph_layout             persisted positions and communities (migration 067)
+graph_layout             persisted positions, communities and degree (067, 089)
+graph_layout_edges       derived edges the layout pass laid out on (089)
 memory_extraction_queue  durable queue of turns awaiting summarisation
 ```
 
@@ -349,8 +350,9 @@ of sentences all shaped "X is a project that does Y", every pair is similar in
 shape rather than in subject, so 144 of one graph's 371 edges were pairings like
 *"Vantum monorepo phase 1.8"* ↔ *"ChatKit runs on Node.js 18+"*. The fault was
 never that they connected memories — it was that **cosine chose which**. Edges are
-now derived at read time from the subjects extraction already recorded, and never
-stored.
+now derived from the subjects extraction already recorded. They are never stored
+as relations; the layout pass keeps the set it laid out on in
+`graph_layout_edges`, which is disposable like the rest of the arrangement.
 
 ---
 
@@ -364,7 +366,8 @@ bootstrap.ts     startup; idempotent, also re-run after Clear All Data
 
 retrieval.ts     BM25 + vector, RRF fusion, spreading activation
 context.ts       builds the injected block; standing instructions
-view.ts          graph serialization for the UI
+layout.ts        background arrangement: cold passes, warm arrival placement, the world
+view.ts          the graph view as map tiles, plus locate and node detail
 
 extract/
   scheduler.ts   durable queue, retries, concurrency

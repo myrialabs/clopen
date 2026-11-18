@@ -351,40 +351,19 @@ export interface RetrievalResult {
 // Visualization
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** A node as sent to the graph view: display fields plus its community. */
-export interface GraphViewNode {
-	id: string;
-	subkind: GraphNodeSubkind;
-	scope: GraphScope;
-	label: string;
-	projectId: string | null;
-	/** Degree, used to size the node. */
-	degree: number;
-	weight: number;
-	pinned: boolean;
-	/** Louvain community index — the "lobe" a node belongs to. */
-	community: number;
-	createdAt: string;
-	/**
-	 * Where the persisted layout put this node, when it has been laid out.
-	 *
-	 * Absent means "no position yet" — a memory written since the last layout
-	 * pass — and the client seeds those from their neighbours rather than
-	 * re-solving the whole graph. See `backend/memory/layout.ts`.
-	 */
-	x?: number;
-	y?: number;
+/**
+ * The square the graph view is cut into tiles from, in layout coordinates.
+ *
+ * Fixed between layout passes that change the map, so a tile's address means
+ * the same rectangle for as long as the client's `epoch` matches the server's.
+ */
+export interface GraphWorld {
+	minX: number;
+	minY: number;
+	size: number;
 }
 
-export interface GraphViewEdge {
-	id: number;
-	source: string;
-	target: string;
-	rel: GraphRelation;
-	weight: number;
-}
-
-/** A rectangle in layout space — what a zoomed-in view is scoped to. */
+/** A rectangle in layout space. */
 export interface GraphRegion {
 	minX: number;
 	maxX: number;
@@ -393,65 +372,109 @@ export interface GraphRegion {
 }
 
 /**
- * Several memories that fell in one cell of the layout grid, drawn as one mark.
+ * Everything the view needs before it can ask for a single tile.
  *
- * This is what keeps the view's cost bounded without taking anything out of the
- * picture, and the distinction from the alternative matters. Grouping by
- * COMMUNITY replaces the picture — you see lobes instead of memories, and
- * reaching a memory means opening one. Grouping by POSITION keeps the picture:
- * marks merge only where their dots would have overlapped anyway, so the
- * silhouette, the lobes and the colours are the ones the full graph would have
- * drawn. Below the render budget nothing merges at all and every memory is its
- * own mark, exactly as before.
- *
- * A bin is not a memory — it has no body, no scope and nothing to inspect —
- * which is why it travels in its own array rather than as a node wearing a fake
- * subkind.
+ * The counts are the FILTER's, not the screen's: how many memories match, how
+ * many of those have a place on the map, and where they are — which is what
+ * "Fit" frames.
  */
-export interface GraphViewBin {
-	/** `bin:<cellX>:<cellY>` — namespaced so it cannot collide with a node id. */
+export interface GraphViewMeta {
+	/** Changes whenever the world does; a tile from another epoch is from another map. */
+	epoch: number;
+	/** Changes whenever a layout pass writes; tiles from an older stamp may be missing memories. */
+	stamp: number;
+	/** Null until the first layout pass has placed anything. */
+	world: GraphWorld | null;
+	/** Median distance between a memory and its nearest neighbour, in layout units. */
+	spacing: number;
+	/** Memories matching the filter. */
+	total: number;
+	/** Of those, how many have no position yet — they appear once a pass places them. */
+	unplaced: number;
+	/** Where the placed matches are; null when none are. */
+	extent: GraphRegion | null;
+	/** The degree that counts as "fully connected" when sizing nodes; see `degreeScale`. */
+	degreeScale: number;
+}
+
+/** A memory as a tile carries it: enough to draw and hover, nothing to inspect. */
+export interface GraphTileNode {
 	id: string;
-	/** How many memories it stands for; drives its size. */
+	label: string;
+	/** Louvain community index — the "lobe" a node belongs to, and its colour. */
+	community: number;
+	/** Connections in the whole graph, stored and derived. Sizes the node. */
+	degree: number;
+	x: number;
+	y: number;
+}
+
+/**
+ * Several memories sharing one cell of a crowded tile, drawn as one mark.
+ *
+ * Only a tile with more memories than its budget is folded like this, and only
+ * where a cell holds more than one; zooming in asks for smaller tiles, which
+ * fit, so a cluster always resolves into its memories by zooming alone.
+ */
+export interface GraphTileCluster {
+	/** `cluster:<z>:<cellX>:<cellY>` — namespaced so it cannot collide with a node id. */
+	id: string;
 	members: number;
 	/** The most reinforced member's summary, for the hover pill. */
 	label: string;
 	/** Community of that same member, so the mark keeps its lobe's colour. */
 	community: number;
-	/** Centroid of its members — not the cell's centre, which would grid the map. */
+	/** Centroid of the members. */
 	x: number;
 	y: number;
-	/** The cell itself, so opening the mark asks for exactly this rectangle. */
-	region: GraphRegion;
+	/** The cell, in global cell coordinates at this tile's zoom. */
+	cellX: number;
+	cellY: number;
 }
 
-/** A connection between two bins, weighted by the edges that cross between them. */
-export interface GraphViewBinEdge {
+/**
+ * An edge from one of a tile's memories, with where its far end sits.
+ *
+ * The far end may be in a tile the client has not loaded, or folded into a
+ * cluster there — its position is what lets the client attach the edge to
+ * whichever mark currently stands for it.
+ */
+export interface GraphTileEdge {
 	source: string;
 	target: string;
 	weight: number;
+	targetX: number;
+	targetY: number;
 }
 
-export interface GraphView {
-	/**
-	 * `flat` when every matching memory is drawn individually — the ordinary case,
-	 * and the only one below the render budget. `binned` when some marks stand for
-	 * more than one memory.
-	 *
-	 * Both populate `nodes`: a cell holding a single memory returns that memory,
-	 * not a bin of one. So the two are not alternatives to each other — a binned
-	 * view is a full-fidelity view everywhere it can afford to be.
-	 */
-	level: 'flat' | 'binned';
-	nodes: GraphViewNode[];
-	edges: GraphViewEdge[];
-	bins: GraphViewBin[];
-	binEdges: GraphViewBinEdge[];
-	/** The rectangle this view was scoped to, when the caller zoomed into one. */
-	region: GraphRegion | null;
-	/** Total nodes matching the filter before any display cap was applied. */
-	totalNodes: number;
-	/** True when `totalNodes` exceeded the cap and the view was trimmed. */
-	truncated: boolean;
+/** An edge out of a crowded tile, rolled up to the cell it lands in. */
+export interface GraphTileCellEdge {
+	/** The mark in this tile it leaves from — a cluster id or a memory id. */
+	source: string;
+	targetCellX: number;
+	targetCellY: number;
+	weight: number;
+}
+
+/** One square of the map at one zoom level. */
+export interface GraphTile {
+	z: number;
+	x: number;
+	y: number;
+	/** Cells per tile side when this tile was folded; 0 when it was not. */
+	cells: number;
+	nodes: GraphTileNode[];
+	clusters: GraphTileCluster[];
+	edges: GraphTileEdge[];
+	cellEdges: GraphTileCellEdge[];
+}
+
+export interface GraphTilesResponse {
+	/** The server's epoch. When it is not the one asked about, `stale` is set. */
+	epoch: number;
+	/** The map changed since the client last read the meta; nothing was served. */
+	stale: boolean;
+	tiles: GraphTile[];
 }
 
 /**

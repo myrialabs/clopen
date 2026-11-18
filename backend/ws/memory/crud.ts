@@ -21,7 +21,7 @@ import { createRouter } from '$shared/utils/ws-server';
 import { projectContextService } from '$backend/mcp/internal/project-context';
 import { debug } from '$shared/utils/logger';
 import { graphQueries, graphLayoutQueries } from '$backend/database/queries/graph-queries';
-import { buildGraphView, buildNodeDetail } from '$backend/memory/view';
+import { buildGraphMeta, buildGraphTiles, buildNodeDetail, locateNodes, type GraphViewFilter } from '$backend/memory/view';
 import { resetGraphLayoutState } from '$backend/memory/layout';
 import { markConsulted, retrieve } from '$backend/memory/retrieval';
 import { scheduleVectorIndexing } from '$backend/memory/indexer';
@@ -78,6 +78,56 @@ const NODE = t.Object({
 	entityKey: t.Union([t.String(), t.Null()])
 });
 
+/**
+ * The graph view's narrowing, shared by the meta and tile requests so the two
+ * can never disagree about what is being looked at.
+ */
+const FILTER = t.Object({
+	// Tri-state, and each state means something different: ABSENT is every
+	// project, an EMPTY array is global only, and a non-empty array is those
+	// projects plus the globals that apply inside every one of them.
+	projectIds: t.Optional(t.Array(t.String())),
+	subkinds: t.Optional(t.Array(t.String())),
+	scopes: t.Optional(t.Array(SCOPE)),
+	sources: t.Optional(t.Array(SOURCE)),
+	includeArchived: t.Optional(t.Boolean()),
+	includeSuperseded: t.Optional(t.Boolean())
+});
+
+const REGION = t.Object({
+	minX: t.Number(),
+	maxX: t.Number(),
+	minY: t.Number(),
+	maxY: t.Number()
+});
+
+const TILE_NODE = t.Object({
+	id: t.String(),
+	label: t.String(),
+	community: t.Number(),
+	degree: t.Number(),
+	x: t.Number(),
+	y: t.Number()
+});
+
+function filterOf(data: {
+	projectIds?: string[];
+	subkinds?: string[];
+	scopes?: string[];
+	sources?: string[];
+	includeArchived?: boolean;
+	includeSuperseded?: boolean;
+}): GraphViewFilter {
+	return {
+		projectIds: data.projectIds,
+		subkinds: data.subkinds,
+		scopes: data.scopes as GraphScope[] | undefined,
+		sources: data.sources as GraphSource[] | undefined,
+		includeArchived: data.includeArchived,
+		includeSuperseded: data.includeSuperseded
+	};
+}
+
 const MEMORY_MODEL = t.Object({
 	engine: t.String(),
 	providerSlug: t.Optional(t.String()),
@@ -131,94 +181,81 @@ const READINESS = t.Object({
 
 export const memoryCrudHandler = createRouter()
 	.http('memory:graph', {
-		data: t.Object({
-			// Tri-state, and each state means something different: ABSENT is every
-			// project, an EMPTY array is global only, and a non-empty array is those
-			// projects plus the globals that apply inside every one of them.
-			projectIds: t.Optional(t.Array(t.String())),
-			subkinds: t.Optional(t.Array(t.String())),
-			scopes: t.Optional(t.Array(SCOPE)),
-			sources: t.Optional(t.Array(SOURCE)),
-			includeArchived: t.Optional(t.Boolean()),
-			includeSuperseded: t.Optional(t.Boolean()),
-			// The rectangle of the layout to zoom into, when a mark was opened.
-			// Absent asks for the whole graph at whatever resolution fits.
-			region: t.Optional(
-				t.Object({
-					minX: t.Number(),
-					maxX: t.Number(),
-					minY: t.Number(),
-					maxY: t.Number()
-				})
-			),
-			limit: t.Optional(t.Number())
-		}),
+		data: FILTER,
 		response: t.Object({
-			level: t.String(),
-			nodes: t.Array(t.Object({
-				id: t.String(),
-				subkind: t.String(),
-				scope: t.String(),
-				label: t.String(),
-				projectId: t.Union([t.String(), t.Null()]),
-				degree: t.Number(),
-				weight: t.Number(),
-				pinned: t.Boolean(),
-				community: t.Number(),
-				createdAt: t.String(),
-				x: t.Optional(t.Number()),
-				y: t.Optional(t.Number())
-			})),
-			edges: t.Array(t.Object({
-				id: t.Number(),
-				source: t.String(),
-				target: t.String(),
-				rel: t.String(),
-				weight: t.Number()
-			})),
-			bins: t.Array(t.Object({
-				id: t.String(),
-				members: t.Number(),
-				label: t.String(),
-				community: t.Number(),
-				x: t.Number(),
-				y: t.Number(),
-				region: t.Object({
-					minX: t.Number(),
-					maxX: t.Number(),
-					minY: t.Number(),
-					maxY: t.Number()
-				})
-			})),
-			binEdges: t.Array(t.Object({
-				source: t.String(),
-				target: t.String(),
-				weight: t.Number()
-			})),
-			region: t.Union([
-				t.Object({
-					minX: t.Number(),
-					maxX: t.Number(),
-					minY: t.Number(),
-					maxY: t.Number()
-				}),
-				t.Null()
-			]),
-			totalNodes: t.Number(),
-			truncated: t.Boolean()
+			epoch: t.Number(),
+			stamp: t.Number(),
+			world: t.Union([t.Object({ minX: t.Number(), minY: t.Number(), size: t.Number() }), t.Null()]),
+			spacing: t.Number(),
+			total: t.Number(),
+			unplaced: t.Number(),
+			extent: t.Union([REGION, t.Null()]),
+			degreeScale: t.Number()
 		})
 	}, async ({ data }) => {
 		debug.log('path', 'memory:graph');
-		return buildGraphView({
-			projectIds: data.projectIds,
-			subkinds: data.subkinds,
-			scopes: data.scopes as GraphScope[] | undefined,
-			sources: data.sources as GraphSource[] | undefined,
-			includeArchived: data.includeArchived,
-			includeSuperseded: data.includeSuperseded,
-			region: data.region,
-			limit: data.limit
+		return buildGraphMeta(filterOf(data));
+	})
+	.http('memory:graph-tiles', {
+		data: t.Object({
+			...FILTER.properties,
+			// The epoch the tile addresses were computed against; a mismatch is
+			// answered with `stale` rather than tiles from a different map.
+			epoch: t.Number(),
+			z: t.Number(),
+			tiles: t.Array(t.Object({ x: t.Number(), y: t.Number() })),
+			budget: t.Number()
+		}),
+		response: t.Object({
+			epoch: t.Number(),
+			stale: t.Boolean(),
+			tiles: t.Array(t.Object({
+				z: t.Number(),
+				x: t.Number(),
+				y: t.Number(),
+				cells: t.Number(),
+				nodes: t.Array(TILE_NODE),
+				clusters: t.Array(t.Object({
+					id: t.String(),
+					members: t.Number(),
+					label: t.String(),
+					community: t.Number(),
+					x: t.Number(),
+					y: t.Number(),
+					cellX: t.Number(),
+					cellY: t.Number()
+				})),
+				edges: t.Array(t.Object({
+					source: t.String(),
+					target: t.String(),
+					weight: t.Number(),
+					targetX: t.Number(),
+					targetY: t.Number()
+				})),
+				cellEdges: t.Array(t.Object({
+					source: t.String(),
+					targetCellX: t.Number(),
+					targetCellY: t.Number(),
+					weight: t.Number()
+				}))
+			}))
+		})
+	}, async ({ data }) => {
+		debug.log('path', `memory:graph-tiles z=${data.z} ×${data.tiles.length}`);
+		return buildGraphTiles({
+			...filterOf(data),
+			epoch: data.epoch,
+			z: data.z,
+			tiles: data.tiles,
+			budget: data.budget
 		});
+	})
+	.http('memory:locate', {
+		data: t.Object({ nodeIds: t.Array(t.String()) }),
+		response: t.Object({ nodes: t.Array(TILE_NODE) })
+	}, async ({ data }) => {
+		debug.log('path', `memory:locate ×${data.nodeIds.length}`);
+		return { nodes: locateNodes(data.nodeIds) };
 	})
 	.http('memory:node', {
 		data: t.Object({ nodeId: t.String(), hops: t.Optional(t.Number()) }),
