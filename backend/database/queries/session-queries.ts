@@ -3,6 +3,7 @@ import type { ChatSession, Branch, DatabaseMessage } from '$shared/types/databas
 import { loadMessage } from '$shared/utils/message-formatter';
 import { extractMessageText } from '../../snapshot/helpers';
 import { debug } from '$shared/utils/logger';
+import { removeSessionsFts } from './message-queries';
 
 /** ChatSession plus an optional FTS snippet, set only for message-content matches. */
 export interface SessionSearchResult extends ChatSession {
@@ -398,7 +399,7 @@ export const sessionQueries = {
 		db.prepare('DELETE FROM message_snapshots WHERE session_id = ?').run(id);
 		db.prepare('DELETE FROM session_relationships WHERE parent_session_id = ? OR child_session_id = ?').run(id, id);
 		db.prepare('DELETE FROM messages WHERE session_id = ?').run(id);
-		db.prepare('DELETE FROM messages_fts WHERE session_id = ?').run(id);
+		removeSessionsFts('?', id);
 		db.prepare('DELETE FROM unread_sessions WHERE session_id = ?').run(id);
 		// Clear current_session_id references in workspace_projects
 		db.prepare('UPDATE workspace_projects SET current_session_id = NULL WHERE current_session_id = ?').run(id);
@@ -426,7 +427,7 @@ export const sessionQueries = {
 			   OR child_session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)
 		`).run(projectId, projectId);
 		db.prepare('DELETE FROM messages WHERE session_id IN (SELECT id FROM chat_sessions WHERE project_id = ?)').run(projectId);
-		db.prepare('DELETE FROM messages_fts WHERE project_id = ?').run(projectId);
+		removeSessionsFts('SELECT id FROM chat_sessions WHERE project_id = ?', projectId);
 		db.prepare('DELETE FROM unread_sessions WHERE project_id = ?').run(projectId);
 		// Clear current_session_id references in workspace_projects for this project
 		db.prepare('UPDATE workspace_projects SET current_session_id = NULL WHERE project_id = ?').run(projectId);
