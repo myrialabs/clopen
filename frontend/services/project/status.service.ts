@@ -23,6 +23,8 @@ export interface ProjectStatus {
     startedAt: string;
     messagesCount: number;
     isWaitingInput?: boolean;
+    /** Background tasks the stream waits on between turns (0 while generating). */
+    waitingOnBackground?: number;
   }[];
 }
 

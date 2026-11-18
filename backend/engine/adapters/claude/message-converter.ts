@@ -41,6 +41,7 @@ import type {
 	SystemInitEvent,
 	RateLimitEvent,
 	NotificationEvent,
+	BackgroundWorkEvent,
 	TokenUsage,
 	StopReason,
 } from '$shared/types/unified';
@@ -586,6 +587,13 @@ function* dispatchUnscopedSdkMessage(msg: SDKMessage, state: StreamConverterStat
 				yield convertModelRefusalFallback(msg as SDKModelRefusalFallbackMessage);
 			} else if (subtype === 'model_refusal_no_fallback') {
 				yield convertModelRefusalNoFallback(msg as SDKModelRefusalNoFallbackMessage);
+			} else if (subtype === 'background_tasks_changed') {
+				const changed = msg as unknown as { session_id: string; tasks?: Array<{ task_id: string; description?: string }> };
+				yield {
+					type: 'background_work',
+					sessionId: changed.session_id,
+					tasks: (changed.tasks ?? []).map((task) => ({ id: task.task_id, description: task.description }))
+				} satisfies BackgroundWorkEvent;
 			} else if (subtype === 'task_started') {
 				const task = msg as unknown as { session_id: string; uuid?: string; task_id: string; tool_use_id?: string; task_type?: string; workflow_name?: string; description?: string };
 				if (task.task_type === 'local_workflow' && task.tool_use_id) {

@@ -27,6 +27,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { EngineOutput } from '$shared/types/unified';
 import type { StructuredGenerationOptions } from '../../types';
+import { ClaudeInputGate, type InputGateMessage } from './input-gate';
 import { createSdkMessageConverter, toSdkUserMessage } from './message-converter';
 import { WorkflowTranscriptTailer } from './workflow-transcript';
 import { resolveOsPath } from '$backend/utils/paths';
@@ -165,6 +166,7 @@ export class ClaudeCodeEngine implements AIEngine {
     this.runs.add(run);
 
     const resolvedProjectPath = resolveOsPath(projectPath);
+    let inputGate: ClaudeInputGate | null = null;
 
     try {
       // Active Profile for this stream (resolved in stream-manager). Scopes the
@@ -341,8 +343,18 @@ export class ClaudeCodeEngine implements AIEngine {
 
       // Convert UserMessage → SDKUserMessage for SDK
       const sdkPrompt = toSdkUserMessage(prompt);
+      // The prompt stays open until the CLI has nothing left to do — see
+      // ClaudeInputGate. Ending it after the one message let the SDK close
+      // stdin at the first result, and every tool call, permission check and
+      // hook of a turn started by finished background work then failed.
+      let releaseInput!: () => void;
+      const inputReleased = new Promise<void>((resolve) => { releaseInput = resolve; });
+      inputGate = new ClaudeInputGate(releaseInput);
+      const gate = inputGate;
+      streamController.signal.addEventListener('abort', () => gate.shut(), { once: true });
       const promptIterable = (async function* () {
         yield sdkPrompt;
+        await inputReleased;
       })();
 
       const { query } = await loadEngineSdk<typeof import('@anthropic-ai/claude-agent-sdk')>('claude-code', '@anthropic-ai/claude-agent-sdk');
@@ -363,6 +375,7 @@ export class ClaudeCodeEngine implements AIEngine {
       const sdkProducer = (async () => {
         try {
           for await (const sdkMessage of queryInstance) {
+            gate.observe(sdkMessage as InputGateMessage);
             observeAskUserQuestion(sdkMessage);
             // Register Workflow launches after queueing the corresponding parent
             // and tool result, preserving their ordering ahead of child records.
@@ -408,6 +421,8 @@ export class ClaudeCodeEngine implements AIEngine {
     } catch (error) {
       handleStreamError(error);
     } finally {
+      // However the stream ends, the held-open prompt must end with it.
+      inputGate?.shut();
       // Retire THIS run only — a concurrent stream of another chat session in
       // the same project is still using the instance.
       this.forgetRun(run);

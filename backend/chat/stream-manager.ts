@@ -27,6 +27,7 @@ import type {
 	RateLimitEvent,
 	RateLimitType,
 	NotificationEvent,
+	BackgroundWorkEvent,
 	TokenUsage,
 	StopReason,
 	UserContentBlock,
@@ -85,6 +86,10 @@ export interface StreamState {
 	 */
 	partialBlock?: number;
 	reasoningBlock?: number;
+	/** Background work the engine is still running (see BackgroundWorkEvent). */
+	backgroundTasks?: Array<{ id: string; description?: string }>;
+	/** Between an engine turn's `result` and the stream's next output. */
+	betweenTurns?: boolean;
 	error?: string;
 	abortController?: AbortController;
 	streamPromise?: Promise<void>;
@@ -284,6 +289,17 @@ export interface RateLimitSnapshot {
 	resetsAt: number | null;
 	rateLimitType: RateLimitType | null;
 	receivedAt: string;
+}
+
+/**
+ * How many background tasks an active stream is waiting on between turns — 0
+ * while the engine is producing output. The turn that started the work has
+ * ended; the engine will start another when the work finishes. Shown as
+ * "waiting for background work" instead of "generating".
+ */
+export function waitingOnBackground(stream: Pick<StreamState, 'status' | 'betweenTurns' | 'backgroundTasks'>): number {
+	if (stream.status !== 'active' || !stream.betweenTurns) return 0;
+	return stream.backgroundTasks?.length ?? 0;
 }
 
 class StreamManager extends EventEmitter {
@@ -504,6 +520,31 @@ class StreamManager extends EventEmitter {
 	/**
 	 * Emit a stream event to all subscribers
 	 */
+	/**
+	 * Follow whether the stream sits between turns waiting on background work,
+	 * and announce every change (presence shows it on every device). A turn's
+	 * `result` opens the gap; any output of the next turn closes it.
+	 */
+	private trackTurnGap(streamState: StreamState, output: EngineOutput): void {
+		const before = waitingOnBackground(streamState);
+		if (output.type === 'background_work') {
+			streamState.backgroundTasks = (output as BackgroundWorkEvent).tasks;
+		} else if (output.type === 'result') {
+			streamState.betweenTurns = true;
+		} else if (output.type !== 'rate_limit' && output.type !== 'notification' && output.type !== 'system_init') {
+			streamState.betweenTurns = false;
+		}
+		const after = waitingOnBackground(streamState);
+		if (after !== before) {
+			this.emit('stream:background', {
+				streamId: streamState.streamId,
+				chatSessionId: streamState.chatSessionId,
+				projectId: streamState.projectId,
+				waiting: after
+			});
+		}
+	}
+
 	private emitStreamEvent(streamState: StreamState, type: StreamEventType, data: any): void {
 		// Increment sequence number for deduplication
 		streamState.eventSeq++;
@@ -935,6 +976,8 @@ class StreamManager extends EventEmitter {
 				// the same folder, for any tool (see snapshot/turn-activity.ts).
 				if (chatSessionId) snapshotService.observeEngineOutput(chatSessionId, output);
 
+				this.trackTurnGap(streamState, output);
+
 				// ── Route by type discriminant ──────────────────────────────
 
 				// Extract session ID from first event that has one
@@ -983,6 +1026,10 @@ class StreamManager extends EventEmitter {
 						}
 						continue; // Don't save to DB
 					}
+
+					// ── Background work (tracked in trackTurnGap) ─────────────
+					case 'background_work':
+						continue;
 
 					// ── Compact Boundary ───────────────────────────────────
 					case 'compact_boundary': {

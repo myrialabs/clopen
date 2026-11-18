@@ -81,3 +81,19 @@ describe('Claude sub-agent scoping', () => {
 		expect(stop).toEqual([{ type: 'stream_event', event: 'stop', sessionId: 'session-1', reasoning: true }]);
 	});
 });
+
+describe('Claude background work', () => {
+	test('reports the complete background task list, empty once everything finished', () => {
+		const convert = createSdkMessageConverter();
+		const running = [...convert({
+			type: 'system', subtype: 'background_tasks_changed', session_id: 'session-1', uuid: 'bg-1',
+			tasks: [{ task_id: 'b1', run_id: 'r1', task_type: 'local_bash', description: 'sleep 6' }],
+		} as any)];
+		const done = [...convert({
+			type: 'system', subtype: 'background_tasks_changed', session_id: 'session-1', uuid: 'bg-2', tasks: [],
+		} as any)];
+
+		expect(running).toEqual([{ type: 'background_work', sessionId: 'session-1', tasks: [{ id: 'b1', description: 'sleep 6' }] }]);
+		expect(done).toEqual([{ type: 'background_work', sessionId: 'session-1', tasks: [] }]);
+	});
+});

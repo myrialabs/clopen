@@ -95,6 +95,10 @@ async function _doSetup(): Promise<void> {
 
   // Bypass permissions for Claude Code
   overrides['CLAUDE_CODE_PERMISSION_MODE'] = 'bypassPermissions';
+  // The CLI reports when it is idle, so the adapter can tell "this turn is
+  // done but background work will start another" from "nothing left to do"
+  // (see adapters/claude/input-gate.ts).
+  overrides['CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS'] = '1';
 
   // Isolate Claude config to ~/.clopen/claude/user/
   const claudeUserDir = getClaudeUserConfigDir();

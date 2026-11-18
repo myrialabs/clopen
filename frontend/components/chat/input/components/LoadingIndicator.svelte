@@ -1,5 +1,8 @@
 <script lang="ts">
 	import { appState } from '$frontend/stores/core/app.svelte';
+	import { sessionState } from '$frontend/stores/core/sessions.svelte';
+	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { getSessionBackgroundWait } from '$frontend/stores/core/presence.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { fly } from 'svelte/transition';
 
@@ -9,6 +12,14 @@
 	}
 
 	const { visibleLoadingText, isWelcomeState }: Props = $props();
+
+	// The turn has ended and the engine continues by itself once its background
+	// work finishes — say so instead of showing it as still generating.
+	const backgroundWait = $derived(
+		sessionState.currentSession?.id
+			? getSessionBackgroundWait(sessionState.currentSession.id, projectState.currentProject?.id)
+			: 0
+	);
 </script>
 
 {#if appState.isLoading}
@@ -22,6 +33,14 @@
 				<Icon name="lucide:message-circle-question-mark" class="w-4 h-4 text-amber-600 dark:text-amber-400" />
 				<span class="text-sm font-medium text-amber-700 dark:text-amber-300">
 					Waiting for your input...
+				</span>
+			</div>
+		{:else if backgroundWait > 0}
+			<!-- Between turns: waiting for background work the engine started -->
+			<div class="flex items-center gap-2.5 px-4 py-2 bg-slate-100 dark:bg-slate-800 rounded-full border border-slate-300 dark:border-slate-600 shadow-sm">
+				<Icon name="lucide:hourglass" class="w-4 h-4 text-slate-600 dark:text-slate-400" />
+				<span class="text-sm font-medium text-slate-700 dark:text-slate-300">
+					Waiting for {backgroundWait === 1 ? 'a background task' : `${backgroundWait} background tasks`}...
 				</span>
 			</div>
 		{:else}

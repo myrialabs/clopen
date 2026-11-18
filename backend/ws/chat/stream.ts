@@ -123,6 +123,14 @@ function handleWaitingInputChange(
 	}
 }
 
+// A stream started or stopped waiting on background work between turns: every
+// device's indicator follows presence (see waitingOnBackground).
+streamManager.on('stream:background', () => {
+	broadcastPresence().catch((err) => {
+		debug.warn('chat', 'Presence broadcast error on background-work change:', err);
+	});
+});
+
 streamManager.on('stream:message', (payload: { event: StreamEvent; chatSessionId: string; projectId?: string }) => {
 	try {
 		handleWaitingInputChange(payload.event, payload.chatSessionId, payload.projectId);
