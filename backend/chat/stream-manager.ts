@@ -47,6 +47,7 @@ import { extractMessageText } from '../snapshot/helpers';
 import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
 import { buildMemoryContext, withMemoryContext } from '../memory/context';
 import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
+import { resolveTranscriptAlias, transcriptExists } from '../storage/transcripts';
 import { resolveGitEnv } from '$backend/git/identity';
 import { debug } from '$shared/utils/logger';
 import { attachSubmittedAnswers } from '$shared/utils/ask-user-question';
@@ -106,6 +107,8 @@ export interface StreamState {
 	engineInstance?: AIEngine;
 	sdkSessionId?: string;
 	preStreamSessionId?: string | null;
+	/** The transcript actually resumed — differs from `preStreamSessionId` when it was deduplicated. */
+	resumeTargetSessionId?: string | null;
 	hasCompactBoundary?: boolean;
 	eventSeq: number;
 	/**
@@ -695,6 +698,31 @@ class StreamManager extends EventEmitter {
 			}
 			streamState.preStreamSessionId = resumeSessionId ?? null;
 
+			// Where that session lives now, and whether it still exists at all.
+			// Settings → Storage deduplicates Claude forks (an earlier fork becomes
+			// "the later one, cut at this entry") and may delete the transcripts of
+			// a slimmed chat. A target that is gone is not resumed — the branch is
+			// replayed as prompt content instead, exactly as for an engine switch,
+			// so the conversation carries on with its context rather than failing
+			// or silently starting blank.
+			let engineResume: string | undefined = resumeSessionId;
+			let engineResumeAt: string | undefined;
+			let resumeLost = false;
+			if (resumeSessionId) {
+				const alias = resolveTranscriptAlias(requestEngine.type, resumeSessionId);
+				if (alias) {
+					engineResume = alias.targetSessionId;
+					engineResumeAt = alias.resumeAt;
+				}
+				if (!(await transcriptExists(requestEngine.type, engineResume!, projectPath))) {
+					debug.log('chat', `Resume target ${engineResume} is gone; replaying the branch instead`);
+					resumeLost = true;
+					engineResume = undefined;
+					engineResumeAt = undefined;
+				}
+			}
+			streamState.resumeTargetSessionId = engineResume ?? null;
+
 			// Convert raw SDK prompt → UserMessage (unified)
 			const userMessage = convertRawPromptToUserMessage(rawPrompt);
 
@@ -798,13 +826,14 @@ class StreamManager extends EventEmitter {
 				debug.warn('chat', 'Slash skill expansion failed, sending the message as typed:', error);
 			}
 
-			if (engineSwitched && chatSessionId) {
+			if ((engineSwitched || resumeLost) && chatSessionId) {
 				try {
 					const handoff = buildEngineHandoff(
 						chatSessionId,
 						requestEngine.type,
 						requestEngine.model.id || '',
-						branchEngine,
+						// Same engine, lost transcript: not a takeover from another engine.
+						engineSwitched ? branchEngine : null,
 						userMessageId
 					);
 					if (handoff) {
@@ -866,7 +895,7 @@ class StreamManager extends EventEmitter {
 			// Detect orphaned user messages and prepend context (claude-code only).
 			// Same idea as the handoff above but for the in-engine case: messages the
 			// engine's own session never saw because an earlier turn was cancelled.
-			if (!engineSwitched && requestEngine.type === 'claude-code' && chatSessionId) {
+			if (!engineSwitched && !resumeLost && requestEngine.type === 'claude-code' && chatSessionId) {
 				try {
 					const head = sessionQueries.getHead(chatSessionId);
 					if (head) {
@@ -947,7 +976,8 @@ class StreamManager extends EventEmitter {
 			const streamIterable = engine.streamQuery({
 				projectPath,
 				prompt: enginePrompt,
-				resume: resumeSessionId,
+				resume: engineResume,
+				...(engineResumeAt && { resumeAt: engineResumeAt }),
 				providerSlug: requestEngine.provider,
 				modelId: requestEngine.model.id,
 				...(streamState.reasoningEffort && { reasoningEffort: streamState.reasoningEffort }),

@@ -157,6 +157,9 @@ export const sessionQueries = {
 		const sets: string[] = [
 			'message_count = COALESCE(message_count, 0) + 1',
 			'last_message_at = ?',
+			// A slimmed chat that is picked up again is a live chat: its new engine
+			// transcripts must be protected like any other (see storage/chats.ts).
+			'slimmed_at = NULL',
 		];
 		const params: (string | number | null)[] = [opts.timestamp];
 

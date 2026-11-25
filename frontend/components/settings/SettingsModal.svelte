@@ -33,6 +33,7 @@
 	import AccessSettings from './access/AccessSettings.svelte';
 	import FilesFoldersSettings from './files/FilesFoldersSettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
+	import StorageSettings from './storage/StorageSettings.svelte';
 	import AboutDeviceSettings, {
 		prefetchDeviceInfo,
 		prefetchProjectsOverview
@@ -382,6 +383,10 @@
 					{:else if activeSection === 'machine'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<AboutDeviceSettings />
+						</div>
+					{:else if activeSection === 'storage'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<StorageSettings />
 						</div>
 					{:else if activeSection === 'system'}
 						<div in:fly={{ x: 20, duration: 200 }}>

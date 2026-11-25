@@ -12,16 +12,14 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { initializeDatabase } from '../../database';
-import { projectQueries, sessionQueries, snapshotQueries } from '../../database/queries';
+import { projectQueries } from '../../database/queries';
 import { ws } from '$backend/utils/ws';
-import { snapshotService } from '../../snapshot/snapshot-service';
-import { blobStore } from '../../snapshot/blob-store';
-import { streamManager } from '../../chat/stream-manager';
 import { cleanupProjectSessions } from '../../terminal/ptykit';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 import { requireProjectAccess } from '../access';
 import { runProjectCleanups } from '../../projects/project-cleanup-registry';
+import { purgeSessions } from '../../storage/purge';
 import '../../projects/project-cleanup';
 import { ensureHomeProject } from '../../projects/home';
 import { homeFirst, isHomeProject } from '$shared/utils/home-project';
@@ -113,51 +111,11 @@ export const crudHandler = createRouter()
 		debug.log('project', `Cleaned up ${cleanedStreams} terminal sessions for project ${data.id}`);
 
 		if (mode === 'full') {
-			// Full delete: remove sessions with blob cleanup, then the project itself
-			const sessions = sessionQueries.getByProjectId(data.id);
-
-			if (sessions.length > 0) {
-				// Cancel active chat streams
-				await Promise.all(
-					sessions.map(s => streamManager.cleanupSessionStreams(s.id).catch((err) => {
-						debug.warn('project', `Stream cleanup error for session ${s.id} during project delete:`, err);
-					}))
-				);
-
-				// Collect blob hashes before deleting
-				const baselineHashes = new Set<string>();
-				for (const s of sessions) {
-					for (const h of snapshotService.getSessionBaselineHashes(s.id)) {
-						baselineHashes.add(h);
-					}
-				}
-				const allSnapshots = snapshotQueries.getAllByProjectId(data.id);
-				const deltaHashes = snapshotQueries.collectBlobHashes(allSnapshots);
-
-				// Clear in-memory baselines
-				for (const s of sessions) {
-					snapshotService.clearSessionBaseline(s.id);
-				}
-
-				// Delete all sessions and related DB data
-				const deletedIds = sessionQueries.deleteAllByProjectId(data.id);
-
-				// GC orphaned blobs
-				const allBlobsOnDisk = await blobStore.scanAllBlobHashes();
-				const stillReferencedByDB = snapshotQueries.getAllReferencedBlobHashes();
-				const stillReferencedByMemory = snapshotService.getAllBaselineHashes();
-				const blobsToDelete = [...allBlobsOnDisk].filter(
-					h => !stillReferencedByDB.has(h) && !stillReferencedByMemory.has(h)
-				);
-				if (blobsToDelete.length > 0) {
-					const deleted = await blobStore.deleteBlobs(blobsToDelete);
-					debug.log('project', `Cleaned up ${deleted}/${blobsToDelete.length} orphaned blobs`);
-				}
-
-				// Broadcast session deletions
-				for (const sessionId of deletedIds) {
-					ws.emit.project(data.id, 'sessions:session-deleted', { sessionId, projectId: data.id });
-				}
+			// Full delete: every chat goes through the shared purge (streams,
+			// snapshot blobs, memory bookkeeping, engine transcripts).
+			const { deletedIds } = await purgeSessions([], { wholeProject: data.id });
+			for (const sessionId of deletedIds) {
+				ws.emit.project(data.id, 'sessions:session-deleted', { sessionId, projectId: data.id });
 			}
 		}
 

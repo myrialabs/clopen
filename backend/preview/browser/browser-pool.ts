@@ -193,11 +193,11 @@ const COOKIE_FLUSH_INTERVAL_MS = 60_000;
  * Hashed rather than slugged alone: `scopeSlug` truncates, and two workspaces
  * that collided would share a login.
  */
-function profilesRoot(): string {
+export function profilesRoot(): string {
 	return join(getClopenDir(), 'preview', 'profiles');
 }
 
-function profileDirName(profileKey: string): string {
+export function profileDirName(profileKey: string): string {
 	const digest = createHash('sha256').update(profileKey).digest('hex').slice(0, 16);
 	return `${scopeSlug(profileKey) || 'ws'}-${digest}`;
 }

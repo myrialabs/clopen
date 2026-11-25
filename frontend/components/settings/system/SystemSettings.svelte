@@ -1,10 +1,7 @@
 <script lang="ts">
 	import UpdateSettings from '../general/UpdateSettings.svelte';
-	import DataManagementSettings from '../general/DataManagementSettings.svelte';
 </script>
 
+<!-- Data used to live here too; it is Settings → Storage now, beside the
+     usage it affects. -->
 <UpdateSettings />
-
-<div class="mt-6">
-	<DataManagementSettings />
-</div>

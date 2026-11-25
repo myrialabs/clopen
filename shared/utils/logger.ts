@@ -67,6 +67,7 @@ export type LogLabel =
 	// System
 	| 'server'
 	| 'database'
+	| 'storage'
 	| 'migration'
 	| 'seeder'
 	| 'path';

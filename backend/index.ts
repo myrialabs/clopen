@@ -102,6 +102,7 @@ import { ws as wsServer } from './utils/ws';
 import { messageRateLimiter } from './ws/message-rate-limiter';
 import { flushEpisodicIngest, stopExtractionRunner } from './memory/extract';
 import { stopMemoryMaintenance } from './memory/maintenance';
+import { startStorageMaintenance, stopStorageMaintenance } from './storage/policy';
 import { WS_SERVER_OPTIONS } from './utils/ws-wire';
 import { serveIndexHtml, serveStaticFile } from './http/static-assets';
 
@@ -342,6 +343,9 @@ async function startServer() {
 		// machine. Idle-cheap too — a machine with no runtime is remembered as
 		// having none, so the tick costs a cached lookup and no command at all.
 		containerMonitor.start();
+		// Scheduled cleanup (Settings → Storage). Idle-gated: a tick with a chat
+		// streaming, or before the interval has passed, returns immediately.
+		startStorageMaintenance();
 	} catch (error) {
 		console.error('❌ Database initialization failed — refusing to start:', error);
 		console.error(`   Data directory: ${SERVER_ENV.DATA_DIR}`);
@@ -451,6 +455,7 @@ async function gracefulShutdown() {
 		// own — and the queue is a table, so whatever is left is picked up on the next
 		// start rather than lost.
 		stopMemoryMaintenance();
+		stopStorageMaintenance();
 		stopExtractionRunner();
 		await flushEpisodicIngest();
 		// Close database connection

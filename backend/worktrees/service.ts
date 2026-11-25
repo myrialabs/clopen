@@ -11,7 +11,7 @@ import { projectQueries, worktreeQueries } from '../database/queries';
 import { fileWatcher } from '../files/file-watcher';
 import { debug } from '$shared/utils/logger';
 import { cleanupWorktreeSessions } from '../terminal/ptykit';
-import { browserPreviewServiceManager } from '../preview';
+import { browserPool, browserPreviewServiceManager } from '../preview';
 import { makeScopeKey } from '$shared/utils/workspace-scope';
 import { cloneTree } from './clone';
 import {
@@ -189,7 +189,12 @@ function releaseWorkspaceScope(projectId: string, worktreeId: string): void {
 	const scopeKey = makeScopeKey(projectId, worktreeId);
 	try {
 		cleanupWorktreeSessions(projectId, worktreeId);
-		void browserPreviewServiceManager.removeService(scopeKey);
+		// Tabs first, then the profile: a worktree's Chrome profile (cookies,
+		// storage, cache) belongs to the worktree and would otherwise stay on
+		// disk forever under a name nothing can reach again.
+		void browserPreviewServiceManager.removeService(scopeKey)
+			.catch(() => {})
+			.finally(() => browserPool.clearBrowsingData(scopeKey).catch(() => false));
 		fileWatcher.releaseProject(scopeKey);
 	} catch (error) {
 		debug.warn('worktree', `Scope cleanup failed for ${scopeKey}: ${error}`);
@@ -325,6 +330,22 @@ export async function countPendingChanges(worktreeId: string): Promise<number> {
 		return plan.entries.length;
 	} catch {
 		return 0;
+	}
+}
+
+/**
+ * Like `countPendingChanges`, but null when the count cannot be taken. For
+ * callers deciding whether a worktree may be removed, where "could not tell"
+ * must never read as "nothing to lose".
+ */
+export async function pendingChangeCountOrNull(worktreeId: string): Promise<number | null> {
+	const worktree = worktreeQueries.getById(worktreeId);
+	if (!worktree) return null;
+	try {
+		const { plan } = await buildPlan(worktree, 'apply');
+		return plan.entries.length;
+	} catch {
+		return null;
 	}
 }
 

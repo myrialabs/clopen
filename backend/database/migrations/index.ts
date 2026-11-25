@@ -88,6 +88,7 @@ import * as migration086 from './086_single_owner';
 import * as migration087 from './087_create_blob_line_stats';
 import * as migration088 from './088_create_messages_fts_map';
 import * as migration089 from './089_add_memory_layout_tiles';
+import * as migration090 from './090_create_storage_tables';
 
 // Export all migrations in order
 export const migrations = [
@@ -624,6 +625,12 @@ export const migrations = [
 		description: migration089.description,
 		up: migration089.up,
 		down: migration089.down
+	},
+	{
+		id: '090',
+		description: migration090.description,
+		up: migration090.up,
+		down: migration090.down
 	}
 ];
 
