@@ -29,6 +29,7 @@ export type SettingsSection =
 	| 'access'
 	| 'files'
 	| 'machine'
+	| 'storage'
 	| 'system';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
@@ -242,10 +243,17 @@ export const settingsSections: SettingsSectionMeta[] = [
 		group: 'system'
 	},
 	{
+		id: 'storage',
+		label: 'Storage',
+		icon: 'lucide:hard-drive',
+		description: 'Disk usage and cleanup',
+		group: 'system'
+	},
+	{
 		id: 'system',
-		label: 'Maintenance',
+		label: 'Updates',
 		icon: 'lucide:settings-2',
-		description: 'Updates and data',
+		description: 'Version and updates',
 		group: 'system'
 	}
 ];

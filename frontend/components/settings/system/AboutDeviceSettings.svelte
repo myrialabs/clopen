@@ -76,6 +76,7 @@
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
 	import type { ProjectResourceEntry } from './device-types';
+	import { setActiveSection } from '$frontend/stores/ui/settings-modal.svelte';
 
 	// Single 3s refresh heartbeat for the whole panel: device cards and the
 	// per-project usage list update together. Cheap per tick — both endpoints
@@ -134,11 +135,13 @@
 	// only: the totals above always describe every project the caller can see,
 	// never the narrowed subset, so a filter can't quietly rewrite the summary.
 	type StatusFilter = 'all' | 'running' | 'idle';
-	type SortKey = 'size-desc' | 'size-asc' | 'name-asc' | 'name-desc' | 'opened-desc';
+	// Disk usage lives in Settings → Storage, beside the data Clopen itself keeps
+	// for each project; this list ranks on what changes live.
+	type SortKey = 'cpu-desc' | 'ram-desc' | 'name-asc' | 'name-desc' | 'opened-desc';
 
 	const SORT_OPTIONS: Array<{ value: SortKey; label: string }> = [
-		{ value: 'size-desc', label: 'Largest first' },
-		{ value: 'size-asc', label: 'Smallest first' },
+		{ value: 'cpu-desc', label: 'Most CPU' },
+		{ value: 'ram-desc', label: 'Most RAM' },
 		{ value: 'name-asc', label: 'Name A–Z' },
 		{ value: 'name-desc', label: 'Name Z–A' },
 		{ value: 'opened-desc', label: 'Recently opened' }
@@ -146,14 +149,7 @@
 
 	let projectSearch = $state('');
 	let statusFilter = $state<StatusFilter>('all');
-	let sortKey = $state<SortKey>('size-desc');
-
-	// A folder still being walked has no size to rank on, so size sorts park it
-	// after every measured project instead of letting a placeholder 0 B claim
-	// the top of "Smallest first".
-	function unrankedLast(entry: ProjectResourceEntry): number {
-		return entry.storage.state === 'ready' ? 0 : 1;
-	}
+	let sortKey = $state<SortKey>('cpu-desc');
 
 	function compareProjects(a: ProjectResourceEntry, b: ProjectResourceEntry): number {
 		switch (sortKey) {
@@ -163,18 +159,10 @@
 				return b.name.localeCompare(a.name);
 			case 'opened-desc':
 				return b.last_opened_at.localeCompare(a.last_opened_at);
-			case 'size-asc':
-				return (
-					unrankedLast(a) - unrankedLast(b) ||
-					a.storage.sizeBytes - b.storage.sizeBytes ||
-					a.name.localeCompare(b.name)
-				);
+			case 'ram-desc':
+				return (b.memRssBytes ?? -1) - (a.memRssBytes ?? -1) || a.name.localeCompare(b.name);
 			default:
-				return (
-					unrankedLast(a) - unrankedLast(b) ||
-					b.storage.sizeBytes - a.storage.sizeBytes ||
-					a.name.localeCompare(b.name)
-				);
+				return (b.cpuPercent ?? -1) - (a.cpuPercent ?? -1) || a.name.localeCompare(b.name);
 		}
 	}
 
@@ -277,21 +265,6 @@
 		return `${parseFloat((bytes / Math.pow(k, i)).toFixed(1))} ${sizes[i]}`;
 	}
 
-	// Compact counts for the per-project cards: 3797 → "3.8K".
-	function fmtCompact(n: number): string {
-		if (!Number.isFinite(n) || n < 0) return '0';
-		if (n < 1000) return n.toLocaleString();
-		const units = ['K', 'M', 'B'];
-		let value = n;
-		let unit = '';
-		for (const u of units) {
-			value /= 1000;
-			unit = u;
-			if (value < 1000) break;
-		}
-		return `${parseFloat(value.toFixed(1))}${unit}`;
-	}
-
 	function fmtUptime(sec: number): string {
 		const d = Math.floor(sec / 86400);
 		const h = Math.floor((sec % 86400) / 3600);
@@ -366,20 +339,12 @@
 	const oddTail = $derived(info ? (info.gpus.length + info.disks.length) % 2 === 1 : false);
 
 	// --- Per-project usage derived presentation ---
-	const deviceStorageTotal = $derived(
-		info ? info.disks.reduce((sum, d) => sum + d.sizeBytes, 0) : 0
+	const totalCpu = $derived(
+		overview ? overview.projects.reduce((sum, p) => sum + (p.cpuPercent ?? 0), 0) : 0
 	);
-	const projectStorageShare = $derived(
-		overview && deviceStorageTotal > 0
-			? (overview.totalStorageBytes / deviceStorageTotal) * 100
-			: 0
+	const totalRam = $derived(
+		overview ? overview.projects.reduce((sum, p) => sum + (p.memRssBytes ?? 0), 0) : 0
 	);
-
-	function fmtShare(pct: number): string {
-		if (pct === 0) return '0% of device';
-		if (pct < 0.1) return '<0.1% of device';
-		return `${pct.toFixed(1)}% of device`;
-	}
 </script>
 
 <div class="py-1">
@@ -726,7 +691,7 @@
 				</span>
 			{/if}
 		</div>
-		<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Live CPU, RAM and disk per project</p>
+		<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">Live CPU and RAM per project</p>
 
 		{#if overviewError && !overview}
 			<div class="flex items-center justify-between gap-3 px-4 py-3 bg-red-500/10 border border-red-500/20 rounded-xl">
@@ -783,41 +748,46 @@
 
 					<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
 						<div class="flex items-center gap-3.5">
+							<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-blue-400/15 text-blue-500">
+								<Icon name="lucide:cpu" class="w-5 h-5" />
+							</div>
+							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
+								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">CPU</div>
+								<div class="text-xs text-slate-600 dark:text-slate-500">{fmtCpu(totalCpu)} across projects</div>
+							</div>
+						</div>
+					</div>
+
+					<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
+						<div class="flex items-center gap-3.5">
+							<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-emerald-400/15 text-emerald-500">
+								<Icon name="lucide:memory-stick" class="w-5 h-5" />
+							</div>
+							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
+								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">RAM</div>
+								<div class="text-xs text-slate-600 dark:text-slate-500">{fmtBytes(totalRam)} across projects</div>
+							</div>
+						</div>
+					</div>
+
+					<!-- Disk usage is Storage's: project folders and the data Clopen
+					     keeps for them are measured and cleaned up there, together. -->
+					<button
+						type="button"
+						onclick={() => setActiveSection('storage')}
+						class="px-4 py-3 text-left bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl cursor-pointer transition-colors hover:border-violet-500/40"
+					>
+						<div class="flex items-center gap-3.5">
 							<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-amber-400/15 text-amber-500">
 								<Icon name="lucide:hard-drive" class="w-5 h-5" />
 							</div>
 							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
 								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Storage</div>
-								<div class="text-xs text-slate-600 dark:text-slate-500 truncate">
-									{fmtBytes(overview.totalStorageBytes)}{#if deviceStorageTotal > 0} · {fmtShare(projectStorageShare)}{/if}
-								</div>
+								<div class="text-xs text-slate-600 dark:text-slate-500 truncate">Disk use per project → Storage</div>
 							</div>
+							<Icon name="lucide:chevron-right" class="w-4 h-4 text-slate-400 shrink-0" />
 						</div>
-					</div>
-
-					<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-						<div class="flex items-center gap-3.5">
-							<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-blue-400/15 text-blue-500">
-								<Icon name="lucide:files" class="w-5 h-5" />
-							</div>
-							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
-								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Files</div>
-								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.totalFiles.toLocaleString()} files</div>
-							</div>
-						</div>
-					</div>
-
-					<div class="px-4 py-3 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-xl">
-						<div class="flex items-center gap-3.5">
-							<div class="flex items-center justify-center w-10 h-10 rounded-lg shrink-0 bg-slate-400/15 text-slate-500">
-								<Icon name="lucide:folder-tree" class="w-5 h-5" />
-							</div>
-							<div class="flex flex-col gap-0.5 min-w-0 flex-1">
-								<div class="text-sm font-semibold text-slate-900 dark:text-slate-100">Directories</div>
-								<div class="text-xs text-slate-600 dark:text-slate-500">{overview.totalDirs.toLocaleString()} dirs</div>
-							</div>
-						</div>
-					</div>
+					</button>
 				</div>
 
 				<!-- Every project, one dense row each: with 90+ projects the card
@@ -891,11 +861,7 @@
 					{:else}
 						<div class="flex flex-col gap-1.5">
 							{#each visibleProjects as entry (entry.id)}
-								{@const storage = entry.storage}
-								{@const detail =
-									storage.state === 'ready'
-										? `${fmtCompact(storage.fileCount)} files · ${fmtCompact(storage.dirCount)} dirs · opened ${fmtRelative(entry.last_opened_at)}`
-										: `opened ${fmtRelative(entry.last_opened_at)}`}
+								{@const detail = `opened ${fmtRelative(entry.last_opened_at)}`}
 								<div
 									class="flex items-center gap-3 px-3.5 py-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg"
 									title={detail}
@@ -913,25 +879,11 @@
 										<span class="text-xs font-mono text-slate-500 truncate" title={entry.path}>{entry.path}</span>
 									</div>
 									<div class="flex flex-col gap-0.5 items-end shrink-0">
-										{#if storage.state === 'ready'}
-											<span
-												class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100"
-												title={storage.truncated ? `At least ${fmtBytes(storage.sizeBytes)} — the scan stopped early` : fmtBytes(storage.sizeBytes)}
-											>
-												{storage.truncated ? '≥' : ''}{fmtBytes(storage.sizeBytes)}
-											</span>
-										{:else}
-											<span
-												class="text-sm font-semibold font-mono text-slate-400 dark:text-slate-500"
-												title={storage.state === 'measuring'
-													? 'The folder scan has not finished yet'
-													: (storage.error ?? 'Folder unavailable')}
-											>
-												{storage.state === 'measuring' ? 'Measuring…' : 'Unavailable'}
-											</span>
-										{/if}
+										<span class="text-sm font-semibold font-mono text-slate-900 dark:text-slate-100">
+											{fmtCpu(entry.cpuPercent)} CPU
+										</span>
 										<span class="text-xs font-mono text-slate-500">
-											{fmtCpu(entry.cpuPercent)} CPU · {entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)} RAM
+											{entry.memRssBytes === null ? '—' : fmtBytes(entry.memRssBytes)} RAM
 										</span>
 									</div>
 								</div>
@@ -940,12 +892,6 @@
 					{/if}
 				</div>
 
-				{#if overview.measuringCount > 0 || overview.unavailableCount > 0}
-					<p class="text-3xs text-slate-400 dark:text-slate-500 text-center">
-						{overview.measuredCount} of {overview.totalProjects} project folders measured — totals exclude
-						{#if overview.measuringCount > 0}{overview.measuringCount} still being scanned{/if}{#if overview.measuringCount > 0 && overview.unavailableCount > 0} and {/if}{#if overview.unavailableCount > 0}{overview.unavailableCount} unavailable{/if}.
-					</p>
-				{/if}
 			</div>
 		{/if}
 	</div>

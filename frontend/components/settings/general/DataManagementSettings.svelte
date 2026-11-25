@@ -36,51 +36,36 @@
 	}
 </script>
 
-<div class="py-1">
-	<h3 class="text-base font-bold text-slate-900 dark:text-slate-100 mb-1.5">Data Management</h3>
-	<p class="text-sm text-slate-600 dark:text-slate-500 mb-5">
-		Manage your application data
-	</p>
-
-	<div class="flex flex-col gap-4">
-		<!-- Danger Zone -->
-		<div class="mt-2">
-			<div class="flex items-center gap-2 mb-3 text-xs font-medium text-red-600 dark:text-red-400">
-				<Icon name="lucide:triangle-alert" class="w-3.5 h-3.5" />
-				<span>Danger Zone</span>
-			</div>
-			<div
-				class="flex items-center justify-between gap-4 p-4 bg-red-500/5 dark:bg-red-500/5 border border-red-500/20 dark:border-red-500/20 rounded-lg max-sm:flex-col max-sm:items-stretch"
-			>
-				<div class="flex-1">
-					<div class="text-sm font-medium text-slate-900 dark:text-slate-100 mb-1">
-						Clear All Data
-					</div>
-					<div class="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-						Permanently delete all projects, conversations, and settings. This cannot be undone.
-					</div>
-				</div>
-				<button
-					type="button"
-					class="flex items-center justify-center gap-2 py-2 px-4 bg-red-500/10 border border-red-500/25 rounded-lg text-red-600 dark:text-red-400 text-sm font-medium cursor-pointer transition-all duration-150 whitespace-nowrap hover:bg-red-500/15 hover:border-red-500/35 disabled:opacity-60 disabled:cursor-not-allowed"
-					onclick={() => {
-						clearTyped = '';
-						clearDialogOpen = true;
-					}}
-					disabled={isClearing}
-				>
-					{#if isClearing}
-						<div
-							class="w-3.5 h-3.5 border-2 border-red-600/30 dark:border-red-400/30 border-t-red-600 dark:border-t-red-400 rounded-full animate-spin"
-						></div>
-						<span>Clearing...</span>
-					{:else}
-						<Icon name="lucide:trash-2" class="w-4 h-4" />
-						<span>Clear All Data</span>
-					{/if}
-				</button>
-			</div>
+<!-- Settings → Storage → Clean up → Everything. Laid out as one more cleanup
+     row (same card, icon, text and button as the others) so the last step reads
+     as part of the same list; the dialog is what makes it serious. -->
+<div class="rounded-xl border border-slate-200 dark:border-slate-700/50 bg-white dark:bg-slate-800/50 overflow-hidden">
+	<div class="flex items-start gap-3 px-4 py-2.5">
+		<div class="flex items-center justify-center w-8 h-8 rounded-lg shrink-0 mt-0.5 bg-red-500/10 text-red-500">
+			<Icon name="lucide:triangle-alert" class="w-4 h-4" />
 		</div>
+		<div class="flex-1 min-w-0">
+			<span class="text-[13px] font-semibold text-slate-900 dark:text-slate-100">Clear all data</span>
+			<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+				Permanently deletes every project, conversation, memory and setting. Engines must be signed in again. This cannot be undone.
+			</p>
+		</div>
+		<button
+			type="button"
+			class="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-500/30 text-red-600 dark:text-red-400 enabled:hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+			onclick={() => {
+				clearTyped = '';
+				clearDialogOpen = true;
+			}}
+			disabled={isClearing}
+		>
+			{#if isClearing}
+				<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" />
+				Clearing…
+			{:else}
+				Delete everything
+			{/if}
+		</button>
 	</div>
 </div>
 

@@ -233,8 +233,11 @@
 						</h3>
 						{#if message}
 							<div id="dialog-message" class="text-sm text-slate-600 dark:text-slate-400 leading-relaxed space-y-2">
-								{#each message.split('\n') as line}
-									<p>{line || '\u00A0'}</p>
+								<!-- Each line is a paragraph and space-y-2 already separates them, so
+								     a blank line (a "\n\n" in the message) would add a second, empty
+								     paragraph of gap. Blank lines are dropped instead. -->
+								{#each message.split('\n').filter((line) => line.trim() !== '') as line, i (i)}
+									<p>{line}</p>
 								{/each}
 							</div>
 						{/if}

@@ -3,7 +3,7 @@ import { projectCleanupRegistry, runProjectCleanups } from './project-cleanup-re
 
 import './project-cleanup';
 
-const DEFAULT_CLEANUP_HANDLERS = ['engine', 'mcp-context', 'file-watcher', 'worktrees'] as const;
+const DEFAULT_CLEANUP_HANDLERS = ['engine', 'mcp-context', 'file-watcher', 'preview-profile', 'worktrees'] as const;
 
 describe('project cleanup integration', () => {
 	test('registers default backend handlers when project-cleanup is loaded', () => {
@@ -14,6 +14,8 @@ describe('project cleanup integration', () => {
 		expect(names.indexOf('engine')).toBeLessThan(names.indexOf('mcp-context'));
 		expect(names.indexOf('mcp-context')).toBeLessThan(names.indexOf('file-watcher'));
 		expect(names.indexOf('file-watcher')).toBeLessThan(names.indexOf('worktrees'));
+		// Before worktrees: the main tree's profile is named from the project id alone.
+		expect(names.indexOf('preview-profile')).toBeLessThan(names.indexOf('worktrees'));
 	});
 
 	test('runProjectCleanups runs default handlers without throwing', async () => {

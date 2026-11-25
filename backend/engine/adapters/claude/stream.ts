@@ -138,6 +138,7 @@ export class ClaudeCodeEngine implements AIEngine {
       projectPath,
       prompt,
       resume,
+      resumeAt,
       maxTurns = undefined,
       modelId,
       includePartialMessages = false,
@@ -333,6 +334,10 @@ export class ClaudeCodeEngine implements AIEngine {
         }),
         ...(modelId && { model: modelId }),
         ...(resume && { resume }),
+        // A deduplicated fork: `resume` holds this conversation and more, so it
+        // is cut where the original ended. forkSession stays on, so the cut is a
+        // new session and the shared transcript is never rewritten.
+        ...(resume && resumeAt && { resumeSessionAt: resumeAt }),
         ...(maxTurns && { maxTurns }),
         ...(includePartialMessages && { includePartialMessages }),
         forwardSubagentText: true,

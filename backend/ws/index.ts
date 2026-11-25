@@ -26,6 +26,7 @@ import { userRouter } from './user';
 import { filesRouter } from './files';
 import { workspaceRouter } from './workspace';
 import { systemRouter } from './system';
+import { storageRouter } from './storage';
 import { tunnelRouter } from './tunnel';
 import { gitRouter } from './git';
 import { engineRouter } from './engine';
@@ -82,6 +83,7 @@ export const wsRouter = createRouter()
 	.merge(filesRouter)
 	.merge(workspaceRouter)
 	.merge(systemRouter)
+	.merge(storageRouter)
 	.merge(tunnelRouter)
 
 	// Git Source Control

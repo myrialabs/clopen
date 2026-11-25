@@ -9,6 +9,7 @@
 export {
 	createWorktree,
 	countPendingChanges,
+	pendingChangeCountOrNull,
 	executeTransfer,
 	getWorktreeDiskUsage,
 	previewTransfer,

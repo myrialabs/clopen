@@ -29,6 +29,13 @@ export interface EngineQueryOptions {
 	projectPath: string;
 	prompt: UserMessage;
 	resume?: string;
+	/**
+	 * Cut the resumed session at this entry (Claude: `resumeSessionAt`). Set when
+	 * `resume` is an alias target — the transcript the user is continuing was
+	 * deduplicated into a later fork that holds it, and this is where it ended.
+	 * Engines that cannot cut a session never receive one.
+	 */
+	resumeAt?: string;
 	forkSession?: boolean;
 	maxTurns?: number;
 	/** Provider slug (e.g. 'anthropic', 'openai'). Required for OpenCode. */

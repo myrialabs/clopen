@@ -14,13 +14,9 @@ import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import type { EngineType } from '$shared/types/unified';
 import type { ChatSession } from '$shared/types/database/schema';
-import { sessionQueries, messageQueries, projectQueries, snapshotQueries, worktreeQueries } from '../../database/queries';
+import { sessionQueries, projectQueries, worktreeQueries } from '../../database/queries';
 import { ws } from '$backend/utils/ws';
-import { streamManager } from '../../chat/stream-manager';
-import { snapshotService } from '../../snapshot/snapshot-service';
-import { blobStore } from '../../snapshot/blob-store';
-import { cancelEpisodicIngest } from '../../memory/extract';
-import { forgetSessionContext } from '../../memory/context';
+import { purgeSessions } from '../../storage/purge';
 import { broadcastPresence } from '../projects/status';
 import { debug } from '$shared/utils/logger';
 import { requireCurrentProjectAccess, requireProjectAccess, requireSessionAccess } from '../access';
@@ -245,44 +241,9 @@ export const crudHandler = createRouter()
 
 		const projectId = session.project_id;
 
-		// Cancel and clean up any active/completed streams for this session
-		await streamManager.cleanupSessionStreams(data.id);
-
-		// Collect ALL blob hashes before deleting anything:
-		// 1. In-memory baseline hashes (all project files hashed at session start)
-		const baselineHashes = snapshotService.getSessionBaselineHashes(data.id);
-		// 2. DB snapshot delta hashes (including soft-deleted snapshots)
-		const allSnapshots = snapshotQueries.getAllBySessionId(data.id);
-		const deltaHashes = snapshotQueries.collectBlobHashes(allSnapshots);
-		// Combine both sources
-		const hashesToCheck = new Set([...baselineHashes, ...deltaHashes]);
-
-		debug.log('session', `Session ${data.id}: ${baselineHashes.size} baseline hashes, ${deltaHashes.size} delta hashes, ${hashesToCheck.size} total unique`);
-
-		// Clear in-memory snapshot baseline
-		snapshotService.clearSessionBaseline(data.id);
-
-		// Drop any memory extraction parked for this session. It reads the message
-		// chain, which is about to be deleted, and its injection bookkeeping is now
-		// about a session that no longer exists.
-		cancelEpisodicIngest(data.id);
-		forgetSessionContext(data.id);
-
-		// Delete session and all related DB data (messages, snapshots, branches, relationships, unread)
-		sessionQueries.delete(data.id);
-
-		// Clean up orphaned blobs — protect hashes still used by other active sessions
-		if (hashesToCheck.size > 0) {
-			const stillReferencedByDB = snapshotQueries.getAllReferencedBlobHashes();
-			const stillReferencedByMemory = snapshotService.getAllBaselineHashes();
-			const orphanHashes = [...hashesToCheck].filter(
-				h => !stillReferencedByDB.has(h) && !stillReferencedByMemory.has(h)
-			);
-			if (orphanHashes.length > 0) {
-				const deleted = await blobStore.deleteBlobs(orphanHashes);
-				debug.log('session', `Cleaned up ${deleted}/${orphanHashes.length} orphaned blobs`);
-			}
-		}
+		// Streams, snapshot blobs, memory bookkeeping and the engine's own
+		// transcript all go through the shared purge.
+		await purgeSessions([data.id]);
 
 		// Broadcast to the project so other devices see the deletion
 		debug.log('session', `Broadcasting session deleted: ${data.id} in project: ${projectId}`);
@@ -311,60 +272,11 @@ export const crudHandler = createRouter()
 	}, async ({ conn }) => {
 		const { projectId } = requireCurrentProjectAccess(conn);
 
-		// Get all sessions for this project to clean up streams
-		const sessions = sessionQueries.getByProjectId(projectId);
-		if (sessions.length === 0) {
+		if (sessionQueries.getByProjectId(projectId).length === 0) {
 			return { message: 'No sessions to delete', deletedCount: 0 };
 		}
 
-		// Cancel and clean up active streams for all sessions
-		await Promise.all(
-			sessions.map(s => streamManager.cleanupSessionStreams(s.id).catch((err) => {
-				debug.warn('session', `Stream cleanup error for session ${s.id}:`, err);
-			}))
-		);
-
-		// Collect ALL blob hashes before deleting anything:
-		// 1. In-memory baseline hashes from all sessions
-		const baselineHashes = new Set<string>();
-		for (const s of sessions) {
-			for (const h of snapshotService.getSessionBaselineHashes(s.id)) {
-				baselineHashes.add(h);
-			}
-		}
-		// 2. DB snapshot delta hashes (including soft-deleted)
-		const allSnapshots = snapshotQueries.getAllByProjectId(projectId);
-		const deltaHashes = snapshotQueries.collectBlobHashes(allSnapshots);
-		// Combine both sources
-		const hashesToCheck = new Set([...baselineHashes, ...deltaHashes]);
-
-		debug.log('session', `Project ${projectId}: ${baselineHashes.size} baseline hashes, ${deltaHashes.size} delta hashes, ${hashesToCheck.size} total unique`);
-
-		// Clear in-memory snapshot baselines for all sessions
-		for (const s of sessions) {
-			snapshotService.clearSessionBaseline(s.id);
-			cancelEpisodicIngest(s.id);
-			forgetSessionContext(s.id);
-		}
-
-		// Delete all sessions and related DB data (messages, snapshots, branches, relationships, unread)
-		const deletedIds = sessionQueries.deleteAllByProjectId(projectId);
-
-		// Clean up orphaned blobs using mark-and-sweep GC:
-		// Scan ALL blobs on disk, keep those still referenced by remaining DB snapshots
-		// or by in-memory baselines of other active sessions (other projects)
-		const allBlobsOnDisk = await blobStore.scanAllBlobHashes();
-		const stillReferencedByDB = snapshotQueries.getAllReferencedBlobHashes();
-		const stillReferencedByMemory = snapshotService.getAllBaselineHashes();
-
-		const blobsToDelete = [...allBlobsOnDisk].filter(
-			h => !stillReferencedByDB.has(h) && !stillReferencedByMemory.has(h)
-		);
-
-		if (blobsToDelete.length > 0) {
-			const deleted = await blobStore.deleteBlobs(blobsToDelete);
-			debug.log('session', `Cleaned up ${deleted}/${blobsToDelete.length} orphaned blobs (full GC after bulk delete)`);
-		}
+		const { deletedIds } = await purgeSessions([], { wholeProject: projectId });
 
 		// Broadcast deletion for each session so all connected users update their state
 		for (const sessionId of deletedIds) {
