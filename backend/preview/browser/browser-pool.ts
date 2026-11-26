@@ -1,10 +1,20 @@
 /**
  * Browser Pool Module
  *
- * Uses puppeteer-extra with StealthPlugin for Cloudflare bypass.
  * - One Chrome per workspace, launched against a profile directory on disk
  * - Every tab is a page in that profile's default context, in its own window
- * - StealthPlugin applied at launch time (via puppeteer-extra hooks)
+ *
+ * **Why plain Chrome, with nothing faked.**
+ * Bot checks look for an automated browser in two ways: the marks automation
+ * leaves, and values that contradict each other. The preview used to run
+ * puppeteer-extra's stealth plugin against the first, and it now feeds the
+ * second — it reports an Intel GPU and four cores on an Apple Silicon Mac,
+ * and old-style brands that disagree with the full version list. Cloudflare's
+ * challenge and Google sign-in both turned the preview away for it, while the
+ * same Chrome with nothing patched passes them. What is left to hide is the
+ * `HeadlessChrome` token, which `user-agent.ts` takes out at launch, and
+ * `navigator.webdriver`, which `--disable-blink-features=AutomationControlled`
+ * already keeps false.
  *
  * **Why a profile per workspace rather than a context per tab.**
  * A `BrowserContext` is always incognito: it cannot be written to disk, and it
@@ -26,11 +36,8 @@
  * profile.
  *
  * Why not puppeteer-cluster?
- * - Cluster's CONCURRENCY_CONTEXT mode accesses the browser via the raw
- *   underlying reference, bypassing puppeteer-extra's page creation hooks.
- * - This causes a race condition where stealth evasions (evaluateOnNewDocument)
- *   may not be registered before the first navigation, breaking Cloudflare bypass.
- * - Direct launch() ensures puppeteer-extra wraps ALL page creation correctly.
+ * - Cluster's CONCURRENCY_CONTEXT mode hands out incognito contexts, which is
+ *   exactly what a profile per workspace exists to avoid.
  */
 
 import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
@@ -38,15 +45,13 @@ import { createHash } from 'crypto';
 import { join } from 'path';
 import type { Browser, BrowserContext, CDPSession, Page, Protocol } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
-import puppeteer from 'puppeteer-extra';
-import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import puppeteer from 'puppeteer';
 import { getChromeExecutablePath } from '$backend/engine/install-recipes';
 import { getClopenDir } from '$backend/utils/paths';
 import { scopeSlug } from '$shared/utils/workspace-scope';
 import { open as openSealed, seal } from '$backend/database/crypto/envelope';
 import { isProfileInUseError, releaseProfile, sweepOrphanedProfiles } from './profile-lock';
-
-puppeteer.use(StealthPlugin());
+import { resolveUserAgent } from './user-agent';
 
 export interface PoolConfig {
 	maxConcurrency: number;
@@ -89,9 +94,10 @@ const DEFAULT_CONFIG: PoolConfig = {
  * Chrome launch arguments.
  *
  * Three groups, kept separate because they answer different questions:
- * stealth (Cloudflare bypass — matches test-cf.ts), capture (what the preview
- * pipeline needs from the renderer), and host adaptation (what a headless VPS
- * needs that a desktop doesn't).
+ * not reading as automated (bot checks), capture (what the preview pipeline
+ * needs from the renderer), and host adaptation (what a headless VPS needs
+ * that a desktop doesn't). The User-Agent joins them at launch, once it is
+ * known — see `user-agent.ts`.
  */
 function buildChromeArgs(): string[] {
 	// Chrome only honours the last `--disable-features`, so every entry has to
@@ -288,12 +294,15 @@ class BrowserPool {
 		await this.orphanSweep;
 		await releaseProfile(userDataDir);
 
+		const userAgent = await resolveUserAgent(executablePath);
+		const args = userAgent ? [...CHROME_ARGS, `--user-agent=${userAgent}`] : CHROME_ARGS;
+
 		const launch = () =>
 			puppeteer.launch({
 				headless: true,
 				executablePath,
 				userDataDir,
-				args: CHROME_ARGS,
+				args,
 				// A pipe, not a WebSocket. Chrome exits the moment its end of the
 				// pipe closes, so it cannot outlive this server — a crash, a kill
 				// or a restart used to leave a headless Chrome running with the

@@ -25,6 +25,8 @@ import { join } from 'path';
 import type { CDPSession, Page } from 'puppeteer';
 import { debug } from '$shared/utils/logger';
 import { getClopenDir } from '$backend/utils/paths';
+import { outsideBotChecks } from './bot-check-frames';
+import { exposeBinding } from './page-binding';
 
 /** Capability requests the injected shim can raise. */
 export type HostRequestKind =
@@ -154,10 +156,10 @@ export class BrowserHostBridge extends EventEmitter {
 		this.tabs.set(tabId, { bindingName, transferDir });
 
 		try {
-			await page.exposeFunction(bindingName, (raw: string) => this.handlePageRequest(tabId, raw));
+			await exposeBinding(page, bindingName, (raw: string) => this.handlePageRequest(tabId, raw));
 
 			const { hostBridgeScript } = await import('./scripts/host-bridge');
-			await page.evaluateOnNewDocument(hostBridgeScript, bindingName);
+			await page.evaluateOnNewDocument(outsideBotChecks(hostBridgeScript, bindingName));
 
 			debug.log('preview', `🌉 Host bridge installed for tab ${tabId}`);
 		} catch (error) {

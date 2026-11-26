@@ -1044,83 +1044,13 @@ export class BrowserTabManager extends EventEmitter {
 		// Audio capture is injected post-navigation in BrowserVideoCapture.startStreaming()
 		// to avoid Cloudflare fingerprint detection of AudioContext constructor patching.
 
+		// Nothing touches captcha widgets either. Intercepting `window.turnstile`
+		// before the page loads makes Cloudflare's own script believe it already
+		// ran, so it bails and no site using explicit render ever gets a token.
+		// A failure the site shows is a real failure; hiding it only hides why.
+
 		// Simplified cursor tracking for visual feedback only
 		await this.injectCursorTracking(page);
-
-		// Suppress Cloudflare Turnstile error callbacks to prevent sites from showing
-		// "CAPTCHA verification failed" popups in headless Chrome (error 600010).
-		//
-		// Strategy: Let the real Turnstile script load and define window.turnstile normally
-		// (needed for CF Managed Challenge auto-pass via StealthPlugin fingerprinting).
-		// Intercept window.turnstile assignment via getter/setter and patch render()/execute()
-		// to replace error-callback/expired-callback with no-ops before they are registered.
-		// Also strip data-error-callback attributes from DOM elements via MutationObserver
-		// to cover implicit render (data-sitekey) usage.
-		//
-		// This does NOT block challenges.cloudflare.com — CF Managed Challenge needs that
-		// URL to run its JS verification. Only the error reporting path is suppressed.
-		await page.evaluateOnNewDocument(function () {
-			(function () {
-				 
-				let _turnstile: any;
-
-				function patchOptions(options: Record<string, unknown>) {
-					return Object.assign({}, options, {
-						'error-callback': function () {},
-						'expired-callback': function () {}
-					});
-				}
-
-				 
-				function patchApi(api: any) {
-					if (!api || typeof api !== 'object') return api;
-					['render', 'execute'].forEach(function (method: string) {
-						if (typeof api[method] === 'function') {
-							const orig = api[method].bind(api);
-							api[method] = function (container: unknown, opts: Record<string, unknown>) {
-								return orig(container, patchOptions(opts || {}));
-							};
-						}
-					});
-					return api;
-				}
-
-				try {
-					Object.defineProperty(window, 'turnstile', {
-						configurable: true,
-						enumerable: true,
-						 
-						get() { return _turnstile; },
-						 
-						set(val: any) { _turnstile = patchApi(val); }
-					});
-				} catch {
-					// Property already defined or can't be intercepted
-				}
-
-				// Strip data-error-callback / data-expired-callback from Turnstile elements
-				// before implicit render reads them, so no error handler is registered.
-				function stripErrorAttrs(el: Element) {
-					el.removeAttribute('data-error-callback');
-					el.removeAttribute('data-expired-callback');
-				}
-
-				const mo = new MutationObserver(function (mutations) {
-					mutations.forEach(function (m) {
-						m.addedNodes.forEach(function (node) {
-							if (!(node instanceof Element)) return;
-							if (node.hasAttribute('data-error-callback') || node.hasAttribute('data-expired-callback')) {
-								stripErrorAttrs(node);
-							}
-							node.querySelectorAll('[data-error-callback],[data-expired-callback]').forEach(stripErrorAttrs);
-						});
-					});
-				});
-				if (document.documentElement) {
-					mo.observe(document.documentElement, { childList: true, subtree: true });
-				}
-			})();
-		});
 
 		// NOTE: no `page.on('dialog')` here on purpose. Dialogs are owned by
 		// BrowserDialogHandler, which forwards them to the viewer and renders a
@@ -1177,7 +1107,7 @@ export class BrowserTabManager extends EventEmitter {
 	}
 
 	/**
-	 * Navigate with retry, including Cloudflare auto-pass detection and CAPTCHA popup dismissal.
+	 * Navigate with retry, including Cloudflare auto-pass detection.
 	 */
 	private async navigateWithRetry(page: Page, url: string, launch?: LaunchRecord): Promise<string> {
 		const cleanUrl = this.sanitizeNavigationUrl(url);
@@ -1201,8 +1131,6 @@ export class BrowserTabManager extends EventEmitter {
 				if (launch?.cancelled) return page.url();
 
 				actualUrl = await this.waitForCloudflareIfPresent(page, launch);
-				// Dismiss any CAPTCHA failure popups from embedded Turnstile widgets
-				await this.dismissCaptchaPopupsIfPresent(page);
 				break;
 			} catch (error) {
 				// `Page.stopLoading` makes the pending goto fail. That is the
@@ -1293,113 +1221,6 @@ export class BrowserTabManager extends EventEmitter {
 		}
 
 		return page.url();
-	}
-
-	/**
-	 * Inject a persistent non-blocking watcher into the page that auto-dismisses
-	 * CAPTCHA failure popups whenever they appear (Cloudflare Turnstile error 600010,
-	 * reCAPTCHA failures, etc.).
-	 *
-	 * Uses MutationObserver + setInterval so it catches popups regardless of when they
-	 * appear after page load. Returns immediately — the watcher runs inside the page.
-	 */
-	private async dismissCaptchaPopupsIfPresent(page: Page): Promise<void> {
-		try {
-			await page.evaluate(() => {
-				const CAPTCHA_WORDS = ['captcha', 'turnstile', 'human verification', 'robot', 'bot detected'];
-				const FAIL_WORDS = ['failed', 'error', 'invalid', 'verification failed', 'try again', 'unable to verify'];
-				const DISMISS_LABELS = ['ok', 'close', 'dismiss', 'cancel', 'retry', 'try again', 'continue', 'got it'];
-
-				const isCaptchaText = (text: string): boolean => {
-					const t = text.toLowerCase();
-					return (
-						CAPTCHA_WORDS.some(w => t.includes(w)) &&
-						FAIL_WORDS.some(w => t.includes(w))
-					);
-				};
-
-				const tryDismiss = (): boolean => {
-					// Strategy 1: click a dismiss button whose ancestor contains CAPTCHA failure text
-					const buttons = Array.from(document.querySelectorAll<HTMLElement>(
-						'button, input[type="button"], input[type="submit"], a[role="button"]'
-					));
-					for (const btn of buttons) {
-						const label = (
-							btn instanceof HTMLInputElement ? btn.value : btn.innerText || btn.textContent || ''
-						).trim().toLowerCase();
-						if (!DISMISS_LABELS.includes(label)) continue;
-
-						let el: Element | null = btn.parentElement;
-						while (el && el !== document.body) {
-							if (isCaptchaText((el as HTMLElement).innerText || '')) {
-								(btn as HTMLElement).click();
-								return true;
-							}
-							el = el.parentElement;
-						}
-					}
-
-					// Strategy 2: hide any visible modal/overlay containing CAPTCHA failure text
-					const overlaySelectors = [
-						'[class*="modal"]', '[class*="popup"]', '[class*="dialog"]',
-						'[class*="overlay"]', '[class*="alert"]', '[class*="notification"]',
-						'[role="dialog"]', '[role="alertdialog"]', '[role="alert"]'
-					];
-					const overlays = document.querySelectorAll<HTMLElement>(overlaySelectors.join(','));
-					for (const overlay of overlays) {
-						if (!isCaptchaText(overlay.innerText || '')) continue;
-						const style = overlay.style;
-						if (style.display === 'none' || style.visibility === 'hidden') continue;
-
-						// Try clicking a close button first
-						const closeBtn = overlay.querySelector<HTMLElement>(
-							'button, [class*="close"], [aria-label*="lose"], [aria-label*="ismiss"]'
-						);
-						if (closeBtn) {
-							closeBtn.click();
-						} else {
-							style.display = 'none';
-						}
-						return true;
-					}
-
-					return false;
-				};
-
-				// Run immediately in case popup is already present
-				if (tryDismiss()) return;
-
-				// Set up persistent watcher — fires on any DOM mutation
-				const observer = new MutationObserver(() => {
-					if (tryDismiss()) {
-						observer.disconnect();
-						clearInterval(ticker);
-					}
-				});
-
-				// Also poll via interval as safety net (MutationObserver may miss text changes)
-				const ticker = setInterval(() => {
-					if (tryDismiss()) {
-						clearInterval(ticker);
-						observer.disconnect();
-					}
-				}, 400);
-
-				if (document.body) {
-					observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-				}
-
-				// Self-cleanup after 30 seconds to avoid memory leaks
-				setTimeout(() => {
-					observer.disconnect();
-					clearInterval(ticker);
-				}, 30000);
-			});
-
-			debug.log('preview', '🔔 CAPTCHA auto-dismiss watcher injected into page');
-		} catch {
-			// Page closed or navigated away — ignore
-		}
 	}
 
 	/**
