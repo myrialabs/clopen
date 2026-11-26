@@ -32,11 +32,11 @@ import { ws as wsServer } from '$backend/utils/ws';
  * connector row it projects is instance-wide, and the hub is an instance-wide
  * screen.
  */
-function announce(accountId?: string): void {
+export function announce(accountId?: string): void {
 	wsServer.emit.global('integrations:changed', accountId ? { accountId } : {});
 }
 
-const CAPABILITY_SCHEMA = t.Union(INTEGRATION_CAPABILITIES.map((capability) => t.Literal(capability)));
+export const CAPABILITY_SCHEMA = t.Union(INTEGRATION_CAPABILITIES.map((capability) => t.Literal(capability)));
 const CATEGORY_SCHEMA = t.Union(INTEGRATION_CATEGORIES.map((category) => t.Literal(category)));
 
 const STATUS_SCHEMA = t.Union([
@@ -47,14 +47,36 @@ const STATUS_SCHEMA = t.Union([
 	t.Literal('error')
 ]);
 
-const AUTH_METHOD_SCHEMA = t.Union([
+export const AUTH_METHOD_SCHEMA = t.Union([
 	t.Literal('api-key'),
 	t.Literal('oauth-device'),
 	t.Literal('oauth-code'),
 	t.Literal('mcp-oauth'),
 	t.Literal('connection-string'),
+	t.Literal('cli'),
 	t.Literal('none')
 ]);
+
+const CLI_SCHEMA = t.Union([t.Literal('gh'), t.Literal('glab'), t.Literal('tea')]);
+
+const HOSTING_INFO_SCHEMA = t.Object({
+	defaultHost: t.Union([t.String(), t.Null()]),
+	selfHosted: t.Boolean(),
+	requiresServerUrl: t.Boolean(),
+	cli: t.Union([CLI_SCHEMA, t.Null()]),
+	deviceFlow: t.Boolean(),
+	browserFlow: t.Boolean(),
+	hasBundledClientId: t.Boolean(),
+	oauthAppUrl: t.Union([t.String(), t.Null()]),
+	scopes: t.Array(t.String())
+});
+
+const ACCOUNT_HOSTING_SCHEMA = t.Object({
+	host: t.String(),
+	login: t.Union([t.String(), t.Null()]),
+	linkedCli: t.Union([CLI_SCHEMA, t.Null()]),
+	expiresAt: t.Union([t.String(), t.Null()])
+});
 
 const CREDENTIAL_FIELD_SCHEMA = t.Object({
 	name: t.String(),
@@ -71,7 +93,10 @@ const PROVIDER_SCHEMA = t.Object({
 	category: CATEGORY_SCHEMA,
 	description: t.String(),
 	docsUrl: t.Optional(t.String()),
+	consoleUrl: t.Optional(t.String()),
 	authMethod: AUTH_METHOD_SCHEMA,
+	authMethods: t.Array(AUTH_METHOD_SCHEMA),
+	hosting: t.Optional(HOSTING_INFO_SCHEMA),
 	credentialFields: t.Array(CREDENTIAL_FIELD_SCHEMA),
 	capabilities: t.Array(CAPABILITY_SCHEMA),
 	defaultCapabilities: t.Array(CAPABILITY_SCHEMA),
@@ -79,7 +104,7 @@ const PROVIDER_SCHEMA = t.Object({
 	acceptsWebhooks: t.Boolean()
 });
 
-const ACCOUNT_SCHEMA = t.Object({
+export const ACCOUNT_SCHEMA = t.Object({
 	id: t.String(),
 	provider: t.String(),
 	label: t.String(),
@@ -100,7 +125,8 @@ const ACCOUNT_SCHEMA = t.Object({
 		targetKind: t.Union([t.Literal('mcp_server'), t.Literal('db_client_connection')]),
 		targetId: t.String(),
 		adopted: t.Boolean()
-	}))
+	})),
+	hosting: t.Optional(ACCOUNT_HOSTING_SCHEMA)
 });
 
 const SECRETS_HEALTH_SCHEMA = t.Object({

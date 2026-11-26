@@ -8,20 +8,13 @@
 	 * disconnect.
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
 	import { DEFAULT_BRANCH_TEMPLATE } from '$shared/types/work';
 	import type { WorkBindingConfig, WorkItemStateOption } from '$shared/types/work';
 
-	interface Props {
-		isOpen: boolean;
-		onClose: () => void;
-	}
-
-	// A modal stacked over the Issues & PRs surface rather than a band pushed into it:
-	// this is settings, not content, and inserting it above the list shoved the
-	// work items down the moment anyone looked at a branch template.
-	let { isOpen = $bindable(), onClose }: Props = $props();
+	// Lives in the Git panel's Repository settings, for the project on screen. It
+	// used to be a modal stacked over the Issues & PRs surface, where almost
+	// nobody found it.
 
 	const source = $derived(workStore.source);
 	const config = $derived(source?.binding?.config ?? null);
@@ -31,6 +24,7 @@
 	let onPrOpen = $state<string>('');
 	let states = $state<WorkItemStateOption[]>([]);
 	let saving = $state(false);
+	let saved = $state(false);
 
 	// Seeded from the binding rather than bound to it: this form is a draft until
 	// Save, so typing a template must not rename branches mid-edit.
@@ -45,9 +39,9 @@
 	// Issue states, because both transitions act on the ISSUE — the one that was
 	// started, or the one a pull request was opened for. Fetched here rather than
 	// read off the store so the form works before any item has been opened, and
-	// only while open so a closed dialog costs no request.
+	// again whenever the bound repository changes.
 	$effect(() => {
-		if (!isOpen) return;
+		if (!source?.binding) return;
 		void workStore.fetchStates('issue').then((options) => {
 			states = options;
 		});
@@ -69,16 +63,15 @@
 				transitionOnPrOpen: onPrOpen || null
 			};
 			await workStore.setConfig(next);
-			onClose();
+			saved = true;
+			setTimeout(() => (saved = false), 1500);
 		} finally {
 			saving = false;
 		}
 	}
 </script>
 
-<Modal bind:isOpen {onClose} title="Behaviour" size="md">
-	{#snippet children()}
-	<div class="flex flex-col gap-4">
+<div class="flex flex-col gap-4">
 		<label class="flex flex-col gap-1.5">
 			<span class="text-xs font-medium text-slate-700 dark:text-slate-300">Branch name</span>
 			<input
@@ -128,29 +121,18 @@
 			</p>
 		{/if}
 
-	</div>
-	{/snippet}
-
-	{#snippet footer()}
 		<div class="flex items-center justify-end gap-2">
+			{#if saved}<span class="text-xs text-emerald-600 dark:text-emerald-400">Saved</span>{/if}
 			<button
 				type="button"
-				class="h-9 px-3.5 text-sm font-medium bg-transparent border border-slate-300 dark:border-slate-600 rounded-lg text-slate-700 dark:text-slate-300 cursor-pointer hover:bg-violet-500/10"
-				onclick={onClose}
-			>
-				Cancel
-			</button>
-			<button
-				type="button"
-				class="flex items-center gap-1.5 h-9 px-3.5 text-sm font-semibold bg-violet-600 hover:bg-violet-700 border-none rounded-lg text-white cursor-pointer disabled:opacity-50"
+				class="flex items-center gap-1.5 h-8 px-3 text-xs font-semibold bg-violet-600 hover:bg-violet-700 border-none rounded-lg text-white cursor-pointer disabled:opacity-50"
 				disabled={saving}
 				onclick={save}
 			>
 				{#if saving}
-					<Icon name="lucide:loader-circle" class="w-4 h-4 animate-spin" />
+					<Icon name="lucide:loader-circle" class="w-3.5 h-3.5 animate-spin" />
 				{/if}
 				Save
 			</button>
 		</div>
-	{/snippet}
-</Modal>
+</div>

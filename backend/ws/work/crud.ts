@@ -11,6 +11,8 @@
  *   work:transition       change state
  *   work:assignees        who this repository can assign to
  *   work:set-assignees    replace an item's assignees
+ *   work:set-labels       replace an item's labels
+ *   work:set-reviewers    replace a pull request's requested reviewers
  *   work:create-issue     open a new issue
  *   work:set-binding      point a project at a different repository
  *   work:set-config       per-binding behaviour (transitions, branch template)
@@ -277,6 +279,37 @@ export const workCrudHandler = createRouter()
 			data.id,
 			data.logins
 		);
+		announceWorkChanged(projectId);
+		return { ok: true };
+	})
+
+	.http('work:set-labels', {
+		data: t.Object({
+			...PROJECT_FIELD,
+			accountId: t.String({ minLength: 1 }),
+			kind: KIND_SCHEMA,
+			id: t.String({ minLength: 1 }),
+			labels: t.Array(t.String({ maxLength: 100 }), { maxItems: 50 })
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const { projectId } = resolveWorkProject(conn, data.projectId);
+		await workService.setLabels(projectId, data.accountId, data.kind as WorkItemKind, data.id, data.labels);
+		announceWorkChanged(projectId);
+		return { ok: true };
+	})
+
+	.http('work:set-reviewers', {
+		data: t.Object({
+			...PROJECT_FIELD,
+			accountId: t.String({ minLength: 1 }),
+			id: t.String({ minLength: 1 }),
+			logins: t.Array(t.String(), { maxItems: 15 })
+		}),
+		response: t.Object({ ok: t.Boolean() })
+	}, async ({ data, conn }) => {
+		const { projectId } = resolveWorkProject(conn, data.projectId);
+		await workService.setReviewers(projectId, data.accountId, data.id, data.logins);
 		announceWorkChanged(projectId);
 		return { ok: true };
 	})

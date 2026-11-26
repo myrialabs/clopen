@@ -6,7 +6,7 @@
 import type { IconName } from '$shared/types/ui/icons';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { createNewChatSession, setCurrentSession } from '$frontend/stores/core/sessions.svelte';
-import { toggleNavigator, resetToDefault } from '$frontend/stores/ui/workspace.svelte';
+import { toggleNavigator, resetToDefault, showPanel } from '$frontend/stores/ui/workspace.svelte';
 import { toggleDarkMode } from '$frontend/stores/ui/theme.svelte';
 import { settings, updateSettings, applyFontSize } from '$frontend/stores/features/settings.svelte';
 import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
@@ -20,6 +20,14 @@ import {
 	openContainersDialog
 } from '$frontend/stores/ui/quick-panels.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
+import { hostingStore, type HostingIntent } from '$frontend/stores/features/hosting.svelte';
+import { openHostConnect } from '$frontend/stores/ui/host-connect.svelte';
+
+/** Bring the Git panel up, then hand it the intent — it owns the dialogs. */
+function askGitPanel(intent: HostingIntent): void {
+	showPanel('git');
+	hostingStore.request(intent);
+}
 
 export interface CommandAction {
 	id: string;
@@ -209,6 +217,48 @@ export function getCommandActions(): CommandAction[] {
 		icon: 'lucide:container',
 		keywords: ['docker', 'podman', 'container', 'compose', 'image', 'volume', 'logs', 'exec'],
 		run: openContainersDialog
+	});
+
+	if (projectState.currentProject) {
+		const service = hostingStore.providerName;
+		const noun = hostingStore.prNoun;
+		if (hostingStore.context && hostingStore.remotes.length === 0) {
+			actions.push({
+				id: 'git-publish',
+				label: 'Publish Repository',
+				description: 'Create it on GitHub, GitLab or another service and push',
+				icon: 'lucide:cloud-upload',
+				keywords: ['github', 'gitlab', 'create repo', 'remote', 'push', 'new repository'],
+				run: () => askGitPanel('publish')
+			});
+		}
+		if (hostingStore.offersWork) {
+			actions.push({
+				id: 'git-open-pr',
+				label: `Open ${noun.short} for This Branch`,
+				description: `The ${noun.long} for the current branch on ${service}, or a new one`,
+				icon: 'lucide:git-pull-request',
+				keywords: ['pull request', 'merge request', 'pr', 'mr', 'review', service?.toLowerCase() ?? ''],
+				run: () => askGitPanel('open-pr')
+			});
+			actions.push({
+				id: 'git-search-work',
+				label: `Search Issues & ${noun.short}s`,
+				description: `Issues and ${noun.long}s on ${service}`,
+				icon: 'lucide:circle-dot',
+				keywords: ['issue', 'pull request', 'merge request', 'ticket', 'bug', service?.toLowerCase() ?? ''],
+				run: () => askGitPanel('show-host')
+			});
+		}
+	}
+
+	actions.push({
+		id: 'git-connect-host',
+		label: 'Connect GitHub, GitLab or Another Git Service',
+		description: 'GitHub, GitLab, Gitea or Bitbucket — from gh/glab, the browser, or a token',
+		icon: 'lucide:plug',
+		keywords: ['github', 'gitlab', 'gitea', 'forgejo', 'bitbucket', 'login', 'sign in', 'token', 'gh', 'glab'],
+		run: () => openHostConnect()
 	});
 
 	actions.push({

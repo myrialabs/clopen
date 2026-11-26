@@ -84,7 +84,7 @@ export async function startWork(input: {
 	engine: EngineType;
 	userId: string;
 }): Promise<StartWorkResult> {
-	const { adapter, context } = workService.require(input.projectId, input.accountId);
+	const { adapter, context } = await workService.require(input.projectId, input.accountId);
 
 	const item: WorkItemDetail = await adapter.get(context, input.kind, input.itemId);
 

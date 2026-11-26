@@ -126,6 +126,8 @@ export interface GitHubResponse<T> {
 	rateLimit: WorkRateLimit | null;
 	/** Present when the response carried a `Link: rel="next"`. */
 	nextUrl: string | null;
+	/** The response headers — `x-oauth-scopes` is the one callers read. */
+	headers: Headers;
 }
 
 function parseNextLink(headers: Headers): string | null {
@@ -175,6 +177,8 @@ async function toError(response: Response): Promise<GitHubError> {
 
 export interface RequestOptions {
 	method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
+	/** Accept a body that is not JSON and return it as text — template sources, logs. */
+	text?: boolean;
 	body?: unknown;
 	/** Skip the ETag cache — used when a write must be observed immediately. */
 	noCache?: boolean;
@@ -221,14 +225,14 @@ export async function githubRequest<T>(
 	const rateLimit = parseRateLimit(response.headers);
 
 	if (response.status === 304 && cached) {
-		return { data: cached.body as T, rateLimit, nextUrl: parseNextLink(response.headers) };
+		return { data: cached.body as T, rateLimit, nextUrl: parseNextLink(response.headers), headers: response.headers };
 	}
 
 	if (!response.ok) throw await toError(response);
 
 	// 204 (and any other empty body) is a legitimate success for the write paths.
 	const text = await response.text();
-	const data = (text ? JSON.parse(text) : null) as T;
+	const data = (options.text ? text : text ? JSON.parse(text) : null) as T;
 
 	const etag = response.headers.get('etag');
 	if (method === 'GET' && etag) {
@@ -241,7 +245,7 @@ export async function githubRequest<T>(
 		etagCache.set(cacheKey, { etag, body: data });
 	}
 
-	return { data, rateLimit, nextUrl: parseNextLink(response.headers) };
+	return { data, rateLimit, nextUrl: parseNextLink(response.headers), headers: response.headers };
 }
 
 /**

@@ -48,6 +48,27 @@ export interface HelperCommand {
 	runtime: string;
 	/** The entry script (`Bun.main`). */
 	script: string;
+	/**
+	 * The data directory of the Clopen that wrote this command.
+	 *
+	 * Git runs the helper as a brand-new process with the environment Clopen
+	 * spawned git with — and that environment is deliberately cleaned of
+	 * `NODE_ENV`. Without the directory pinned here, a helper started for a
+	 * development instance (`~/.clopen-dev`) or one with `CLOPEN_DATA_DIR` set
+	 * opened the DEFAULT database, found no account, answered nothing, and git
+	 * fell through to "could not read Username".
+	 */
+	dataDir?: string;
+}
+
+/**
+ * The start of a helper command line: the data directory, then runtime and
+ * script. Git runs `!`-helpers through a POSIX shell, so a leading
+ * `NAME=value` sets the variable for that one command only.
+ */
+function helperInvocation(helper: HelperCommand): string {
+	const parts = [shellQuote(helper.runtime), shellQuote(helper.script)];
+	return helper.dataDir ? `CLOPEN_DATA_DIR=${shellQuote(helper.dataDir)} ${parts.join(' ')}` : parts.join(' ');
 }
 
 /**
@@ -107,8 +128,7 @@ export function buildGitConfigPairs(
 		// this through a shell (the `!` prefix), passes the request on stdin, and
 		// reads the answer from stdout.
 		const command = [
-			shellQuote(helper.runtime),
-			shellQuote(helper.script),
+			helperInvocation(helper),
 			'git-credential',
 			shellQuote(`--identity=${identity.id}`)
 		].join(' ');
@@ -127,18 +147,54 @@ export function buildGitConfigPairs(
 }
 
 /**
- * The environment fragment for an identity.
+ * Credential pairs for hosts served by a connected hosting account.
  *
- * Returns `{}` for no identity so every caller can merge unconditionally and a
- * project without one behaves exactly as Clopen did before this feature.
+ * Scoped per host (`credential.https://github.com.*`), so a host no account
+ * serves keeps the machine's own helpers untouched. For a host that IS served,
+ * the same reset-then-ours rule as above applies — otherwise the system
+ * keychain would answer first with whatever account it happens to hold.
+ *
+ * `useHttpPath` makes git send the repository path to the helper. That is what
+ * lets one helper choose between two accounts on the same host by the
+ * repository's owner, the way the Git panel does.
+ */
+export function buildHostedCredentialPairs(
+	hosts: string[],
+	projectId: string,
+	helper?: HelperCommand
+): Array<[string, string]> {
+	if (!helper || hosts.length === 0) return [];
+	const command = [
+		helperInvocation(helper),
+		'git-credential',
+		'--hosted',
+		shellQuote(`--project=${projectId}`)
+	].join(' ');
+
+	const pairs: Array<[string, string]> = [];
+	for (const host of [...new Set(hosts)].sort()) {
+		pairs.push([`credential.https://${host}.helper`, '']);
+		pairs.push([`credential.https://${host}.helper`, `!${command}`]);
+		pairs.push([`credential.https://${host}.useHttpPath`, 'true']);
+	}
+	return pairs;
+}
+
+/**
+ * The environment fragment for an identity, plus any hosted-credential pairs.
+ *
+ * Returns `{}` when there is neither, so every caller can merge
+ * unconditionally and a project without them behaves exactly as Clopen did
+ * before this feature.
  */
 export function buildGitIdentityEnv(
 	identity: GitEnvIdentity | null,
-	helper?: HelperCommand
+	helper?: HelperCommand,
+	extraPairs: Array<[string, string]> = []
 ): Record<string, string> {
-	if (!identity) return {};
+	if (!identity && extraPairs.length === 0) return {};
 
-	const pairs = buildGitConfigPairs(identity, helper);
+	const pairs = [...(identity ? buildGitConfigPairs(identity, helper) : []), ...extraPairs];
 	const env: Record<string, string> = { GIT_CONFIG_COUNT: String(pairs.length) };
 
 	pairs.forEach(([key, value], index) => {
@@ -146,7 +202,7 @@ export function buildGitIdentityEnv(
 		env[`GIT_CONFIG_VALUE_${index}`] = value;
 	});
 
-	if (identity.sshKeyPath && identity.needsPassphrase && helper) {
+	if (identity?.sshKeyPath && identity.needsPassphrase && helper) {
 		// `ssh` only consults SSH_ASKPASS when it has no terminal to prompt on.
 		// A PTY-backed shell HAS one, so without REQUIRE=force a passphrased key
 		// would hang the terminal waiting for input git can never deliver.
@@ -157,13 +213,16 @@ export function buildGitIdentityEnv(
 			shellQuote(`--identity=${identity.id}`)
 		].join(' ');
 		env.SSH_ASKPASS = askpass;
+		// ssh runs the askpass program directly, not through a shell, so the
+		// data directory travels as a variable rather than a command prefix.
+		if (helper.dataDir) env.CLOPEN_DATA_DIR = helper.dataDir;
 		env.SSH_ASKPASS_REQUIRE = 'force';
 		// Older OpenSSH consults DISPLAY before SSH_ASKPASS. The value is never
 		// connected to, it only has to be non-empty.
 		env.DISPLAY = env.DISPLAY || ':0';
 	}
 
-	debug.log('git', `Git identity env built for ${identity.email} (${pairs.length} config pairs)`);
+	debug.log('git', `Git identity env built for ${identity?.email ?? 'hosted accounts only'} (${pairs.length} config pairs)`);
 	return env;
 }
 

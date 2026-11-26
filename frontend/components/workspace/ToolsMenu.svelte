@@ -22,7 +22,6 @@
 		onContainers: () => void;
 		onMemory: () => void;
 		onNotes: () => void;
-		onWork: () => void;
 		onDeployments: () => void;
 	}
 
@@ -37,7 +36,6 @@
 		onContainers,
 		onMemory,
 		onNotes,
-		onWork,
 		onDeployments
 	}: Props = $props();
 
@@ -163,18 +161,6 @@
 					// nobody here can act on.
 					count: 0,
 					accent: 'text-sky-600 dark:text-sky-400'
-				},
-				{
-					// "Issues" alone was a lie by omission: pull requests are half of what
-					// is behind it, and the only half with CI, commits and a diff.
-					label: 'Issues & PRs',
-					description: 'Issues, pull requests and CI',
-					icon: 'lucide:circle-dot',
-					onClick: onWork,
-					// No live count: an open issue is not a connection this machine holds,
-					// and a badge counting someone's backlog would nag rather than inform.
-					count: 0,
-					accent: 'text-rose-600 dark:text-rose-400'
 				}
 			]
 		}

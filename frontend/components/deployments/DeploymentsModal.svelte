@@ -2,8 +2,7 @@
 	/**
 	 * The Deployments surface.
 	 *
-	 * Lives in More Tools rather than as a dock panel, following the Issues
-	 * surface: a sixth panel touches `PanelId`, the split tree, every layout
+	 * Lives in More Tools rather than as a dock panel: a sixth panel touches `PanelId`, the split tree, every layout
 	 * preset and both navigators, and a second place to look at the same builds
 	 * would drift from this one within a release. Many doors, one room.
 	 *

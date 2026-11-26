@@ -408,9 +408,20 @@
 					{#if account && provider}
 						<div>
 							{@render sectionHeading('Account', {
-								label: 'Reconfigure',
+								label: provider.hosting ? 'Sign in again' : 'Reconfigure',
 								onclick: () => onReconfigureAccount(account, provider)
 							})}
+							{#if account.hosting}
+								<p class="flex flex-wrap items-center gap-x-2 gap-y-1 mb-2 text-xs text-slate-600 dark:text-slate-300">
+									<span class="inline-flex items-center gap-1"><Icon name="lucide:user-round" class="w-3.5 h-3.5 text-slate-400" />{account.hosting.login ? `@${account.hosting.login}` : 'Signed in'} on {account.hosting.host}</span>
+									{#if account.hosting.linkedCli}
+										<span class="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400" title="The token is re-read from the CLI on every use"><Icon name="lucide:link" class="w-3.5 h-3.5" />Linked to {account.hosting.linkedCli}</span>
+									{/if}
+									{#if account.hosting.expiresAt}
+										<span class="text-amber-600 dark:text-amber-400">Expires {new Date(account.hosting.expiresAt).toLocaleString()}</span>
+									{/if}
+								</p>
+							{/if}
 							<div class="rounded-lg border border-slate-200 dark:border-slate-800 divide-y divide-slate-100 dark:divide-slate-800">
 								{#each provider.credentialFields as field (field.name)}
 									<div class="flex items-center gap-3 px-3 py-1.5 text-xs">

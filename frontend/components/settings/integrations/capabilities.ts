@@ -24,7 +24,7 @@ export const CAPABILITY_LABELS: Record<IntegrationCapability, string> = {
 /** Where the capability's work actually happens — shown so "connect" ≠ "use". */
 export const CAPABILITY_SURFACES: Record<IntegrationCapability, string> = {
 	'agent-tools': 'Available to every engine as MCP tools',
-	work: 'More Tools → Issues & PRs',
+	work: 'The Git panel — a view named after the service, e.g. GitHub',
 	deployments: 'More Tools → Deployments',
 	database: 'DB Client',
 	'worktree-branching': 'The worktree switcher → Database branching',

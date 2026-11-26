@@ -202,8 +202,10 @@
 {#if files.length === 0}
 	<p class="text-sm text-slate-500 dark:text-slate-500 m-0 px-1 py-6 text-center">{emptyLabel}</p>
 {:else}
-	<div class="flex h-full min-h-0">
-		<aside class="hidden md:flex flex-col w-56 shrink-0 border-r border-slate-200 dark:border-slate-800">
+	<!-- Against its own width, not the viewport's: the tree only earns its
+	     14rem when the diff still has room beside it. -->
+	<div class="@container flex h-full min-h-0">
+		<aside class="hidden @3xl:flex flex-col w-56 shrink-0 border-r border-slate-200 dark:border-slate-800">
 			<div class="flex items-center gap-1.5 px-2 py-1.5 shrink-0 text-[0.7rem] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
 				<span>{files.length} file{files.length === 1 ? '' : 's'}</span>
 				<span class="text-green-600 dark:text-green-400">+{totals.additions}</span>
@@ -221,7 +223,7 @@
 					select: the tree costs 14rem this layout does not have, and
 					"one file, no way to reach the others" is not a mobile view.
 				-->
-				<div class="flex md:hidden items-center gap-2 px-3 py-1.5 shrink-0 border-b border-slate-200 dark:border-slate-800">
+				<div class="flex @3xl:hidden items-center gap-2 px-3 py-1.5 shrink-0 border-b border-slate-200 dark:border-slate-800">
 					<Icon name="lucide:files" class="w-3.5 h-3.5 shrink-0 text-slate-500" />
 					<select
 						class="flex-1 min-w-0 h-8 px-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 focus:outline-none focus:border-violet-500"

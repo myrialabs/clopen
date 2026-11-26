@@ -15,6 +15,8 @@
 	import Button from '$frontend/components/common/display/Button.svelte';
 	import AddIntegrationModal from './AddIntegrationModal.svelte';
 	import ConnectAccountModal from './ConnectAccountModal.svelte';
+	import { openHostConnect } from '$frontend/stores/ui/host-connect.svelte';
+	import { GIT_HOST_KINDS, type GitHostKind } from '$shared/types/git-hosting';
 	import IntegrationDetail from './IntegrationDetail.svelte';
 	import McpBrowseModal from './McpBrowseModal.svelte';
 	import McpManualModal from './McpManualModal.svelte';
@@ -177,13 +179,35 @@
 		detailKey = row.key;
 	}
 
+	/** A git host signs in through its own dialog — CLI, browser and token, not just a form. */
+	function hostKindOf(provider: IntegrationProviderInfo): GitHostKind | null {
+		return provider.hosting && (GIT_HOST_KINDS as readonly string[]).includes(provider.id)
+			? (provider.id as GitHostKind)
+			: null;
+	}
+
 	function startConnect(provider: IntegrationProviderInfo) {
 		addOpen = false;
 		connectAccount = null;
+		const kind = hostKindOf(provider);
+		if (kind) {
+			openHostConnect({ provider: kind });
+			return;
+		}
 		connectProvider = provider;
 	}
 
 	function startReconfigure(account: IntegrationAccountInfo, provider: IntegrationProviderInfo) {
+		const kind = hostKindOf(provider);
+		if (kind) {
+			const host = account.hosting?.host;
+			openHostConnect({
+				provider: kind,
+				accountId: account.id,
+				baseUrl: host && host !== provider.hosting?.defaultHost ? `https://${host}` : ''
+			});
+			return;
+		}
 		connectAccount = account;
 		connectProvider = provider;
 	}

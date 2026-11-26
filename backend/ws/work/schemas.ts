@@ -43,7 +43,8 @@ export const WORK_ITEM_SCHEMA = t.Object({
 	headBranch: t.Optional(t.String()),
 	headSha: t.Optional(t.String()),
 	baseBranch: t.Optional(t.String()),
-	isDraft: t.Optional(t.Boolean())
+	isDraft: t.Optional(t.Boolean()),
+	reviewers: t.Optional(t.Array(t.String()))
 });
 
 export const COMMENT_SOURCE_SCHEMA = t.Union([
@@ -174,6 +175,8 @@ export const SOURCE_SCHEMA = t.Object({
 		createIssue: t.Boolean(),
 		merge: t.Boolean(),
 		assign: t.Boolean(),
+		labels: t.Boolean(),
+		reviewers: t.Boolean(),
 		diff: t.Boolean()
 	}),
 	binding: t.Union([BINDING_SCHEMA, t.Null()]),

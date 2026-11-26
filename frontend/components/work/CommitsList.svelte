@@ -41,8 +41,11 @@
 		No commits on this branch.
 	</p>
 {:else}
-	<div class="flex h-full min-h-0">
-		<aside class="hidden md:flex flex-col w-64 lg:w-72 shrink-0 border-r border-slate-200 dark:border-slate-800">
+	<!-- Laid out against its own width: in the Git panel's right column a
+	     list, a commit header, a file tree and a diff side by side left the
+	     diff a sliver. Below 64rem the list becomes a picker. -->
+	<div class="@container flex h-full min-h-0">
+		<aside class="hidden @5xl:flex flex-col w-64 shrink-0 border-r border-slate-200 dark:border-slate-800">
 			<div class="px-3 py-1.5 shrink-0 text-[0.7rem] text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
 				{commits.length} commit{commits.length === 1 ? '' : 's'}
 			</div>
@@ -77,7 +80,7 @@
 
 		<div class="flex flex-col flex-1 min-w-0 min-h-0">
 			<!-- The list, for screens with no room for the list. -->
-			<div class="flex md:hidden items-center gap-2 px-3 py-1.5 shrink-0 border-b border-slate-200 dark:border-slate-800">
+			<div class="flex @5xl:hidden items-center gap-2 px-3 py-1.5 shrink-0 border-b border-slate-200 dark:border-slate-800">
 				<Icon name="lucide:git-commit-horizontal" class="w-3.5 h-3.5 shrink-0 text-slate-500" />
 				<select
 					class="flex-1 min-w-0 h-8 px-2 text-xs bg-slate-50 dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 focus:outline-none focus:border-violet-500"
@@ -101,7 +104,7 @@
 					<p class="text-sm text-slate-500 dark:text-slate-500 m-0">Pick a commit</p>
 				</div>
 			{:else}
-				<header class="flex flex-col gap-1.5 px-4 py-2.5 shrink-0 border-b border-slate-200 dark:border-slate-800">
+				<header class="flex flex-col gap-1.5 px-3 py-2 shrink-0 border-b border-slate-200 dark:border-slate-800">
 					<div class="flex items-start gap-2">
 						<h3 class="flex-1 m-0 text-sm font-semibold text-slate-900 dark:text-slate-100 leading-snug">
 							{detail.commit.subject}

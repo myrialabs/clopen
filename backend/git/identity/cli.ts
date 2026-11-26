@@ -101,6 +101,8 @@ async function runCredentialHelper(argv: string[]): Promise<number> {
 	const operation = argv.find((a) => !a.startsWith('--')) ?? 'get';
 	if (operation !== 'get') return 0;
 
+	if (argv.includes('--hosted')) return runHostedCredentialHelper(argv);
+
 	const identityId = identityIdFrom(argv);
 	if (!identityId) return 0;
 
@@ -140,6 +142,39 @@ async function runCredentialHelper(argv: string[]): Promise<number> {
 	// must not be blank, so fall back to the conventional placeholder.
 	const username = row.https_username || request.username || 'x-access-token';
 	process.stdout.write(`username=${username}\npassword=${token}\n`);
+	return 0;
+}
+
+/** `--project=<id>` out of the helper's own arguments. */
+export function projectIdFrom(argv: string[]): string | null {
+	for (const arg of argv) {
+		if (arg.startsWith('--project=')) {
+			const value = arg.slice('--project='.length).trim();
+			if (value) return value;
+		}
+	}
+	return null;
+}
+
+/**
+ * Answer for a host a connected hosting account serves.
+ *
+ * Git sends the host and — because `useHttpPath` is set for these hosts — the
+ * repository path, so the account is chosen by the repository's owner exactly
+ * as the Git panel chooses it. Ambiguity answers nothing, same rule as above.
+ */
+async function runHostedCredentialHelper(argv: string[]): Promise<number> {
+	const request = parseCredentialRequest(await readStdin());
+	if ((request.protocol ?? 'https') !== 'https') return 0;
+	const host = (request.host ?? '').toLowerCase().split(':')[0] ?? '';
+	if (!host) return 0;
+
+	await connectReadOnly();
+	const { answerHostedCredential } = await import('$backend/git-hosts/git-credential');
+	const answer = await answerHostedCredential(host, request.path ?? '', projectIdFrom(argv));
+	if (!answer) return 0;
+
+	process.stdout.write(`username=${answer.username}\npassword=${answer.password}\n`);
 	return 0;
 }
 

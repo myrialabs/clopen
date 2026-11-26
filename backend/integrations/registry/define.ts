@@ -44,6 +44,15 @@ export function defineProvider(provider: IntegrationProvider): IntegrationProvid
 			throw new Error(`Integration provider "${provider.id}" both asks for and generates "${field}"`);
 		}
 	}
+	if (provider.authMethods && !provider.authMethods.includes(provider.authMethod)) {
+		throw new Error(`Integration provider "${provider.id}" lists auth methods that omit its primary one`);
+	}
+	if (provider.hosting && !provider.authMethods?.includes('api-key')) {
+		// The token form is the method that works on every server, including the
+		// self-hosted ones no OAuth app exists for. A hosting provider without it
+		// would have no way in at all on such a server.
+		throw new Error(`Hosting provider "${provider.id}" must accept a token`);
+	}
 	for (const capability of provider.defaultCapabilities ?? []) {
 		if (!provider.capabilities.includes(capability)) {
 			throw new Error(`Integration provider "${provider.id}" defaults to a capability it does not offer: ${capability}`);

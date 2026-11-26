@@ -20,6 +20,8 @@ import { defaultCapabilitiesOf, getProvider, type IntegrationProvider } from './
 import { randomBytes } from 'crypto';
 import { reproject, releaseAll } from './projections';
 import { debug } from '$shared/utils/logger';
+import { getHostAdapter } from '$backend/git-hosts/registry';
+import type { IntegrationAccountHosting, IntegrationAuthMethod } from '$shared/types/integrations';
 
 /**
  * Told after any account is connected, reconfigured, toggled, rebound or
@@ -71,6 +73,36 @@ export interface ConnectInput {
 	projectId?: string | null;
 	credentials: Record<string, string>;
 	capabilities?: IntegrationCapability[];
+	/**
+	 * How the credential was obtained. Defaults to the provider's primary
+	 * method; a sign-in flow passes the one it actually used.
+	 */
+	authMethod?: IntegrationAuthMethod;
+}
+
+function assertKnownAuthMethod(provider: IntegrationProvider, method: IntegrationAuthMethod): void {
+	const allowed = provider.authMethods ?? [provider.authMethod];
+	if (!allowed.includes(method)) {
+		throw new Error(`${provider.name} cannot be connected with "${method}"`);
+	}
+}
+
+/**
+ * Hosting facts for an account of a git hosting provider — who it is, where,
+ * and whether its token is followed from a CLI or expires. No credential.
+ */
+function hostingOf(row: IntegrationAccountRow, credentials: Record<string, string>): IntegrationAccountHosting | undefined {
+	const adapter = getHostAdapter(row.provider);
+	if (!adapter) return undefined;
+	const linked = credentials.authSource === 'cli' ? credentials.cliTool : '';
+	return {
+		host: adapter.host(credentials),
+		login: credentials.login || null,
+		linkedCli: linked === 'gh' || linked === 'glab' || linked === 'tea' ? linked : null,
+		expiresAt: credentials.authSource === 'oauth' && credentials.expiresAt && !credentials.refreshToken
+			? credentials.expiresAt
+			: null
+	};
 }
 
 function requireProvider(id: string): IntegrationProvider {
@@ -134,6 +166,7 @@ function configuredFieldsOf(provider: IntegrationProvider, credentials: Record<s
 export function toAccountInfo(row: IntegrationAccountRow): IntegrationAccountInfo {
 	const provider = getProvider(row.provider);
 	const credentials = integrationAccountQueries.credentialsOf(row);
+	const hosting = hostingOf(row, credentials);
 
 	return {
 		id: row.id,
@@ -154,7 +187,8 @@ export function toAccountInfo(row: IntegrationAccountRow): IntegrationAccountInf
 			targetKind: projection.target_kind,
 			targetId: projection.target_id,
 			adopted: projection.adopted === 1
-		}))
+		})),
+		...(hosting && { hosting })
 	};
 }
 
@@ -174,12 +208,14 @@ export const integrationAccounts = {
 
 		const capabilities = input.capabilities ?? [...defaultCapabilitiesOf(provider)];
 		assertKnownCapabilities(provider, capabilities);
+		const authMethod = input.authMethod ?? provider.authMethod;
+		assertKnownAuthMethod(provider, authMethod);
 
 		const row = integrationAccountQueries.create({
 			provider: provider.id,
 			label: (input.label ?? '').trim() || defaultLabel(provider),
 			projectId: input.projectId ?? null,
-			authMethod: provider.authMethod,
+			authMethod,
 			// Generated fields are Clopen's, not the form's: whatever a client sent
 			// for one is dropped rather than trusted as a secret.
 			credentials: withGeneratedCredentials(provider, stripGenerated(provider, input.credentials)),
@@ -208,17 +244,28 @@ export const integrationAccounts = {
 	 * it" — the same rule the db-client and SSH forms follow, and the reason
 	 * editing a label does not wipe a token.
 	 */
-	updateCredentials(id: string, patch: Record<string, string>): IntegrationAccountInfo {
+	updateCredentials(
+		id: string,
+		patch: Record<string, string>,
+		options: { authMethod?: IntegrationAuthMethod; replace?: string[] } = {}
+	): IntegrationAccountInfo {
 		const row = integrationAccountQueries.getById(id);
 		if (!row) throw new Error('Integration account not found');
 		const provider = requireProvider(row.provider);
 
 		const merged = { ...integrationAccountQueries.credentialsOf(row) };
+		// Keys a sign-in method owns are dropped first when the method changes —
+		// a token pasted over a CLI-linked account must not keep re-reading gh.
+		for (const field of options.replace ?? []) delete merged[field];
 		for (const [field, value] of Object.entries(stripGenerated(provider, patch))) {
 			if (value === '') continue;
 			merged[field] = value;
 		}
 		assertRequiredFields(provider, merged);
+		if (options.authMethod) {
+			assertKnownAuthMethod(provider, options.authMethod);
+			integrationAccountQueries.setAuthMethod(id, options.authMethod);
+		}
 
 		integrationAccountQueries.setCredentials(id, withGeneratedCredentials(provider, merged));
 		integrationAccountQueries.setStatus(id, 'unknown', null);

@@ -172,6 +172,10 @@ export interface WorkProviderAdapter {
 	/** People this item can be assigned to. */
 	listAssignees?(context: WorkContext): Promise<string[]>;
 	setAssignees?(context: WorkContext, kind: WorkItemKind, id: string, logins: string[]): Promise<void>;
+	/** Replace an item's labels with exactly these. */
+	setLabels?(context: WorkContext, kind: WorkItemKind, id: string, labels: string[]): Promise<void>;
+	/** Make these exactly the pull request's requested reviewers. Candidates come from `listAssignees`. */
+	setReviewers?(context: WorkContext, id: string, logins: string[]): Promise<void>;
 
 	createIssue?(
 		context: WorkContext,

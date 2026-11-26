@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { getClopenDir } from '$backend/utils/paths';
 import { debug } from '$shared/utils/logger';
-import { buildGitConfigPairs } from './env';
+import { buildGitConfigPairs, buildHostedCredentialPairs } from './env';
 import { helperCommand, pickCredentialIdentity, resolveIdentity, toEnvIdentity } from './resolve';
 
 /** Where the generated per-project config files live. */
@@ -131,18 +131,24 @@ export async function writeScopeConfig(projectId: string): Promise<string | null
 		await removeLegacyScopes();
 		const { row } = resolveIdentity(projectId);
 		const path = scopeConfigPath(projectId);
+		const { hostedHosts } = await import('./index');
+		const hosted = buildHostedCredentialPairs(hostedHosts(projectId, row), projectId, helperCommand());
 
-		if (!row) {
-			// No identity — remove any file from a previous one, so a cleared
-			// binding does not keep applying.
+		if (!row && hosted.length === 0) {
+			// Nothing to apply — remove any file from a previous identity, so a
+			// cleared binding does not keep applying.
 			await rm(path, { force: true });
 			return null;
 		}
 
 		// No remote URL here: a terminal is not one command against one remote, so
-		// the credential comes from the identity's own host claims.
-		const credential = pickCredentialIdentity(null, row);
-		const pairs = buildGitConfigPairs(toEnvIdentity(row, credential), helperCommand());
+		// the credential comes from the identity's own host claims — plus the
+		// hosting accounts, each scoped to its own host.
+		const credential = row ? pickCredentialIdentity(null, row) : null;
+		const pairs = [
+			...(row ? buildGitConfigPairs(toEnvIdentity(row, credential), helperCommand()) : []),
+			...hosted
+		];
 
 		await mkdir(scopeConfigDir(), { recursive: true, mode: 0o700 });
 		await writeFile(path, renderScopeConfig(pairs), { mode: 0o600 });

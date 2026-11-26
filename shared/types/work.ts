@@ -57,6 +57,8 @@ export interface WorkItem {
 	headSha?: string;
 	baseBranch?: string;
 	isDraft?: boolean;
+	/** Pull requests only: who has been asked to review. */
+	reviewers?: string[];
 }
 
 /**
@@ -269,6 +271,10 @@ export interface WorkProviderCapabilities {
 	createIssue: boolean;
 	merge: boolean;
 	assign: boolean;
+	/** Setting an item's labels. */
+	labels: boolean;
+	/** Requesting reviewers on a pull request. */
+	reviewers: boolean;
 	/** Commits and per-file diffs for a pull request. */
 	diff: boolean;
 }

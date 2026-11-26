@@ -53,7 +53,7 @@
 <div class="relative" use:clickOutside={() => (open = false)}>
 	<button
 		type="button"
-		class="flex items-center gap-1.5 h-8 px-2 text-xs font-medium bg-transparent border border-slate-300 dark:border-slate-600 rounded-md text-slate-700 dark:text-slate-300 cursor-pointer transition-colors duration-150 hover:border-violet-500/50 hover:text-violet-600 dark:hover:text-violet-400"
+		class="flex items-center gap-1.5 h-7 px-2 text-xs font-medium bg-transparent border border-slate-300 dark:border-slate-600 rounded-md text-slate-700 dark:text-slate-300 cursor-pointer transition-colors duration-150 hover:border-violet-500/50 hover:text-violet-600 dark:hover:text-violet-400"
 		onclick={() => (open = !open)}
 		title="Change state"
 	>

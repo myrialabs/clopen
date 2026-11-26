@@ -13,7 +13,7 @@
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { gitIdentityStore } from '$frontend/stores/features/git-identity.svelte';
-	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openSettingsModal, settingsModalState } from '$frontend/stores/ui/settings-modal.svelte';
 	import { debug } from '$shared/utils/logger';
 	import type { ResolvedGitIdentity } from '$shared/types/git-identity';
 
@@ -154,6 +154,7 @@
 					class="w-full text-left px-3 py-1.5 text-[11px] text-slate-500 dark:text-slate-400 hover:text-violet-600 dark:hover:text-violet-400"
 					onclick={() => {
 						open = false;
+						settingsModalState.gitAccountsTab = 'identities';
 						openSettingsModal('git-identities');
 					}}
 				>

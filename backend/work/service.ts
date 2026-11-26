@@ -42,6 +42,7 @@ import type {
 import { getWorkAdapter } from './registry';
 import { readBinding, resolveBinding, suggestLocators, toBindingInfo } from './bindings';
 import type { WorkContext, WorkProviderAdapter } from './types';
+import { credentialsForUse } from '$backend/git-hosts/credentials';
 import { debug } from '$shared/utils/logger';
 
 /**
@@ -66,15 +67,19 @@ function accountsFor(projectId: string): { account: IntegrationAccountRow; adapt
 		});
 }
 
-function contextOf(
+/**
+ * The adapter context, with a credential that is current — re-read from a
+ * linked CLI, or refreshed when an OAuth token is about to expire.
+ */
+async function contextOf(
 	account: IntegrationAccountRow,
 	projectId: string,
 	binding: NonNullable<ReturnType<typeof readBinding>>
-): WorkContext {
+): Promise<WorkContext> {
 	return {
 		projectId,
 		account,
-		credentials: integrationAccountQueries.credentialsOf(account),
+		credentials: await credentialsForUse(account),
 		binding
 	};
 }
@@ -93,7 +98,7 @@ export const workService = {
 
 		for (const { account, adapter } of accountsFor(projectId)) {
 			const provider = getProvider(account.provider);
-			const credentials = integrationAccountQueries.credentialsOf(account);
+			const credentials = await credentialsForUse(account).catch(() => integrationAccountQueries.credentialsOf(account));
 
 			let binding = readBinding(projectId, account.id);
 			if (!binding) {
@@ -132,7 +137,7 @@ export const workService = {
 	 * "Not bound" is separated from "not connected" because they need different
 	 * answers: one is a repository picker, the other is a connect dialog.
 	 */
-	require(projectId: string, accountId: string): { adapter: WorkProviderAdapter; context: WorkContext } {
+	async require(projectId: string, accountId: string): Promise<{ adapter: WorkProviderAdapter; context: WorkContext }> {
 		const account = integrationAccountQueries.getById(accountId);
 		if (!account) throw new Error('That integration account is no longer connected');
 		if (account.is_enabled !== 1) throw new Error(`${account.label} is switched off in Settings → Integrations`);
@@ -143,7 +148,7 @@ export const workService = {
 		const binding = readBinding(projectId, account.id);
 		if (!binding) throw new Error('This project is not pointed at a repository yet');
 
-		return { adapter, context: contextOf(account, projectId, binding) };
+		return { adapter, context: await contextOf(account, projectId, binding) };
 	},
 
 	/** How to print the bound remote project, for prompts and headings. */
@@ -156,17 +161,17 @@ export const workService = {
 	},
 
 	async list(projectId: string, accountId: string, query: WorkItemQuery): Promise<WorkItemPage> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		return adapter.list(context, query);
 	},
 
 	async get(projectId: string, accountId: string, kind: WorkItemKind, id: string): Promise<WorkItemDetail> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		return adapter.get(context, kind, id);
 	},
 
 	async listStates(projectId: string, accountId: string, kind: WorkItemKind): Promise<WorkItemStateOption[]> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		return adapter.listStates(context, kind);
 	},
 
@@ -177,7 +182,7 @@ export const workService = {
 		id: string,
 		body: string
 	): Promise<WorkItemComment> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.capabilities.comments) throw new Error('This provider does not accept comments');
 		return adapter.comment(context, kind, id, body);
 	},
@@ -189,19 +194,19 @@ export const workService = {
 		id: string,
 		state: string
 	): Promise<void> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.capabilities.transitions) throw new Error('This provider does not support state changes');
 		await adapter.transition(context, kind, id, state);
 	},
 
 	async listChecks(projectId: string, accountId: string, branch: string): Promise<CheckRun[]> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.listChecks) return [];
 		return adapter.listChecks(context, branch);
 	},
 
 	async fetchCheckLogs(projectId: string, accountId: string, runId: string): Promise<CheckLogBundle> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.fetchCheckLogs) throw new Error('This provider does not expose CI logs');
 		return adapter.fetchCheckLogs(context, runId);
 	},
@@ -213,13 +218,13 @@ export const workService = {
 		id: string,
 		patch: { title?: string; body?: string }
 	): Promise<void> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.updateItem) throw new Error('This provider cannot edit items');
 		await adapter.updateItem(context, kind, id, patch);
 	},
 
 	async listLabels(projectId: string, accountId: string): Promise<string[]> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.listLabels) return [];
 		return adapter.listLabels(context);
 	},
@@ -230,7 +235,7 @@ export const workService = {
 		comment: { id: string; source: CommentSource },
 		body: string
 	): Promise<WorkItemComment> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.updateComment) throw new Error('This provider cannot edit comments');
 		return adapter.updateComment(context, comment, body);
 	},
@@ -240,7 +245,7 @@ export const workService = {
 		accountId: string,
 		comment: { id: string; source: CommentSource }
 	): Promise<void> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.deleteComment) throw new Error('This provider cannot delete comments');
 		await adapter.deleteComment(context, comment);
 	},
@@ -251,25 +256,25 @@ export const workService = {
 		id: string,
 		options: { method: MergeMethod; title?: string; message?: string }
 	): Promise<void> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.mergePullRequest) throw new Error('This provider cannot merge pull requests');
 		await adapter.mergePullRequest(context, id, options);
 	},
 
 	async listCommits(projectId: string, accountId: string, id: string): Promise<CommitRef[]> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.listCommits) return [];
 		return adapter.listCommits(context, id);
 	},
 
 	async listFiles(projectId: string, accountId: string, id: string): Promise<FileChange[]> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.listFiles) return [];
 		return adapter.listFiles(context, id);
 	},
 
 	async commitDetail(projectId: string, accountId: string, sha: string): Promise<CommitDetail> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.commitDetail) throw new Error('This provider cannot open a commit');
 		return adapter.commitDetail(context, sha);
 	},
@@ -281,13 +286,13 @@ export const workService = {
 		ref: string,
 		blobSha?: string
 	): Promise<FileContent> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.fetchFileContent) throw new Error('This provider cannot read file contents');
 		return adapter.fetchFileContent(context, path, ref, blobSha);
 	},
 
 	async listAssignees(projectId: string, accountId: string): Promise<string[]> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.listAssignees) return [];
 		return adapter.listAssignees(context);
 	},
@@ -299,9 +304,27 @@ export const workService = {
 		id: string,
 		logins: string[]
 	): Promise<void> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.setAssignees) throw new Error('This provider cannot change assignees');
 		await adapter.setAssignees(context, kind, id, logins);
+	},
+
+	async setLabels(
+		projectId: string,
+		accountId: string,
+		kind: WorkItemKind,
+		id: string,
+		labels: string[]
+	): Promise<void> {
+		const { adapter, context } = await this.require(projectId, accountId);
+		if (!adapter.setLabels) throw new Error('This provider cannot change labels');
+		await adapter.setLabels(context, kind, id, labels);
+	},
+
+	async setReviewers(projectId: string, accountId: string, id: string, logins: string[]): Promise<void> {
+		const { adapter, context } = await this.require(projectId, accountId);
+		if (!adapter.setReviewers) throw new Error('This provider cannot request reviewers');
+		await adapter.setReviewers(context, id, logins);
 	},
 
 	async createIssue(
@@ -309,7 +332,7 @@ export const workService = {
 		accountId: string,
 		draft: { title: string; body: string; assignees: string[]; labels: string[] }
 	): Promise<WorkItem> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.createIssue) throw new Error('This provider cannot create issues');
 		return adapter.createIssue(context, draft);
 	},
@@ -319,7 +342,7 @@ export const workService = {
 		accountId: string,
 		draft: PullRequestDraft
 	): Promise<WorkItem> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.createPullRequest) throw new Error('This provider cannot open pull requests');
 
 		const created = await adapter.createPullRequest(context, draft);
@@ -344,7 +367,7 @@ export const workService = {
 		accountId: string,
 		branch: string
 	): Promise<WorkItem | null> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (!adapter.findPullRequestForBranch) return null;
 		return adapter.findPullRequestForBranch(context, branch);
 	},
@@ -358,7 +381,7 @@ export const workService = {
 	 * rate limit.
 	 */
 	async defaultBranch(projectId: string, accountId: string): Promise<string> {
-		const { adapter, context } = this.require(projectId, accountId);
+		const { adapter, context } = await this.require(projectId, accountId);
 		if (context.binding.defaultBranch) return context.binding.defaultBranch;
 
 		const branch = await adapter.defaultBranch(context);
@@ -424,13 +447,14 @@ export const workService = {
 		// An account bound to a project probes against that project's repository;
 		// an unbound one can only prove the credential itself is good.
 		const binding = projectId ? readBinding(projectId, accountId) : null;
-		return adapter.probe(
-			{
-				projectId: projectId ?? '',
-				account,
-				credentials: integrationAccountQueries.credentialsOf(account)
-			},
-			binding
-		);
+		let credentials: Record<string, string>;
+		try {
+			credentials = await credentialsForUse(account);
+		} catch (error) {
+			// A linked CLI that logged out, or an OAuth token that could not be
+			// renewed, is exactly a sign-in problem — say so, not "error".
+			return { status: 'needs_auth', detail: error instanceof Error ? error.message : String(error) };
+		}
+		return adapter.probe({ projectId: projectId ?? '', account, credentials }, binding);
 	}
 };

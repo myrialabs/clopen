@@ -56,6 +56,8 @@ const CAPABILITIES: WorkProviderCapabilities = {
 	createIssue: true,
 	merge: true,
 	assign: true,
+	labels: true,
+	reviewers: true,
 	diff: true
 };
 
@@ -114,6 +116,7 @@ interface GitHubIssue {
 	/** Present only when this "issue" is really a pull request. */
 	pull_request?: unknown;
 	head?: { ref: string; sha?: string };
+	requested_reviewers?: GitHubUser[];
 	base?: { ref: string };
 	merged?: boolean;
 	mergeable?: boolean | null;
@@ -248,7 +251,8 @@ function toWorkItem(raw: GitHubIssue, kind: WorkItemKind): WorkItem {
 			headBranch: raw.head?.ref,
 			...(raw.head?.sha && { headSha: raw.head.sha }),
 			baseBranch: raw.base?.ref,
-			isDraft: raw.draft === true
+			isDraft: raw.draft === true,
+			...(raw.requested_reviewers && { reviewers: raw.requested_reviewers.map((user) => user.login) })
 		})
 	};
 }
@@ -1213,6 +1217,33 @@ export const githubWorkAdapter: WorkProviderAdapter = {
 			`/repos/${context.binding.locator}/issues/${id}`,
 			{ method: 'PATCH', body: { assignees: logins } }
 		));
+		invalidateGitHubCache(credentials.token);
+	},
+
+	async setLabels(context: WorkContext, _kind: WorkItemKind, id: string, labels: string[]): Promise<void> {
+		const credentials = credentialsOf(context);
+		// PUT replaces the set, which is what the picker means.
+		await onRepo(context, () => githubRequest(
+			credentials,
+			`/repos/${context.binding.locator}/issues/${id}/labels`,
+			{ method: 'PUT', body: { labels } }
+		));
+		invalidateGitHubCache(credentials.token);
+	},
+
+	async setReviewers(context: WorkContext, id: string, logins: string[]): Promise<void> {
+		const credentials = credentialsOf(context);
+		const path = `/repos/${context.binding.locator}/pulls/${id}/requested_reviewers`;
+		// GitHub only adds and removes, so the difference is worked out here —
+		// read fresh, because a cached list would undo someone's change on the web.
+		const current = await onRepo(context, () =>
+			githubRequest<{ users: GitHubUser[] }>(credentials, path, { noCache: true }));
+		const now = new Set((current.data?.users ?? []).map((user) => user.login));
+		const wanted = new Set(logins);
+		const add = [...wanted].filter((login) => !now.has(login));
+		const remove = [...now].filter((login) => !wanted.has(login));
+		if (add.length) await onRepo(context, () => githubRequest(credentials, path, { method: 'POST', body: { reviewers: add } }));
+		if (remove.length) await onRepo(context, () => githubRequest(credentials, path, { method: 'DELETE', body: { reviewers: remove } }));
 		invalidateGitHubCache(credentials.token);
 	},
 

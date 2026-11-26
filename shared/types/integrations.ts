@@ -17,7 +17,7 @@
  */
 export const INTEGRATION_CAPABILITIES = [
 	'agent-tools',
-	/** Issues, pull requests and CI — the Issues & PRs surface. */
+	/** Issues, pull requests and CI — the hosting view of the Git panel. */
 	'work',
 	'deployments',
 	'database',
@@ -42,7 +42,51 @@ export type IntegrationAuthMethod =
 	| 'oauth-code'
 	| 'mcp-oauth'
 	| 'connection-string'
+	/** Borrowed from a CLI already signed in on this machine — `gh`, `glab`, `tea`, or git's own keychain. */
+	| 'cli'
 	| 'none';
+
+/**
+ * Sign-in facts for a provider that hosts git repositories.
+ *
+ * Declared per provider so the connect dialog can offer every method the
+ * service supports, in the order that costs the user least: a CLI that is
+ * already signed in, then a browser sign-in, then a pasted token.
+ */
+export interface IntegrationHostingInfo {
+	/** `github.com`, `gitlab.com` — null when the service is self-hosted only. */
+	defaultHost: string | null;
+	/** True when a server URL may (or must) be given. */
+	selfHosted: boolean;
+	/** True when the server URL is required — there is no cloud default. */
+	requiresServerUrl: boolean;
+	/** The CLI whose login can be borrowed, when there is one. */
+	cli: 'gh' | 'glab' | 'tea' | null;
+	/** OAuth device flow is available (a client id may still be needed). */
+	deviceFlow: boolean;
+	/** OAuth authorization-code + PKCE in the browser is available. */
+	browserFlow: boolean;
+	/**
+	 * Whether Clopen ships a client id for the cloud host. Without one, OAuth
+	 * needs the user's own app's client id — always true for a self-hosted
+	 * server, which Clopen has no app on.
+	 */
+	hasBundledClientId: boolean;
+	/** Where to register an OAuth app on this service, for the "use your own" hint. */
+	oauthAppUrl: string | null;
+	/** Scopes Clopen asks for, shown before the user consents. */
+	scopes: string[];
+}
+
+/** Hosting facts about one connected account — never the credential. */
+export interface IntegrationAccountHosting {
+	host: string;
+	login: string | null;
+	/** The CLI this account re-reads its token from on every use, when linked. */
+	linkedCli: 'gh' | 'glab' | 'tea' | null;
+	/** When an OAuth token stops working without a refresh. Null = no expiry. */
+	expiresAt: string | null;
+}
 
 /**
  * Declared as a const array rather than a bare union so the WebSocket schema can
@@ -95,9 +139,13 @@ export interface IntegrationProviderInfo {
 	 */
 	consoleUrl?: string;
 	authMethod: IntegrationAuthMethod;
+	/** Every way this provider can be connected, preferred first. Always includes `authMethod`. */
+	authMethods: IntegrationAuthMethod[];
 	credentialFields: IntegrationCredentialField[];
 	capabilities: IntegrationCapability[];
 	defaultCapabilities: IntegrationCapability[];
+	/** Present for providers that host git repositories. */
+	hosting?: IntegrationHostingInfo;
 	/** True when connecting projects an MCP server row. */
 	providesAgentTools: boolean;
 	/** True when the provider can receive inbound webhooks. */
@@ -122,6 +170,8 @@ export interface IntegrationAccountInfo {
 	updatedAt: string;
 	/** Surfaces this account currently owns a row on. */
 	projections: IntegrationProjectionInfo[];
+	/** Present for accounts of a git hosting provider. */
+	hosting?: IntegrationAccountHosting;
 }
 
 export interface IntegrationProjectionInfo {

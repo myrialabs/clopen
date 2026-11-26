@@ -21,13 +21,24 @@
 import { registerAccountProbe } from '$backend/integrations';
 import { registerWorkProvider } from './registry';
 import { githubWorkAdapter } from './providers/github/adapter';
+import { gitlabWorkAdapter } from './providers/gitlab/adapter';
 import { workService } from './service';
+import { probeHostAccount } from '$backend/git-hosts/health';
 
 registerWorkProvider(githubWorkAdapter);
+registerWorkProvider(gitlabWorkAdapter);
 
 // Health for accounts whose capability projects no MCP row. Without this the
-// hub would report "Nothing to probe yet" for a GitHub account forever.
-registerAccountProbe('github', (accountId, projectId) => workService.probe(accountId, projectId));
+// hub would report "Nothing to probe yet" for a GitHub account forever. When
+// the Issues & PRs capability is off, the account is still a hosting account,
+// and its health is whether it can still sign in.
+for (const provider of ['github', 'gitlab']) {
+	registerAccountProbe(provider, async (accountId, projectId) =>
+		(await workService.probe(accountId, projectId)) ?? probeHostAccount(accountId));
+}
+for (const provider of ['gitea', 'bitbucket']) {
+	registerAccountProbe(provider, (accountId) => probeHostAccount(accountId));
+}
 
 export { workService } from './service';
 export { getWorkAdapter, listWorkAdapters, registerWorkProvider } from './registry';

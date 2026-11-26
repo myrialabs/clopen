@@ -7,24 +7,31 @@
  * projection, the webhook route — is derived from that declaration.
  */
 
+import bitbucket from './providers/bitbucket';
 import context7 from './providers/context7';
 import firecrawl from './providers/firecrawl';
+import gitea from './providers/gitea';
 import github from './providers/github';
+import gitlab from './providers/gitlab';
 import neon from './providers/neon';
 import supabase from './providers/supabase';
 import telegram from './providers/telegram';
 import vercel from './providers/vercel';
 import type { IntegrationProvider } from './types';
 import type { IntegrationProviderInfo } from '$shared/types/integrations';
+import { hasBundledClientId } from '$backend/git-hosts/auth/client-ids';
 
 export type { IntegrationProvider, McpPreset, WebhookSpec } from './types';
 export { defineProvider } from './define';
 
 /** Every declared provider. Add new ones here. */
 export const PROVIDERS: readonly IntegrationProvider[] = [
+	bitbucket,
 	context7,
 	firecrawl,
+	gitea,
 	github,
+	gitlab,
 	neon,
 	supabase,
 	telegram,
@@ -52,7 +59,11 @@ export function toProviderInfo(provider: IntegrationProvider): IntegrationProvid
 		docsUrl: provider.docsUrl,
 		consoleUrl: provider.consoleUrl,
 		authMethod: provider.authMethod,
+		authMethods: provider.authMethods ?? [provider.authMethod],
 		credentialFields: provider.credentialFields,
+		...(provider.hosting && {
+			hosting: { ...provider.hosting, hasBundledClientId: hasBundledClientId(provider.id) }
+		}),
 		capabilities: [...provider.capabilities],
 		defaultCapabilities: [...defaultCapabilitiesOf(provider)],
 		providesAgentTools: provider.capabilities.includes('agent-tools'),

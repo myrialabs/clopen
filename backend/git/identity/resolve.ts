@@ -26,6 +26,7 @@ import {
 import { debug } from '$shared/utils/logger';
 import type { GitEnvIdentity, HelperCommand } from './env';
 import { identityKeyPath } from './keys';
+import { SERVER_ENV } from '$backend/utils/env';
 
 /** Where the identity came from, for the "committing as…" line in the UI. */
 export type IdentitySource = 'project' | 'default' | 'none';
@@ -135,5 +136,5 @@ export function helperCommand(): HelperCommand | undefined {
 		debug.warn('git', 'Cannot locate the Clopen entry point; git credential helpers disabled');
 		return undefined;
 	}
-	return { runtime, script };
+	return { runtime, script, dataDir: SERVER_ENV.DATA_DIR };
 }

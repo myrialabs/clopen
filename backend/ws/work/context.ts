@@ -1,10 +1,9 @@
 /**
  * Which project an issues route acts on.
  *
- * The surface lives in More Tools, and More Tools is global — a user looking at
- * project A should be able to read project B's issues without leaving their
- * session. So every route takes an OPTIONAL `projectId` and falls back to the
- * connection's current one, rather than reading the connection and nothing else.
+ * Every route takes an OPTIONAL `projectId` and falls back to the connection's
+ * current one. The Git panel's hosting view always sends the workspace's
+ * project; Settings and the command palette may name it too.
  *
  * Access is still checked per call. `projectId` arriving from the client is a
  * request, not a permission: `requireProjectAccess` is what decides.

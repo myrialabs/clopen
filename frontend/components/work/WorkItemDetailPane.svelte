@@ -20,7 +20,7 @@
 	import FilesChanged from './FilesChanged.svelte';
 	import ChecksList from './ChecksList.svelte';
 	import MergeDialog from './MergeDialog.svelte';
-	import AssigneePicker from './AssigneePicker.svelte';
+	import MultiPicker from './MultiPicker.svelte';
 	import StatePicker from './StatePicker.svelte';
 	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import TimelineEvent from './TimelineEvent.svelte';
@@ -29,6 +29,7 @@
 	import { showInfo } from '$frontend/stores/ui/notification.svelte';
 	import { workStore, type DetailTab } from '$frontend/stores/features/work.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
+	import type { WorkItemComment, WorkItemEvent } from '$shared/types/work';
 
 	const detail = $derived(workStore.detail);
 	const isLoading = $derived(workStore.isLoadingDetail);
@@ -38,6 +39,31 @@
 	const tab = $derived(workStore.detailTab);
 
 	const isPullRequest = $derived(detail?.kind === 'pull-request');
+
+	/**
+	 * Comments and events as one thread, oldest first. Compared as instants,
+	 * not strings: providers mix `Z` and offset timestamps, and an entry with
+	 * no time sorts last rather than first.
+	 */
+	interface ThreadEntry {
+		key: string;
+		at: number;
+		event?: WorkItemEvent;
+		comment?: WorkItemComment;
+	}
+
+	const timeline = $derived.by((): ThreadEntry[] => {
+		if (!detail) return [];
+		const at = (value: string) => {
+			const time = Date.parse(value);
+			return Number.isNaN(time) ? Number.MAX_SAFE_INTEGER : time;
+		};
+		const entries: ThreadEntry[] = [
+			...detail.events.map((event): ThreadEntry => ({ key: `e-${event.id}`, at: at(event.createdAt), event })),
+			...detail.comments.map((comment): ThreadEntry => ({ key: `c-${comment.source}-${comment.id}`, at: at(comment.createdAt), comment }))
+		];
+		return entries.sort((a, b) => a.at - b.at);
+	});
 
 	/**
 	 * The status badge.
@@ -143,7 +169,7 @@
 		{ id: 'conversation', label: 'Conversation', icon: 'lucide:message-square' },
 		{ id: 'commits', label: 'Commits', icon: 'lucide:git-commit-horizontal' },
 		{ id: 'checks', label: 'Checks', icon: 'lucide:circle-check' },
-		{ id: 'files', label: 'Files changed', icon: 'lucide:files' }
+		{ id: 'files', label: 'Files', icon: 'lucide:files' }
 	];
 
 	async function submitComment() {
@@ -170,8 +196,10 @@
 		<p class="text-sm text-slate-500 dark:text-slate-500 m-0">Pick something on the left</p>
 	</div>
 {:else}
-	<div class="flex flex-col h-full min-h-0">
-		<header class="flex flex-col gap-2 px-4 py-3 border-b border-slate-200 dark:border-slate-800 shrink-0">
+	<!-- A container: this pane is as wide as the Git panel's right column, which
+	     has nothing to do with the viewport, so its layout asks the pane. -->
+	<div class="@container flex flex-col h-full min-h-0">
+		<header class="flex flex-col gap-1.5 px-3 py-2 border-b border-slate-200 dark:border-slate-800 shrink-0">
 			<div class="flex items-start gap-2">
 				{#if editingTitle}
 					<input
@@ -203,7 +231,7 @@
 						Cancel
 					</button>
 				{:else}
-					<h2 class="flex-1 text-base font-semibold text-slate-900 dark:text-slate-100 m-0 leading-snug">
+					<h2 class="flex-1 min-w-0 text-sm @2xl:text-base font-semibold text-slate-900 dark:text-slate-100 m-0 leading-snug">
 						{detail.title}
 						<span class="font-normal text-slate-400 dark:text-slate-600">#{detail.identifier}</span>
 					</h2>
@@ -254,41 +282,35 @@
 				</div>
 			</div>
 
-			<!--
-				Metadata and actions share ONE row. They were two, and on a wide
-				pane both were mostly empty space — three stacked rows of chrome
-				above the conversation for information that fits on one.
-			-->
-			<div class="flex items-center gap-1.5 flex-wrap">
-				<span class="flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-full border capitalize {stateBadge.class}">
-					<Icon name={stateBadge.icon} class="w-3.5 h-3.5" />
+			<!-- One wrapping row for who, where and what you can do. Three rows
+			     of chrome made the header taller than the first comment. -->
+			<div class="flex items-center gap-1.5 flex-wrap min-w-0 text-xs text-slate-500 dark:text-slate-400">
+				<span class="flex items-center gap-1 h-6 px-2 shrink-0 font-medium rounded-full border capitalize {stateBadge.class}">
+					<Icon name={stateBadge.icon} class="w-3 h-3" />
 					{detail.state}
 				</span>
 				{#if detail.author}
-					<span class="text-xs text-slate-500 dark:text-slate-400">
-						by
-						<a
-							href={profileUrl(detail.author)}
-							target="_blank"
-							rel="noreferrer noopener"
-							class="text-slate-600 dark:text-slate-300 no-underline hover:text-violet-600 dark:hover:text-violet-400 hover:underline"
-						>
-							{detail.author}
-						</a>
-					</span>
+					<a
+						href={profileUrl(detail.author)}
+						target="_blank"
+						rel="noreferrer noopener"
+						class="shrink-0 text-slate-600 dark:text-slate-300 no-underline hover:text-violet-600 dark:hover:text-violet-400"
+					>
+						{detail.author}
+					</a>
 				{/if}
 				{#if detail.headBranch}
-					<span class="text-xs font-mono text-slate-500 dark:text-slate-400 truncate max-w-[18rem]">
+					<span class="min-w-0 max-w-[16rem] truncate font-mono" title="{detail.baseBranch} ← {detail.headBranch}">
 						{detail.baseBranch} ← {detail.headBranch}
 					</span>
 				{/if}
 
-				<span class="w-px h-4 mx-2.5 bg-slate-200 dark:bg-slate-700"></span>
+				<span class="w-px h-4 mx-0.5 bg-slate-200 dark:bg-slate-700"></span>
 
 				<!-- The slowest action here: it clones a worktree. It says so. -->
 				<button
 					type="button"
-					class="flex items-center justify-center gap-1.5 h-8 px-2.5 text-xs font-semibold bg-violet-600 hover:bg-violet-700 border-none rounded-md text-white cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
+					class="flex items-center justify-center gap-1.5 h-7 px-2.5 text-xs font-semibold bg-violet-600 hover:bg-violet-700 border-none rounded-md text-white cursor-pointer transition-colors duration-150 disabled:opacity-50 disabled:cursor-not-allowed"
 					disabled={starting}
 					onclick={() => workStore.startWork(detail)}
 				>
@@ -304,7 +326,7 @@
 				{#if canMerge}
 					<button
 						type="button"
-						class="flex items-center gap-1.5 h-8 px-2.5 text-xs font-semibold bg-transparent border border-green-600/50 rounded-md text-green-700 dark:text-green-400 cursor-pointer transition-colors duration-150 hover:bg-green-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
+						class="flex items-center gap-1.5 h-7 px-2.5 text-xs font-semibold bg-transparent border border-green-600/50 rounded-md text-green-700 dark:text-green-400 cursor-pointer transition-colors duration-150 hover:bg-green-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
 						disabled={workStore.isMerging}
 						onclick={() => (mergeOpen = true)}
 					>
@@ -314,7 +336,45 @@
 				{/if}
 
 				{#if source?.capabilities.assign}
-					<AssigneePicker assigned={detail.assignees} />
+					<MultiPicker
+						selected={detail.assignees}
+						candidates={workStore.assignees}
+						icon="lucide:user-plus"
+						placeholder="Assign"
+						noun="assignees"
+						filterPlaceholder="Filter people…"
+						emptyLabel="Nobody assignable here — the token may not have write access to this repository."
+						load={() => workStore.loadAssignees()}
+						onChange={(next) => workStore.setAssignees(next)}
+					/>
+				{/if}
+
+				{#if source?.capabilities.labels}
+					<MultiPicker
+						selected={detail.labels}
+						candidates={workStore.labels}
+						icon="lucide:tag"
+						placeholder="Labels"
+						noun="labels"
+						filterPlaceholder="Filter labels…"
+						emptyLabel="This repository defines no labels."
+						load={() => workStore.loadLabels()}
+						onChange={(next) => workStore.setLabels(next)}
+					/>
+				{/if}
+
+				{#if isPullRequest && source?.capabilities.reviewers}
+					<MultiPicker
+						selected={detail.reviewers ?? []}
+						candidates={workStore.assignees}
+						icon="lucide:eye"
+						placeholder="Reviewers"
+						noun="reviewers"
+						filterPlaceholder="Filter people…"
+						emptyLabel="Nobody to request — the token may not have write access to this repository."
+						load={() => workStore.loadAssignees()}
+						onChange={(next) => workStore.setReviewers(next)}
+					/>
 				{/if}
 
 				{#if states.length > 0}
@@ -323,18 +383,19 @@
 			</div>
 
 			{#if isPullRequest}
-				<div class="flex items-center gap-0.5 flex-wrap -mb-3 pt-1">
+				<div class="flex items-center gap-0.5 -mb-2.5 overflow-x-auto">
 					{#each DETAIL_TABS as entry (entry.id)}
 						<button
 							type="button"
-							class="flex items-center gap-1.5 h-8 px-2.5 text-xs font-medium rounded-t-md border-b-2 bg-transparent cursor-pointer transition-colors duration-150
+							class="flex items-center gap-1.5 h-8 px-2 text-xs font-medium rounded-t-md border-b-2 bg-transparent cursor-pointer transition-colors duration-150
 								{tab === entry.id
 								? 'border-violet-500 text-slate-900 dark:text-slate-100'
 								: 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-slate-200'}"
 							onclick={() => workStore.setDetailTab(entry.id)}
+							title={entry.label}
 						>
 							<Icon name={entry.icon} class="w-3.5 h-3.5" />
-							{entry.label}
+							<span class="hidden @sm:inline">{entry.label}</span>
 						</button>
 					{/each}
 				</div>
@@ -345,7 +406,7 @@
 		     list beside a pane, and each brings its own scroll containers. -->
 		<div class="flex-1 min-h-0 {isPullRequest && tab !== 'conversation'
 			? 'overflow-hidden'
-			: 'overflow-y-auto'}">
+			: 'overflow-y-auto bg-slate-50 dark:bg-slate-950/50'}">
 			{#if isPullRequest && tab === 'checks'}
 				<ChecksList />
 			{:else if isPullRequest && tab === 'files'}
@@ -370,23 +431,23 @@
 					<!--
 						A conversation is a sequence, and the provider draws it as
 						one. The rail is ONE absolutely positioned line down a
-						gutter the rows reserve with `pl-7`, and every dot is
+						gutter the rows reserve with `pl-10`, and every dot is
 						placed against that same gutter — so the line cannot drift
 						away from the dots, and it cannot break into segments when
 						a card is taller than expected. It also stops at the last
 						entry: the composer is outside the rail, because nothing
 						has happened there yet.
 					-->
-					<div class="relative flex flex-col gap-3 pl-7">
+					<div class="relative flex flex-col gap-3 pl-10">
 						<span
-							class="absolute left-[0.5625rem] top-[0.875rem] bottom-0 w-0.5 rounded-full bg-slate-200 dark:bg-slate-800"
+							class="absolute left-[0.8125rem] top-[1.25rem] bottom-0 w-0.5 rounded-full bg-slate-200 dark:bg-slate-700/70"
 							aria-hidden="true"
 						></span>
 
 						{#if bodyAsComment}
 							<div class="relative">
-								<span class="absolute -left-7 top-2.5 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 border-2 border-white dark:border-slate-900 text-slate-500">
-									<Icon name="lucide:message-square" class="w-2.5 h-2.5" />
+								<span class="absolute -left-10 top-1.5 flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 border-2 border-white dark:border-slate-900 text-slate-500 dark:text-slate-400">
+									<Icon name="lucide:message-square" class="w-3.5 h-3.5" />
 								</span>
 								<!-- No onDelete: an item's body cannot be deleted on its own. -->
 								<CommentCard
@@ -397,29 +458,33 @@
 							</div>
 						{/if}
 
-						{#each detail.events as event (event.id)}
-							<TimelineEvent {event} webRoot={webRoot} />
-						{/each}
-
-						{#each detail.comments as comment (comment.id)}
-							<div class="relative">
-								<span class="absolute -left-7 top-2.5 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 border-2 border-white dark:border-slate-900 text-slate-500">
-									<Icon
-										name={comment.source === 'review-summary'
-											? 'lucide:git-pull-request-arrow'
-											: comment.source === 'review'
-												? 'lucide:file-text'
-												: 'lucide:message-square'}
-										class="w-2.5 h-2.5"
+						<!-- One sequence in time order. Events and comments used to be two
+						     lists one after the other, so an assignment made today sat
+						     above last week's comments. -->
+						{#each timeline as entry (entry.key)}
+							{#if entry.event}
+								<TimelineEvent event={entry.event} webRoot={webRoot} />
+							{:else if entry.comment}
+								{@const comment = entry.comment}
+								<div class="relative">
+									<span class="absolute -left-10 top-1.5 flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 border-2 border-white dark:border-slate-900 text-slate-500 dark:text-slate-400">
+										<Icon
+											name={comment.source === 'review-summary'
+												? 'lucide:git-pull-request-arrow'
+												: comment.source === 'review'
+													? 'lucide:file-text'
+													: 'lucide:message-square'}
+											class="w-3.5 h-3.5"
+										/>
+									</span>
+									<CommentCard
+										{comment}
+										authorUrl={profileUrl(comment.author)}
+										onSave={(body) => workStore.updateComment(comment, body)}
+										onDelete={() => workStore.deleteComment(comment)}
 									/>
-								</span>
-								<CommentCard
-									{comment}
-									authorUrl={profileUrl(comment.author)}
-									onSave={(body) => workStore.updateComment(comment, body)}
-									onDelete={() => workStore.deleteComment(comment)}
-								/>
-							</div>
+								</div>
+							{/if}
 						{/each}
 					</div>
 

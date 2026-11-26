@@ -2,10 +2,9 @@
 	/**
 	 * The list of work items.
 	 *
-	 * Every row carries "Start work" rather than hiding it behind the detail
-	 * view: the whole point of this surface is going from a list of things to do
-	 * to an agent doing one of them, and making that two clicks deep would be
-	 * burying the feature inside its own panel.
+	 * Rows are navigation only. "Start work" used to sit on every row, which in
+	 * a Git-panel-width column was a column of identical buttons squeezing every
+	 * title onto two lines; it lives in the item's header, one click away.
 	 */
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
@@ -13,9 +12,20 @@
 	import { relativeTime } from '$frontend/utils/relative-time';
 	import type { IconName } from '$shared/types/ui/icons';
 
+	interface Props {
+		/** Called after a row is opened, so a one-column panel can show the item. */
+		onOpen?: () => void;
+	}
+
+	const { onOpen }: Props = $props();
+
 	const items = $derived(workStore.items);
+
+	function open(item: WorkItem) {
+		void workStore.select(item);
+		onOpen?.();
+	}
 	const selectedId = $derived(workStore.selectedId);
-	const startingId = $derived(workStore.startingId);
 
 	/** Colour and glyph carry the state category, never the provider's wording. */
 	function stateStyle(item: WorkItem): { icon: IconName; class: string } {
@@ -40,7 +50,7 @@
 </script>
 
 {#if items.length === 0}
-	<div class="flex flex-col items-center justify-center gap-2 h-full px-6 text-center">
+	<div class="flex flex-col items-center justify-center gap-2 py-8 px-6 text-center">
 		<Icon name="lucide:inbox" class="w-8 h-8 text-slate-400 dark:text-slate-600" />
 		<p class="text-sm text-slate-600 dark:text-slate-400 m-0">Nothing here</p>
 		<p class="text-xs text-slate-500 dark:text-slate-500 m-0">
@@ -59,11 +69,11 @@
 						: 'hover:bg-slate-50 dark:hover:bg-slate-800/40'}"
 					role="button"
 					tabindex="0"
-					onclick={() => workStore.select(item)}
+					onclick={() => open(item)}
 					onkeydown={(event) => {
 						if (event.key === 'Enter' || event.key === ' ') {
 							event.preventDefault();
-							workStore.select(item);
+							open(item);
 						}
 					}}
 				>
@@ -99,29 +109,6 @@
 						{/if}
 					</div>
 
-					<!--
-						Always visible, never hover-revealed. A touch screen has no
-						hover, so a control that only appears on hover is a control a
-						phone user cannot reach at all.
-					-->
-					<button
-						type="button"
-						class="flex items-center justify-center gap-1 h-7 shrink-0 px-1.5 text-[0.7rem] font-medium rounded-md border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 cursor-pointer transition-colors duration-150 hover:border-violet-500/50 hover:text-violet-600 dark:hover:text-violet-400 disabled:opacity-60"
-						disabled={startingId !== null}
-						onclick={(event) => {
-							event.stopPropagation();
-							workStore.startWork(item);
-						}}
-						title="Create a worktree and start a session on this item"
-					>
-						{#if startingId === item.id}
-							<Icon name="lucide:loader-circle" class="w-3 h-3 animate-spin" />
-							Starting…
-						{:else}
-							<Icon name="lucide:play" class="w-3 h-3" />
-							Start
-						{/if}
-					</button>
 				</div>
 			</li>
 		{/each}

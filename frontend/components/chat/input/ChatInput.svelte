@@ -36,6 +36,9 @@
 	import DragDropOverlay from './components/DragDropOverlay.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
 	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
+	import WorkItemRefMenu from './components/WorkItemRefMenu.svelte';
+	import { hostingStore } from '$frontend/stores/features/hosting.svelte';
+	import type { WorkItem } from '$shared/types/work';
 	import ConflictResolutionModal from '$frontend/components/checkpoint/ConflictResolutionModal.svelte';
 	import { skillsStore, type AvailableSkill } from '$frontend/stores/features/skills.svelte';
 
@@ -214,6 +217,81 @@
 		inputState.saveText();
 	}
 
+	// --- `#` references (typing "#12" attaches that issue or pull request) ---
+	let refActiveIndex = $state(0);
+	let refDismissed = $state(false);
+	let refItems = $state<WorkItem[]>([]);
+	let refLoading = $state(false);
+	let refGeneration = 0;
+
+	// Only at the END of the text and after whitespace, so a "#" inside a
+	// heading, a colour or a URL fragment never opens the picker.
+	const refQuery = $derived.by(() => {
+		if (!hostingStore.offersWork || slashQuery !== null) return null;
+		const m = /(?:^|\s)#([A-Za-z0-9-]{0,40})$/.exec(messageText);
+		return m ? m[1] : null;
+	});
+	const refOpen = $derived(refQuery !== null && !refDismissed);
+
+	// The picker needs to know which service the repository is on even when the
+	// Git panel has never been opened. Cheap and local — remotes against accounts.
+	$effect(() => {
+		if (projectState.currentProject?.id) untrack(() => void hostingStore.load());
+	});
+
+	$effect(() => {
+		const query = refQuery;
+		if (query === null) {
+			refDismissed = false;
+			refActiveIndex = 0;
+			refItems = [];
+			return;
+		}
+		const generation = ++refGeneration;
+		refLoading = true;
+		const handle = setTimeout(async () => {
+			const items = await hostingStore.searchWorkItems(query);
+			if (generation !== refGeneration) return;
+			refItems = items;
+			refLoading = false;
+			if (refActiveIndex >= items.length) refActiveIndex = 0;
+		}, 200);
+		return () => clearTimeout(handle);
+	});
+
+	/** UTF-8 text as base64, the form attachments are stored in. */
+	function utf8Base64(text: string): string {
+		const bytes = new TextEncoder().encode(text);
+		let binary = '';
+		for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+		return btoa(binary);
+	}
+
+	/**
+	 * Swap the typed `#query` for the item's number, and attach the item itself
+	 * as a markdown file — title, state, description and the latest discussion —
+	 * so the agent reads the issue rather than guessing what "#12" means.
+	 */
+	async function selectWorkItemRef(item: WorkItem) {
+		refDismissed = true;
+		setMessageText(messageText.replace(/#([A-Za-z0-9-]{0,40})$/, `#${item.identifier} `));
+		textareaElement?.focus();
+		adjustTextareaHeight();
+		inputState.saveText();
+		try {
+			const doc = await hostingStore.workItemMarkdown(item);
+			if (!doc) return;
+			if (fileHandling.attachedFiles.some((file) => file.file.name === doc.fileName)) return;
+			const attachment = attachmentFromBase64({ fileName: doc.fileName, mediaType: 'text/markdown', base64: utf8Base64(doc.text) });
+			if (!attachment) return;
+			fileHandling.replaceAttachments([...fileHandling.attachedFiles, attachment]);
+			inputState.saveAttachments(fileHandling.attachedFiles);
+		} catch (error) {
+			debug.warn('chat', 'Could not attach the referenced item:', error);
+			addNotification({ type: 'error', title: 'Could not attach', message: `#${item.identifier} could not be read.`, duration: 4000 });
+		}
+	}
+
 	// --- Attachments ---
 
 	// Any file can be attached: the server sends what the model reads inline
@@ -236,6 +314,29 @@
 		inputState.saveText();
 	};
 	const handleKeyDown = (event: KeyboardEvent) => {
+		// The `#` picker owns navigation keys while it has something to pick.
+		if (refOpen && refItems.length > 0) {
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				refActiveIndex = (refActiveIndex + 1) % refItems.length;
+				return;
+			}
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				refActiveIndex = (refActiveIndex - 1 + refItems.length) % refItems.length;
+				return;
+			}
+			if (event.key === 'Enter' || event.key === 'Tab') {
+				event.preventDefault();
+				void selectWorkItemRef(refItems[refActiveIndex]);
+				return;
+			}
+		}
+		if (refOpen && event.key === 'Escape') {
+			event.preventDefault();
+			refDismissed = true;
+			return;
+		}
 		// Slash menu owns navigation keys while it's open.
 		if (slashOpen) {
 			if (event.key === 'ArrowDown') {
@@ -520,6 +621,17 @@
 				activeIndex={slashActiveIndex}
 				onselect={selectSlashCommand}
 				onhover={(i) => (slashActiveIndex = i)}
+			/>
+		{/if}
+
+		{#if refOpen}
+			<WorkItemRefMenu
+				items={refItems}
+				activeIndex={refActiveIndex}
+				isLoading={refLoading}
+				serviceName={hostingStore.providerName ?? 'the repository'}
+				onselect={(item) => void selectWorkItemRef(item)}
+				onhover={(i) => (refActiveIndex = i)}
 			/>
 		{/if}
 
