@@ -142,8 +142,6 @@
     "mssql": "12.7.0",
     "nanoid": "5.1.6",
     "puppeteer": "24.38.0",
-    "puppeteer-extra": "3.3.6",
-    "puppeteer-extra-plugin-stealth": "2.11.2",
     "qrcode": "1.5.4",
     "sharp": "0.34.5",
     "sigma": "3.0.3",

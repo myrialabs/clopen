@@ -42,6 +42,8 @@ import { DEFAULT_STREAMING_CONFIG, resolveCodecCandidates } from './types';
 import { videoEncoderScript } from './scripts/video-stream';
 import { audioCaptureScript } from './scripts/audio-stream';
 import { applyViewport } from './viewport';
+import { outsideBotChecks } from './bot-check-frames';
+import { exposeBinding } from './page-binding';
 
 /**
  * Install the audio tap in every frame.
@@ -50,7 +52,8 @@ import { applyViewport } from './viewport';
  * inside an iframe — an embedded player, anything served from a CDN origin —
  * was never tapped and the preview played silently. The script's own
  * idempotency guard makes the repeat injections harmless, and it relays its
- * encoded chunks up to the top frame's DataChannel.
+ * encoded chunks up to the top frame's DataChannel. Bot-check frames are
+ * skipped, as everywhere else — see `bot-check-frames.ts`.
  */
 async function injectAudioCaptureIntoAllFrames(
 	page: Page,
@@ -59,7 +62,7 @@ async function injectAudioCaptureIntoAllFrames(
 	await Promise.all(
 		page.frames().map(async (frame) => {
 			try {
-				await frame.evaluate(audioCaptureScript, audioConfig);
+				await frame.evaluate(outsideBotChecks(audioCaptureScript, audioConfig));
 			} catch {
 				// Detached or navigating; the on-new-document copy covers it.
 			}
@@ -878,25 +881,17 @@ export class BrowserVideoCapture extends EventEmitter {
 	 *
 	 * Whether they are already installed is remembered here rather than probed
 	 * from the page. `typeof window.__sendIceCandidate === 'function'` describes
-	 * the *current document*, and Puppeteer re-installs bindings on each new
-	 * one — so mid-navigation the probe says "absent" while Puppeteer's own
-	 * registry says "present", and `exposeFunction` throws. That threw out of
-	 * the whole handshake, and every client retry hit the same window: the
-	 * preview sat on "Loading preview…" until something else moved the page.
+	 * the *current document*, and bindings are re-installed on each new one —
+	 * so mid-navigation the probe says "absent" while the binding is in fact
+	 * registered. Puppeteer's `exposeFunction` threw on that, which took out the
+	 * whole handshake; `exposeBinding` just swaps the handler, but probing the
+	 * page would still answer the wrong question.
 	 */
 	private async exposeBindings(sessionId: string, page: Page): Promise<void> {
 		const state = this.injectionState(sessionId);
 		if (state.bindingsExposed) return;
 
-		/** Already-registered is success, not failure — see above. */
-		const expose = async (name: string, fn: (...args: any[]) => void) => {
-			try {
-				await page.exposeFunction(name, fn);
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				if (!message.includes('already exists')) throw error;
-			}
-		};
+		const expose = (name: string, fn: (...args: any[]) => void) => exposeBinding(page, name, fn);
 
 		await expose('__sendIceCandidate', (viewerId: string, candidate: RTCIceCandidateInit) => {
 			this.emit('ice-candidate', { sessionId, viewerId, candidate, from: 'headless' });
@@ -982,7 +977,7 @@ export class BrowserVideoCapture extends EventEmitter {
 		// after enough switches each page load ran a stack of them, and the only
 		// cure was restarting the server.
 		if (!state.audioScriptId) {
-			const registered = await page.evaluateOnNewDocument(audioCaptureScript, audioConfig);
+			const registered = await page.evaluateOnNewDocument(outsideBotChecks(audioCaptureScript, audioConfig));
 			state.audioScriptId = (registered as { identifier?: string })?.identifier ?? 'registered';
 		}
 

@@ -3,6 +3,7 @@ import type { Page, Dialog } from 'puppeteer';
 import type { BrowserDialogResponse } from './types';
 import { debug } from '$shared/utils/logger';
 import { nanoid } from 'nanoid';
+import { exposeBinding } from './page-binding';
 
 /**
  * Browser Dialog Handler
@@ -110,12 +111,12 @@ export class BrowserDialogHandler extends EventEmitter {
 	 */
 	/**
 	 * Setup dialog bindings - MUST be called BEFORE navigation
-	 * This includes exposeFunction calls which require page to not be navigated yet
+	 * This includes binding calls which require page to not be navigated yet
 	 */
 	async setupDialogBindings(sessionId: string, page: Page) {
 		debug.log('preview', `🎭 Setting up dialog bindings (pre-navigation) for session: ${sessionId}`);
 
-		// Setup print interception bindings - requires exposeFunction
+		// Setup print interception bindings - requires a page binding
 		await this.setupPrintInterception(sessionId, page);
 
 		debug.log('preview', `✅ Dialog bindings setup complete for session: ${sessionId}`);
@@ -249,9 +250,9 @@ export class BrowserDialogHandler extends EventEmitter {
 	 */
 	private async setupPrintInterception(sessionId: string, page: Page) {
 		try {
-			// IMPORTANT: exposeFunction must be called BEFORE any navigation or evaluateOnNewDocument
+			// IMPORTANT: the binding must exist BEFORE any navigation or evaluateOnNewDocument
 			// Listen for print requests
-			await page.exposeFunction('__notifyPrintRequest__', () => {
+			await exposeBinding(page, '__notifyPrintRequest__', () => {
 				const printEvent: any = {
 					sessionId, // Internal use only, converted to tabId at previewService layer
 					timestamp: Date.now()
@@ -288,7 +289,7 @@ export class BrowserDialogHandler extends EventEmitter {
 
 			debug.log('preview', `✅ Print interception setup successfully for session: ${sessionId}`);
 		} catch (error) {
-			// If exposeFunction fails (e.g., target closed), print interception won't work
+			// If the binding fails (e.g., target closed), print interception won't work
 			// but we shouldn't fail the entire session creation
 			debug.warn('preview', `⚠️ Print interception setup failed for session ${sessionId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
 			debug.warn('preview', `   Print functionality will not be available for this session`);

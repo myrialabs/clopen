@@ -488,11 +488,9 @@ process.on('SIGHUP', () => {
 // These can occur when third-party SDKs emit asynchronous errors that bypass
 // the normal try/catch flow, e.g.:
 //  - AI engine SDKs whose subprocess is killed during initialization
-//  - puppeteer-extra's stealth evasions fire a non-awaited
-//    `Network.setUserAgentOverride` on a newly created popup target; when the
-//    target closes mid-call the resulting TargetCloseError rejects with no
-//    handler attached and would otherwise kill the whole server while the user
-//    is interacting with the Preview.
+//  - CDP calls left in flight on a Preview target that closes mid-call (a
+//    popup, a tab the user just closed), which reject with TargetCloseError
+//    and would otherwise kill the whole server.
 //
 // IMPORTANT (Bun routing — verified on Bun 1.3.14): top-level unhandled
 // rejections are suppressed by Node's process.on('unhandledRejection') but NOT
