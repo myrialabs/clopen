@@ -39,6 +39,11 @@ Fill a form
 Check a layout on mobile
   [{set_viewport, device:"iphone-16"}, {wait_for, state:"networkIdle"}, {screenshot}]
   Same page on Android in dark mode: [{set_viewport, device:"galaxy-s24", colorScheme:"dark"}, {screenshot}]
+  Every device at once, without changing the tab: [{screenshot, devices:["mobile","tablet","laptop","desktop"]}]
+
+Screenshots to show the user
+  [{screenshot, deviceFrame:true, saveTo:"screenshots/home.png"}] — the page inside its device mockup.
+  One part of the page: {screenshot, selector:"#pricing"}, or what is under a point: {screenshot, point:{x:640, y:300}}.
 
 Debug a page that misbehaves
   [{clear_console}, {click, selector:"#save"}, {wait, ms:500}, {console_logs, level:"error"}]`;

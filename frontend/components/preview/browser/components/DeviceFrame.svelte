@@ -8,7 +8,7 @@
 		type Rect,
 		type ViewportSize
 	} from '$frontend/utils/preview-constants';
-	import { foregroundFor } from '../core/page-colors';
+	import { foregroundFor } from '$shared/utils/page-colors';
 
 	interface Props {
 		deviceSize: DeviceSize;

@@ -17,7 +17,7 @@ import { chatModelState } from '$frontend/stores/ui/chat-model.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState, setCurrentSession, createSession, updateSession } from '$frontend/stores/core/sessions.svelte';
 import { isUnconfirmedMessage, settleUnconfirmedBubbles, bubbleToComposer } from '$frontend/utils/unconfirmed-messages';
-import { returnToComposer } from '$frontend/stores/ui/chat-input.svelte';
+import { addToComposer } from '$frontend/stores/ui/chat-input.svelte';
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { setRateLimit } from '$frontend/stores/ui/rate-limit.svelte';
 import type { UnifiedMessage, AssistantMessage, ReasoningMessage } from '$shared/types/unified';
@@ -519,7 +519,7 @@ class ChatService {
 
     if (lost.length === 0) return;
     for (const bubble of lost) {
-      returnToComposer({ chatSessionId: sessionId, ...bubbleToComposer(bubble) });
+      addToComposer({ chatSessionId: sessionId, ...bubbleToComposer(bubble) });
     }
     debug.warn('chat', `${lost.length} message(s) never reached the server; returned to the composer`);
     addNotification({

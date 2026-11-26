@@ -312,6 +312,31 @@ function setBackendTabFullscreen(backendTabId: string, active: boolean): void {
 	fullscreenBackendIds = next;
 }
 
+/**
+ * The screenshot shutter, by backend tab id: when a capture last finished, and
+ * whether a full-page one is running now.
+ *
+ * Every viewer of a tab sees the flash, whoever took the picture — the user
+ * here, someone else on the project, or an agent — so it is driven by the
+ * backend's event rather than by the button that was pressed.
+ */
+interface ScreenshotShutter {
+	flashedAt: number;
+	capturingFullPage: boolean;
+	source: 'user' | 'agent';
+}
+
+let screenshotShutters = $state<Record<string, ScreenshotShutter>>({});
+
+export function getScreenshotShutter(backendTabId: string | null): ScreenshotShutter | null {
+	return (backendTabId && screenshotShutters[backendTabId]) || null;
+}
+
+function setScreenshotShutter(backendTabId: string, patch: Partial<ScreenshotShutter>): void {
+	const current = screenshotShutters[backendTabId] ?? { flashedAt: 0, capturingFullPage: false, source: 'user' };
+	screenshotShutters = { ...screenshotShutters, [backendTabId]: { ...current, ...patch } };
+}
+
 /** Add/remove a backend tab id from the controlled set (reassign for reactivity). */
 function setMcpControlled(backendTabId: string, controlled: boolean): void {
 	if (controlled === mcpControlledBackendIds.has(backendTabId)) return;
@@ -901,6 +926,20 @@ export function initPreviewTabSync(): void {
 	ws.on('preview:browser-fullscreen-state' as any, (data: any) => {
 		if (!isEventForActiveProject(data)) return;
 		setBackendTabFullscreen(data.tabId, !!data.active);
+	});
+
+	ws.on('preview:browser-screenshot', (data) => {
+		if (!isEventForActiveProject(data)) return;
+		if (data.phase === 'start') {
+			setScreenshotShutter(data.tabId, { capturingFullPage: data.fullPage, source: data.source });
+			return;
+		}
+		setScreenshotShutter(data.tabId, {
+			capturingFullPage: false,
+			source: data.source,
+			// A failed capture took no picture, so there is nothing to flash for.
+			...(data.ok ? { flashedAt: Date.now() } : {})
+		});
 	});
 
 	ws.on('preview:browser-page-colors' as any, (data: any) => {

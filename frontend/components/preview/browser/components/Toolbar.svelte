@@ -1,6 +1,8 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import ScreenshotMenu from './ScreenshotMenu.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
+	import type { ScreenshotMenuAction } from '../core/screenshot-controller.svelte';
 	import { onDestroy } from 'svelte';
 
 	let {
@@ -56,6 +58,12 @@
 		 */
 		sleepingTabIds = new Set<string>(),
 
+		// Screenshot state — see ScreenshotMenu
+		screenshotBusy = false,
+		screenshotFullPageAvailable = true,
+		screenshotFrameAvailable = false,
+		hasOpenChat = false,
+
 		// Callbacks
 		onGoClick = () => {},
 		onRefresh = () => {},
@@ -74,7 +82,8 @@
 		onNewTab = () => {},
 		onCloseAllTabs = () => {},
 		onOpenBrowsingData = () => {},
-		onOpenDiagnostics = () => {}
+		onOpenDiagnostics = () => {},
+		onScreenshotAction = (_action: ScreenshotMenuAction) => {}
 	} = $props();
 
 	/**
@@ -581,6 +590,15 @@
 					<Icon name="lucide:keyboard" class="h-4 w-4" />
 				</button>
 			{/if}
+
+			<ScreenshotMenu
+				disabled={!url || !sessionId}
+				busy={screenshotBusy}
+				fullPageAvailable={screenshotFullPageAvailable}
+				frameAvailable={screenshotFrameAvailable}
+				{hasOpenChat}
+				onAction={onScreenshotAction}
+			/>
 
 			<button
 				type="button"

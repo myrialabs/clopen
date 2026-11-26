@@ -17,6 +17,7 @@
  * - data.ts: Browsing data (list sites, clear one or all)
  * - mcp.ts: MCP tab coordination response handlers
  * - host.ts: Viewer-answered capabilities (geolocation, camera, clipboard, files)
+ * - screenshot.ts: Screenshots (capture, element picker, device sizes, save)
  *
  * Available endpoints:
  * - preview:browser-tab-open - Open new browser tab (with optional URL)
@@ -42,6 +43,11 @@
  * - preview:browser-stream-answer - Send stream answer
  * - preview:browser-stream-ice - Exchange ICE candidates
  * - preview:browser-stream-stop - Stop streaming
+ * - preview:browser-screenshot - Capture a tab
+ * - preview:browser-screenshot-element-at - Element under the picker
+ * - preview:browser-screenshot-responsive - Capture at other device sizes
+ * - preview:browser-screenshot-save - Save an image into the workspace
+ * - preview:browser-screenshot-ignore-folder - Add the screenshot folder to .gitignore
  */
 
 import { t } from 'elysia';
@@ -57,6 +63,7 @@ import { streamPreviewHandler } from './browser/webcodecs';
 import { nativeUIPreviewHandler } from './browser/native-ui';
 import { mcpPreviewHandler } from './browser/mcp';
 import { hostPreviewHandler } from './browser/host';
+import { screenshotPreviewHandler } from './browser/screenshot';
 import { previewWatchHandler } from './watchers';
 
 export const previewRouter = createRouter()
@@ -71,6 +78,7 @@ export const previewRouter = createRouter()
 	.merge(nativeUIPreviewHandler)
 	.merge(mcpPreviewHandler)
 	.merge(hostPreviewHandler)
+	.merge(screenshotPreviewHandler)
 	.merge(previewWatchHandler)
 	// Server-emitted events (for type safety)
 	.emit('preview:browser-tab-opened', t.Object({
@@ -113,6 +121,21 @@ export const previewRouter = createRouter()
 		 * the strip says so rather than showing it as a page still working.
 		 */
 		sleeping: t.Boolean(),
+		timestamp: t.Number()
+	}))
+	.emit('preview:browser-screenshot', t.Object({
+		projectId: t.String(),
+		tabId: t.String(),
+		/** Who took it — the viewer's controls or an agent. */
+		source: t.Union([t.Literal('user'), t.Literal('agent')]),
+		/**
+		 * `start` is only sent for a full-page capture, which visibly relays
+		 * out the page while it runs; `end` is sent for every capture and is
+		 * what the shutter flashes on.
+		 */
+		phase: t.Union([t.Literal('start'), t.Literal('end')]),
+		fullPage: t.Boolean(),
+		ok: t.Optional(t.Boolean()),
 		timestamp: t.Number()
 	}))
 	.emit('preview:browser-tab-navigated', t.Object({

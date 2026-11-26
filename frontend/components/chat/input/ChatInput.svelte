@@ -21,7 +21,7 @@
 	import { editModeState } from '$frontend/stores/ui/edit-mode.svelte';
 	import { claudeAccountsStore } from '$frontend/stores/features/claude-accounts.svelte';
 	import { takeQueued, type QueuedMessage } from '$frontend/stores/ui/message-queue.svelte';
-	import { chatInputState, takeReturned } from '$frontend/stores/ui/chat-input.svelte';
+	import { chatInputState, takeComposerAdditions } from '$frontend/stores/ui/chat-input.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ws, { onWsReconnect } from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';
@@ -307,12 +307,13 @@
 		}
 	}
 
-	// A message that never reached the server comes back into its session's box.
+	// A message that never reached the server comes back into its session's
+	// box; a screenshot sent from the preview lands here the same way.
 	$effect(() => {
 		const chatSessionId = sessionState.currentSession?.id;
-		if (!chatSessionId || !chatInputState.returned.some((m) => m.chatSessionId === chatSessionId)) return;
+		if (!chatSessionId || !chatInputState.pending.some((m) => m.chatSessionId === chatSessionId)) return;
 		untrack(() => {
-			for (const message of takeReturned(chatSessionId)) appendToComposer(message.text, message.attachments);
+			for (const message of takeComposerAdditions(chatSessionId)) appendToComposer(message.text, message.attachments);
 		});
 	});
 

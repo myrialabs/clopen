@@ -9,6 +9,7 @@
 	import ConsolePanel from './components/ConsolePanel.svelte';
 	import DialogOverlay from './components/DialogOverlay.svelte';
 	import PermissionPrompt from './components/PermissionPrompt.svelte';
+	import ScreenshotEditor from './components/ScreenshotEditor.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import type {
 		BrowserSelectInfo,
@@ -20,12 +21,15 @@
 	} from '$frontend/utils/native-ui';
 	import { fly } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, untrack } from 'svelte';
 	import { resolveViewport, type DeviceSize, type PreviewZoom, type Rotation, type ViewportSize } from '$frontend/utils/preview-constants';
 	import { debug } from '$shared/utils/logger';
 	import { createBrowserCoordinator } from './core/coordinator.svelte';
 	import { cancelBrowserLaunch } from './core/tab-operations.svelte';
 	import { setDisplayScale, goHistory, setInteractionTabId } from './core/interactions.svelte';
+	import { createScreenshotController } from './core/screenshot-controller.svelte';
+	import { hasDeviceFrame } from '$shared/utils/device-frame';
+	import { hasOpenChat } from '$frontend/services/preview/browser/screenshot.service';
 	import { previewHostBridge } from '$frontend/services/preview/browser/host-bridge.service';
 	import { browserConsoleService } from '$frontend/services/preview/browser/browser-console.service';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -33,6 +37,7 @@
 		getMcpActivity,
 		getMcpCursor,
 		getPageColors,
+		getScreenshotShutter,
 		isBackendTabFullscreen,
 		isBackendTabSleeping
 	} from '$frontend/stores/features/preview-tabs-workspace.svelte';
@@ -236,6 +241,21 @@
 
 	const { tabManager, streamHandler, nativeUIHandler, mcpHandler } = coordinator;
 
+	/** The page the screenshot controls act on: the tab on screen, as it is emulated. */
+	const screenshotViewport = $derived(resolveViewport(deviceSize as DeviceSize, rotation as Rotation, viewport));
+	const screenshots = createScreenshotController({
+		context: () =>
+			sessionId
+				? { tabId: sessionId, deviceSize: deviceSize as DeviceSize, deviceModel, viewport: screenshotViewport }
+				: null,
+		pageColors: () => getPageColors(sessionId),
+		isAgentHolding: () => mcpHandler.isCurrentTabMcpControlled()
+	});
+	const screenshotShutter = $derived(getScreenshotShutter(sessionId));
+	const screenshotFrameAvailable = $derived(
+		hasDeviceFrame({ deviceSize: deviceSize as DeviceSize, viewport: screenshotViewport, deviceModel })
+	);
+
 	// Derived states from tab manager
 	const tabs = $derived(tabManager.tabs);
 
@@ -357,6 +377,8 @@
 		currentSelectInfo = null;
 		currentContextMenuInfo = null;
 		currentNativePicker = null;
+		// A picker is choosing something on the page that was on screen.
+		untrack(() => screenshots.cancelSelection());
 	});
 
 	/** Bounds are only read when a popup opens, so refreshing then is enough. */
@@ -881,6 +903,10 @@
 		if (!currentContextMenuInfo) return;
 		const menuInfo = currentContextMenuInfo;
 		currentContextMenuInfo = null;
+		// Screenshot entries are carried out here — before anything is awaited,
+		// so a copy still counts as part of the click. The backend is told too,
+		// which is what closes the menu on its side.
+		screenshots.runContextMenuItem(itemId, { x: menuInfo.x, y: menuInfo.y });
 		await nativeUIHandler.respondContextMenuItem(menuInfo, itemId);
 	}
 
@@ -994,6 +1020,11 @@
 			{sleepingTabIds}
 			onOpenBrowsingData={() => (isBrowsingDataOpen = true)}
 			onOpenDiagnostics={() => (isDiagnosticsOpen = true)}
+			screenshotBusy={screenshots.busy}
+			screenshotFullPageAvailable={screenshots.fullPageAvailable}
+			{screenshotFrameAvailable}
+			hasOpenChat={hasOpenChat()}
+			onScreenshotAction={screenshots.runMenuAction}
 			onGoClick={handleGoClick}
 			onRefresh={refreshPreview}
 			onStop={stopLoading}
@@ -1055,6 +1086,11 @@
 				onInteraction={handleCanvasInteraction}
 				{loadStopped}
 				onRetry={handleGoClick}
+				screenshotFlashAt={screenshotShutter?.flashedAt ?? 0}
+				capturingFullPage={screenshotShutter?.capturingFullPage ?? false}
+				screenshotSelectMode={screenshots.selectMode}
+				onScreenshotSelect={screenshots.completeSelection}
+				onScreenshotSelectCancel={screenshots.cancelSelection}
 			/>
 
 			<!-- Page-owned prompts. Anchored to the preview area rather than the
@@ -1154,6 +1190,12 @@
      should not strand a half-finished clear. -->
 <BrowsingDataModal bind:isOpen={isBrowsingDataOpen} />
 <DiagnosticsModal bind:isOpen={isDiagnosticsOpen} />
+<ScreenshotEditor
+	images={screenshots.editorImages}
+	pageColors={getPageColors(sessionId)}
+	onDeliver={screenshots.deliverFromEditor}
+	onClose={screenshots.closeEditor}
+/>
 
 <style>
 	/* Dot Pattern Background */
