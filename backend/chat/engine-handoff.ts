@@ -43,6 +43,7 @@ import type {
 	UserContentBlock,
 	ImageBlock,
 	DocumentBlock,
+	FileBlock,
 } from '$shared/types/unified';
 
 // ============================================================================
@@ -63,7 +64,7 @@ const CHARS_PER_TOKEN = 4;
 // ============================================================================
 
 type Entry =
-	| { kind: 'user'; text: string; attachments: Array<ImageBlock | DocumentBlock> }
+	| { kind: 'user'; text: string; attachments: Array<ImageBlock | DocumentBlock | FileBlock> }
 	| { kind: 'assistant'; text: string }
 	| { kind: 'reasoning'; text: string }
 	| { kind: 'tool_use'; id: string; name: string; input: unknown }
@@ -194,13 +195,13 @@ function collect(messages: UnifiedMessage[]): Entry[] {
 			case 'user': {
 				const user = msg as UserMessage;
 				const texts: string[] = [];
-				const attachments: Array<ImageBlock | DocumentBlock> = [];
+				const attachments: Array<ImageBlock | DocumentBlock | FileBlock> = [];
 				let emittedResult = false;
 
 				for (const block of user.content) {
 					if (block.type === 'text') {
 						if (block.text.trim()) texts.push(block.text);
-					} else if (block.type === 'image' || block.type === 'document') {
+					} else if (block.type === 'image' || block.type === 'document' || block.type === 'file') {
 						attachments.push(block);
 					} else if (block.type === 'tool_result') {
 						entries.push({
@@ -278,6 +279,11 @@ function renderEntries(entries: Entry[], clearedToolUseIds: Set<string>, support
 			case 'user': {
 				if (entry.text) lines.push(`[user]\n${entry.text}`);
 				for (const att of entry.attachments) {
+					// A saved file was never inline: the copy on disk is still there to read.
+					if (att.type === 'file') {
+						lines.push(`[user attachment: ${describeAttachment(att)}, saved at ${att.path}]`);
+						continue;
+					}
 					const supported = att.type === 'image' ? support.image : support.document;
 					if (supported) {
 						attachments.push(att);
@@ -317,9 +323,11 @@ function renderEntries(entries: Entry[], clearedToolUseIds: Set<string>, support
 	return { lines, attachments, droppedAttachments };
 }
 
-function describeAttachment(att: ImageBlock | DocumentBlock): string {
-	if (att.type === 'document') return att.title ? `${att.title} (${att.mediaType})` : att.mediaType;
-	return att.mediaType;
+/** Its number first, so `@2` in the replayed text still points at it. */
+function describeAttachment(att: ImageBlock | DocumentBlock | FileBlock): string {
+	const number = att.index ? `@${att.index} ` : '';
+	if (att.title) return `${number}${att.title} (${att.mediaType})`;
+	return `${number}${att.mediaType}`;
 }
 
 function estimateTokens(lines: string[]): number {

@@ -20,6 +20,8 @@
 	import { setInputText } from '$frontend/stores/ui/chat-input.svelte';
 	import { startEdit, shouldDimMessage, type EditAttachment } from '$frontend/stores/ui/edit-mode.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { rewriteMentions } from '$shared/utils/attachment-mentions';
+	import ws from '$frontend/utils/ws';
 	import MessageBubbleClassic from './variants/classic/MessageBubble.svelte';
 	import MessageBubbleCompact from './variants/compact/MessageBubble.svelte';
 	import { settings } from '$frontend/stores/features/settings.svelte';
@@ -333,27 +335,69 @@
 			return;
 		}
 
-		// Extract message text and attachments
+		// Extract message text and attachments, each under the number its text uses
 		const textParts: string[] = [];
-		const messageAttachments: EditAttachment[] = [];
+		const found: Array<Promise<EditAttachment | null>> = [];
 
 		if (roleCategory === 'user' && message.type === 'user' && 'content' in message) {
 			for (const item of message.content) {
-				if (item.type === 'text' && 'text' in item) {
-					textParts.push((item as any).text);
-				} else if ((item.type === 'image' || item.type === 'document') && 'data' in item) {
-					const mediaType: string = (item as any).mediaType || (item.type === 'image' ? 'image/png' : 'application/pdf');
+				if (item.type === 'text') {
+					// The server's note about a file it couldn't keep is not something the user wrote.
+					if (!/^\[Attachment @\d+ .*\]$/s.test(item.text)) textParts.push(item.text);
+				} else if (item.type === 'image' || item.type === 'document') {
+					const mediaType = item.mediaType || (item.type === 'image' ? 'image/png' : 'application/pdf');
 					const extension = mediaType.split('/')[1] || 'bin';
-					messageAttachments.push({
+					found.push(Promise.resolve({
 						type: item.type,
-						data: (item as any).data,
+						data: item.data,
 						mediaType,
-						fileName: (item as any).title || `${item.type === 'image' ? 'image' : 'document'}-${messageAttachments.length + 1}.${extension}`
-					});
+						fileName: item.title || `${item.type === 'image' ? 'image' : 'document'}-${found.length + 1}.${extension}`
+					}));
+				} else if (item.type === 'file') {
+					// Saved to the session's folder rather than kept in the message: read it back.
+					const fileName = item.title || `attachment-${found.length + 1}`;
+					found.push(
+						ws.http('files:read-content', { path: item.path })
+							.then((response): EditAttachment | null => response.content
+								? {
+									type: item.mediaType.startsWith('image/') ? 'image' : 'document',
+									data: response.content,
+									mediaType: item.mediaType,
+									fileName
+								}
+								: null)
+							.catch((error) => {
+								debug.warn('chat', `Could not read ${item.path} back for editing:`, error);
+								return null;
+							})
+					);
 				}
 			}
 		}
-		const messageText = textParts.join('\n\n');
+		const resolved = await Promise.all(found);
+		const messageAttachments = resolved.filter((attachment): attachment is EditAttachment => attachment !== null);
+
+		// A file that couldn't be read back is left out; `@N` follows, the way
+		// removing it from the box would.
+		let messageText = textParts.join('\n\n');
+		const lost = resolved.length - messageAttachments.length;
+		if (lost > 0) {
+			const renumbered = new Map<number, number | string>();
+			let next = 0;
+			resolved.forEach((attachment, i) => {
+				if (attachment) renumbered.set(i + 1, ++next);
+			});
+			messageText = rewriteMentions(messageText, (index) => {
+				if (index > resolved.length) return null;
+				return renumbered.get(index) ?? 'a file that is no longer available';
+			});
+			addNotification({
+				type: 'warning',
+				title: 'Some files are gone',
+				message: `${lost} attached ${lost === 1 ? 'file is' : 'files are'} no longer on disk and won't be in the edit.`,
+				duration: 4000
+			});
+		}
 
 		// Enter edit mode; where it rewinds to is resolved by the server on submit
 		if (!startEdit(messageId, messageText, messageTimestamp, messageAttachments)) return;

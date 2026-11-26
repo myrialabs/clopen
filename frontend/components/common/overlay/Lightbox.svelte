@@ -1,235 +1,224 @@
+<!--
+  Full-screen viewer for chat attachments — the ones in the message box and
+  the ones in sent messages. Shows one file at a time through MediaPreview (the
+  same viewer as the Files panel) and steps through the rest with the arrows,
+  the keyboard or a swipe, each one under the number `@N` refers to.
+-->
+<script lang="ts" module>
+	export interface ViewerItem {
+		name: string;
+		mediaType: string;
+		/** Size in bytes, when known before loading. */
+		size?: number;
+		/** The attachment's number in its message — what `@N` names. */
+		number?: number;
+		/** The bytes, for a file held in the browser. */
+		base64?: string;
+		/** Where the file is on the server, for one saved there. */
+		path?: string;
+	}
+</script>
+
 <script lang="ts">
-	import { fade, scale } from 'svelte/transition';
+	import { fade } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
+	import MediaPreview from '$frontend/components/common/media/MediaPreview.svelte';
+	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatFileSize } from '$frontend/utils/format';
-	import { debug } from '$shared/utils/logger';
+	import { previewKind } from '$frontend/utils/file-type';
+	import { base64ToBlob } from '$frontend/utils/base64';
 	import { portal } from '$frontend/utils/portal';
+	import { debug } from '$shared/utils/logger';
+	import ws from '$frontend/utils/ws';
 
 	interface Props {
 		isOpen: boolean;
-		type: 'image' | 'document';
-		mediaType: string;
-		data: string;
+		items: ViewerItem[];
+		/** The item on screen. */
+		index?: number;
 		onClose: () => void;
-		fileName?: string;
 	}
 
-	let {
-		isOpen = $bindable(),
-		type,
-		mediaType,
-		data,
-		onClose,
-		fileName = 'Document'
-	}: Props = $props();
+	let { isOpen = $bindable(), items, index = $bindable(0), onClose }: Props = $props();
 
-	let modalElement = $state<HTMLDivElement>();
+	const item = $derived(items[Math.min(Math.max(index, 0), Math.max(items.length - 1, 0))] as ViewerItem | undefined);
+	const hasMany = $derived(items.length > 1);
+
+	// Each file is read once, however often it is shown or downloaded.
+	const loads = new WeakMap<ViewerItem, Promise<Blob | null>>();
+
+	function blobOf(target: ViewerItem): Promise<Blob | null> {
+		let load = loads.get(target);
+		if (!load) {
+			load = (async () => {
+				if (target.base64 !== undefined) return base64ToBlob(target.base64, target.mediaType);
+				if (target.path) {
+					const response = await ws.http('files:read-content', { path: target.path });
+					if (!response.content) return null;
+					return base64ToBlob(response.content, target.mediaType || response.contentType);
+				}
+				return null;
+			})().catch((error) => {
+				debug.warn('chat', `Could not read ${target.name}:`, error);
+				loads.delete(target);
+				return null;
+			});
+			loads.set(target, load);
+		}
+		return load;
+	}
+
+	function step(direction: 1 | -1) {
+		if (!hasMany) return;
+		index = (index + direction + items.length) % items.length;
+	}
 
 	function handleKeydown(event: KeyboardEvent) {
-		if (event.key === 'Escape' && isOpen) {
+		if (!isOpen) return;
+		if (event.key === 'Escape') {
+			event.preventDefault();
 			onClose();
+		} else if (event.key === 'ArrowRight' && hasMany) {
+			event.preventDefault();
+			step(1);
+		} else if (event.key === 'ArrowLeft' && hasMany) {
+			event.preventDefault();
+			step(-1);
 		}
 	}
 
-	function handleBackdropClick(event: MouseEvent) {
-		if (event.target === modalElement) {
-			onClose();
+	// A horizontal swipe over an image moves to the next or previous file.
+	// Documents keep their swipes: they scroll and zoom.
+	let touchStart: { x: number; y: number } | null = null;
+	function handleTouchStart(event: TouchEvent) {
+		if (event.touches.length !== 1 || !item || previewKind(item.name, item.mediaType) !== 'image') {
+			touchStart = null;
+			return;
 		}
+		touchStart = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+	}
+	function handleTouchEnd(event: TouchEvent) {
+		if (!touchStart) return;
+		const touch = event.changedTouches[0];
+		const dx = touch.clientX - touchStart.x;
+		const dy = touch.clientY - touchStart.y;
+		touchStart = null;
+		if (Math.abs(dx) > 60 && Math.abs(dy) < 50) step(dx < 0 ? 1 : -1);
 	}
 
-	function openInNewTab() {
-		try {
-			// Create a blob from the base64 data
-			const byteCharacters = atob(data);
-			const byteNumbers = new Array(byteCharacters.length);
-			for (let i = 0; i < byteCharacters.length; i++) {
-				byteNumbers[i] = byteCharacters.charCodeAt(i);
-			}
-			const byteArray = new Uint8Array(byteNumbers);
-			const blob = new Blob([byteArray], { type: mediaType });
-
-			// Create object URL and open it
-			const blobUrl = URL.createObjectURL(blob);
-			const newWindow = window.open(blobUrl, '_blank');
-
-			// Clean up the object URL after a delay to ensure the new tab has loaded
-			if (newWindow) {
-				setTimeout(() => {
-					URL.revokeObjectURL(blobUrl);
-				}, 1000);
-			}
-		} catch (error) {
-			debug.error('session', 'Failed to open attachment in new tab:', error);
-			// Fallback to data URL approach if blob creation fails
-			const dataUrl = `data:${mediaType};base64,${data}`;
-			window.open(dataUrl, '_blank');
-		}
-
-		onClose();
+	async function download() {
+		if (!item) return;
+		const target = item;
+		const blob = await blobOf(target);
+		if (!blob) return;
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = target.name;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
 	}
 
-	function downloadFile() {
-		try {
-			// Create a blob from the base64 data
-			const byteCharacters = atob(data);
-			const byteNumbers = new Array(byteCharacters.length);
-			for (let i = 0; i < byteCharacters.length; i++) {
-				byteNumbers[i] = byteCharacters.charCodeAt(i);
-			}
-			const byteArray = new Uint8Array(byteNumbers);
-			const blob = new Blob([byteArray], { type: mediaType });
-
-			// Create object URL and trigger download
-			const blobUrl = URL.createObjectURL(blob);
-			const link = document.createElement('a');
-			link.href = blobUrl;
-
-			// Determine file extension based on media type
-			let extension = '.bin';
-			if (mediaType.includes('pdf')) extension = '.pdf';
-			else if (mediaType.includes('image/png')) extension = '.png';
-			else if (mediaType.includes('image/jpeg') || mediaType.includes('image/jpg')) extension = '.jpg';
-			else if (mediaType.includes('image/gif')) extension = '.gif';
-			else if (mediaType.includes('image/svg')) extension = '.svg';
-			else if (mediaType.includes('image/webp')) extension = '.webp';
-
-			link.download = fileName || `attachment_${Date.now()}${extension}`;
-			document.body.appendChild(link);
-			link.click();
-			document.body.removeChild(link);
-
-			// Clean up
-			setTimeout(() => {
-				URL.revokeObjectURL(blobUrl);
-			}, 100);
-		} catch (error) {
-			debug.error('session', 'Failed to download attachment:', error);
+	async function openInNewTab() {
+		if (!item) return;
+		// Opened before the await, or a mobile browser blocks it as a popup.
+		const tab = window.open('', '_blank');
+		const blob = await blobOf(item);
+		if (!blob) {
+			tab?.close();
+			return;
 		}
-
-		onClose();
+		const url = URL.createObjectURL(blob);
+		if (tab) tab.location.href = url;
+		else window.open(url, '_blank');
+		setTimeout(() => URL.revokeObjectURL(url), 60_000);
 	}
 
 	$effect(() => {
-		if (isOpen) {
-			document.body.style.overflow = 'hidden';
-		} else {
-			document.body.style.overflow = '';
-		}
+		if (!isOpen) return;
+		const previous = document.body.style.overflow;
+		document.body.style.overflow = 'hidden';
+		return () => {
+			document.body.style.overflow = previous;
+		};
 	});
 </script>
 
-<svelte:window on:keydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} />
 
-{#if isOpen}
+{#if isOpen && item}
 	<div
-		bind:this={modalElement}
 		use:portal
-		class="fixed inset-0 z-[150] flex items-center justify-center bg-black/80 backdrop-blur-sm"
+		class="fixed inset-0 z-[150] flex flex-col bg-black/85 backdrop-blur-sm"
 		role="dialog"
 		aria-modal="true"
 		aria-label="View attachment"
 		tabindex="-1"
-		onclick={handleBackdropClick}
-		onkeydown={handleKeydown}
-		in:fade={{ duration: 200, easing: cubicOut }}
-		out:fade={{ duration: 150, easing: cubicOut }}
+		in:fade={{ duration: 160, easing: cubicOut }}
+		out:fade={{ duration: 120, easing: cubicOut }}
 	>
-		<!-- Close button (always visible) -->
-		<button
-			onclick={onClose}
-			class="absolute top-4 right-4 z-10 p-2.5 rounded-full bg-white/90 dark:bg-slate-800/90 hover:bg-white dark:hover:bg-slate-800 transition-all shadow-lg"
-			aria-label="Close lightbox"
-		>
-			<svg class="w-5 h-5 text-slate-700 dark:text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
-			</svg>
-		</button>
-
-		<!-- Download button -->
-		<button
-			onclick={downloadFile}
-			class="absolute top-4 right-16 z-10 p-2.5 rounded-full bg-white/90 dark:bg-slate-800/90 hover:bg-white dark:hover:bg-slate-800 transition-all shadow-lg"
-			aria-label="Download file"
-			title="Download file"
-		>
-			<svg class="w-5 h-5 text-slate-700 dark:text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-			</svg>
-		</button>
-
-		<!-- Open in new tab button -->
-		<button
-			onclick={openInNewTab}
-			class="absolute top-4 right-28 z-10 p-2.5 rounded-full bg-white/90 dark:bg-slate-800/90 hover:bg-white dark:hover:bg-slate-800 transition-all shadow-lg"
-			aria-label="Open in new tab"
-			title="Open in new tab"
-		>
-			<svg class="w-5 h-5 text-slate-700 dark:text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-				<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-			</svg>
-		</button>
-
-		<!-- Content container -->
-		<div
-			class="relative max-w-[95vw] max-h-[95dvh] flex items-center justify-center wrap-anywhere"
-			onclick={(e) => e.stopPropagation()}
-			onkeydown={(e) => e.stopPropagation()}
-			role="document"
-			tabindex="-1"
-			in:scale={{ duration: 200, easing: cubicOut, start: 0.9 }}
-			out:scale={{ duration: 150, easing: cubicOut, start: 0.95 }}
-		>
-			{#if type === 'image'}
-				<!-- Image viewer -->
-				<img
-					src="data:{mediaType};base64,{data}"
-					alt="Full size view"
-					class="max-w-full max-h-[90dvh] object-contain rounded-lg shadow-2xl"
-					loading="eager"
-				/>
-			{:else if type === 'document'}
-				<!-- Document preview -->
-				<div class="bg-white dark:bg-slate-900 rounded-lg shadow-2xl p-8 min-w-80 max-w-md text-center">
-					<div class="mb-6">
-						<Icon
-							name={fileName ? getFileIcon(fileName) : 'material:document'}
-							class="w-20 h-20 mx-auto text-slate-600 dark:text-slate-400"
-						/>
-					</div>
-
-					<h3 class="text-xl font-semibold text-slate-900 dark:text-slate-100 mb-2">
-						{fileName}
-					</h3>
-
-					<p class="text-sm text-slate-600 dark:text-slate-400 mb-6">
-						{formatFileSize(data.length * 0.75)}
-					</p>
-
-					<div class="flex flex-col gap-3">
-						<button
-							onclick={downloadFile}
-							class="w-full px-4 py-2.5 bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
-						>
-							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path>
-							</svg>
-							Download File
-						</button>
-
-						<button
-							onclick={openInNewTab}
-							class="w-full px-4 py-2.5 bg-slate-600 hover:bg-slate-700 text-white rounded-lg transition-colors font-medium flex items-center justify-center gap-2"
-						>
-							<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-								<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
-							</svg>
-							Open in New Tab
-						</button>
-					</div>
-				</div>
+		<!-- Header: which file, where in the set, and what can be done with it -->
+		<div class="flex items-center gap-2 px-2 sm:px-4 py-2 text-white shrink-0">
+			{#if item.number}
+				<span class="inline-flex items-center justify-center min-w-6 h-6 px-1.5 rounded-md bg-violet-600 text-xs font-semibold tabular-nums shrink-0" title="Write @{item.number} to refer to this file">
+					@{item.number}
+				</span>
 			{/if}
+			<Icon name={getAttachmentIcon(item.name, item.mediaType)} class="w-5 h-5 shrink-0" />
+			<div class="min-w-0 flex-1">
+				<div class="text-sm font-medium truncate" title={item.name}>{item.name}</div>
+				{#if item.size !== undefined}
+					<div class="text-xs text-white/60">{formatFileSize(item.size)}</div>
+				{/if}
+			</div>
+
+			{#if hasMany}
+				<div class="flex items-center gap-0.5 shrink-0">
+					<button type="button" onclick={() => step(-1)} class="inline-flex items-center justify-center w-9 h-9 rounded-lg hover:bg-white/15 transition-colors" aria-label="Previous file" title="Previous (←)">
+						<Icon name="lucide:chevron-left" class="w-5 h-5" />
+					</button>
+					<span class="text-xs tabular-nums text-white/80 min-w-10 text-center">{index + 1} / {items.length}</span>
+					<button type="button" onclick={() => step(1)} class="inline-flex items-center justify-center w-9 h-9 rounded-lg hover:bg-white/15 transition-colors" aria-label="Next file" title="Next (→)">
+						<Icon name="lucide:chevron-right" class="w-5 h-5" />
+					</button>
+				</div>
+				<span class="w-px h-5 bg-white/20 shrink-0"></span>
+			{/if}
+
+			<button type="button" onclick={openInNewTab} class="inline-flex items-center justify-center w-9 h-9 rounded-lg hover:bg-white/15 transition-colors shrink-0" aria-label="Open in new tab" title="Open in new tab">
+				<Icon name="lucide:external-link" class="w-4.5 h-4.5" />
+			</button>
+			<button type="button" onclick={download} class="inline-flex items-center justify-center w-9 h-9 rounded-lg hover:bg-white/15 transition-colors shrink-0" aria-label="Download" title="Download">
+				<Icon name="lucide:download" class="w-4.5 h-4.5" />
+			</button>
+			<button type="button" onclick={onClose} class="inline-flex items-center justify-center w-9 h-9 rounded-lg hover:bg-white/15 transition-colors shrink-0" aria-label="Close" title="Close (Esc)">
+				<Icon name="lucide:x" class="w-5 h-5" />
+			</button>
+		</div>
+
+		<!-- The file -->
+		<div
+			class="flex-1 min-h-0 w-full max-w-6xl mx-auto sm:px-4 sm:pb-4"
+			ontouchstart={handleTouchStart}
+			ontouchend={handleTouchEnd}
+			role="presentation"
+		>
+			<div class="h-full w-full overflow-hidden sm:rounded-xl bg-white dark:bg-slate-900">
+				{#key item}
+					{@const shown = item}
+					<MediaPreview
+						fileName={shown.name}
+						filePath={shown.path ?? `attachment:${index}:${shown.name}`}
+						mediaType={shown.mediaType}
+						loadBlob={() => blobOf(shown)}
+						textPreview
+						fileActions={false}
+					/>
+				{/key}
+			</div>
 		</div>
 	</div>
 {/if}

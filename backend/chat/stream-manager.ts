@@ -47,6 +47,7 @@ import { extractMessageText } from '../snapshot/helpers';
 import { deferEpisodicIngest, ingestTurn } from '../memory/extract';
 import { buildMemoryContext, withMemoryContext } from '../memory/context';
 import { buildEngineHandoff, resolveBranchEngine, withHandoff } from './engine-handoff';
+import { labelAttachments } from './attachments';
 import { resolveTranscriptAlias, transcriptExists } from '../storage/transcripts';
 import { resolveGitEnv } from '$backend/git/identity';
 import { debug } from '$shared/utils/logger';
@@ -826,6 +827,11 @@ class StreamManager extends EventEmitter {
 				debug.warn('chat', 'Slash skill expansion failed, sending the message as typed:', error);
 			}
 
+			// Every attachment is labelled with its `@N` (saved ones with where
+			// they are), so the numbers the user writes mean the same files to the
+			// engine. After the slash expansion, which reads the first text block.
+			enginePrompt = { ...enginePrompt, content: labelAttachments(enginePrompt.content, projectPath) };
+
 			if ((engineSwitched || resumeLost) && chatSessionId) {
 				try {
 					const handoff = buildEngineHandoff(
@@ -837,7 +843,7 @@ class StreamManager extends EventEmitter {
 						userMessageId
 					);
 					if (handoff) {
-						enginePrompt = withHandoff(userMessage, handoff.blocks);
+						enginePrompt = withHandoff(enginePrompt, handoff.blocks);
 						const { turns, clearedToolResults, droppedAttachments, estimatedTokens } = handoff.stats;
 						debug.log(
 							'chat',

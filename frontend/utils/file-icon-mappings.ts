@@ -773,7 +773,23 @@ export function getFileIcon(fileName: string): IconName {
 	if (fileIcons[extension]) {
 		return fileIcons[extension];
 	}
+	// "REPORT.PDF" from a camera or a scanner is still a PDF
+	const lowerExtension = extension.toLowerCase();
+	if (fileIcons[lowerExtension]) {
+		return fileIcons[lowerExtension];
+	}
 	
 	// Fallback to generic file icon
 	return 'material:document';
+}
+
+/** An attachment's icon: by its name, or by its type when the name says nothing. */
+export function getAttachmentIcon(fileName: string, mediaType: string): IconName {
+	const byName = getFileIcon(fileName);
+	if (byName !== 'material:document') return byName;
+	if (mediaType === 'application/pdf') return getFileIcon('.pdf');
+	if (mediaType.startsWith('image/')) return getFileIcon('.png');
+	if (mediaType.startsWith('audio/')) return getFileIcon('.mp3');
+	if (mediaType.startsWith('video/')) return getFileIcon('.mp4');
+	return byName;
 }

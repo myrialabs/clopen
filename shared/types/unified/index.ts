@@ -118,6 +118,7 @@ export type {
 	TextBlock,
 	ImageBlock,
 	DocumentBlock,
+	FileBlock,
 	UserContentBlock,
 	AssistantContentBlock,
 	UserMessage,

@@ -21,6 +21,8 @@
 	import ws from '$frontend/utils/ws';
 	import { chatService } from '$frontend/services/chat/chat.service';
 	import { cancelEdit, editModeState } from '$frontend/stores/ui/edit-mode.svelte';
+	import DragDropOverlay from '$frontend/components/chat/input/components/DragDropOverlay.svelte';
+	import { provideChatDropZone } from '$frontend/components/chat/input/composables/use-chat-drop-zone.svelte';
 
 	// Props
 	interface Props {
@@ -28,6 +30,9 @@
 	}
 
 	const { showMobileHeader = false }: Props = $props();
+
+	// Files dropped anywhere on the panel go to the composer on screen.
+	const dropZone = provideChatDropZone();
 
 	// Welcome state - don't show during restoration or when session has history (restored to initial)
 	const isWelcomeState = $derived(
@@ -203,7 +208,17 @@
 	};
 </script>
 
-<div class="h-full flex flex-col bg-transparent">
+<div
+	class="relative h-full flex flex-col bg-transparent"
+	role="region"
+	aria-label="Chat"
+	data-chat-panel
+	ondragenter={dropZone.ondragenter}
+	ondragover={dropZone.ondragover}
+	ondragleave={dropZone.ondragleave}
+	ondrop={dropZone.ondrop}
+>
+	<DragDropOverlay isDragging={dropZone.isDragging} />
 	{#if !hasActiveProject}
 		<div
 			class="flex-1 flex flex-col items-center justify-center gap-3 text-slate-600 dark:text-slate-500 text-sm"

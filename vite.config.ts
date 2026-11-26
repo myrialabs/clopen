@@ -3,12 +3,13 @@ import { defineConfig } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
 import { resolve } from 'path';
 import { precompress } from './scripts/vite-precompress';
+import { pdfjsAssets } from './scripts/vite-pdfjs-assets';
 
 const frontendPort = parseInt(process.env.CLOPEN_PORT_FRONTEND || '9151');
 const backendPort = parseInt(process.env.CLOPEN_PORT_BACKEND || '9161');
 
 export default defineConfig({
-	plugins: [tailwindcss(), svelte(), precompress()],
+	plugins: [tailwindcss(), svelte(), pdfjsAssets(), precompress()],
 	publicDir: 'static',
 	server: {
 		port: frontendPort,

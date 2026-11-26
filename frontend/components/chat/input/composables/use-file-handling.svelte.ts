@@ -1,6 +1,7 @@
 import { addNotification } from '$frontend/stores/ui/notification.svelte';
 import { debug } from '$shared/utils/logger';
 import { MAX_ATTACHMENT_BYTES } from '$shared/constants/attachments';
+import { effectiveMimeType } from '$frontend/utils/file-type';
 
 // ── File attachment type ──────────────────────────────────────
 /** `file` is anything the model does not read inline — it is saved and named in the prompt. */
@@ -46,11 +47,12 @@ export function attachmentFromBase64(source: {
 		for (let i = 0; i < byteString.length; i++) {
 			bytes[i] = byteString.charCodeAt(i);
 		}
-		const blob = new Blob([bytes], { type: source.mediaType });
-		const type = categoryForMime(source.mediaType);
+		const mediaType = effectiveMimeType(source.fileName, source.mediaType);
+		const blob = new Blob([bytes], { type: mediaType });
+		const type = categoryForMime(mediaType);
 		return {
 			id: source.id ?? crypto.randomUUID(),
-			file: new File([blob], source.fileName, { type: source.mediaType }),
+			file: new File([blob], source.fileName, { type: mediaType }),
 			type,
 			base64: source.base64,
 			previewUrl: type === 'image' ? URL.createObjectURL(blob) : undefined
@@ -64,20 +66,30 @@ export function attachmentFromBase64(source: {
 // ── Constants ─────────────────────────────────────────────────
 const MAX_FILE_SIZE = MAX_ATTACHMENT_BYTES;
 
+/**
+ * The file with a usable MIME type. Browsers leave it empty for many files
+ * (most on Android), which made a PDF a generic "file" with no preview.
+ */
+function withMimeType(file: File): File {
+	const mediaType = effectiveMimeType(file.name, file.type);
+	if (mediaType === file.type) return file;
+	return new File([file], file.name, { type: mediaType, lastModified: file.lastModified });
+}
+
 // ── Composable ────────────────────────────────────────────────
 export function useFileHandling() {
 	let attachedFiles = $state<FileAttachment[]>([]);
-	let isDragging = $state(false);
-	// A count, not a flag: a paste landing while a drop is still being read
-	// must not mark processing as finished when the first batch is.
-	let processingCount = $state(0);
+	// Files still being read, so the list can hold their place. A count, not
+	// a flag: a paste landing while a drop is still being read must not mark
+	// processing as finished when the first batch is.
+	let pendingCount = $state(0);
 
 	async function fileToBase64(file: File): Promise<string> {
 		return new Promise((resolve, reject) => {
 			const reader = new FileReader();
 			reader.onload = () => {
 				const base64 = reader.result as string;
-				const base64Data = base64.split(',')[1];
+				const base64Data = base64.split(',')[1] ?? '';
 				resolve(base64Data);
 			};
 			reader.onerror = reject;
@@ -86,51 +98,69 @@ export function useFileHandling() {
 	}
 
 	async function processFiles(files: FileList | File[]) {
-		processingCount++;
 		const fileArray = Array.from(files);
+		pendingCount += fileArray.length;
+		const tooLarge: string[] = [];
+		const duplicates: string[] = [];
 
-		for (const file of fileArray) {
-			if (file.size > MAX_FILE_SIZE) {
-				addNotification({
-					type: 'error',
-					title: 'File Too Large',
-					message: `${file.name} exceeds the ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`,
-					duration: 3000
-				});
-				continue;
-			}
+		try {
+			for (const original of fileArray) {
+				try {
+					if (original.size > MAX_FILE_SIZE) {
+						tooLarge.push(original.name);
+						continue;
+					}
 
-			if (attachedFiles.some((f) => f.file.name === file.name && f.file.size === file.size)) {
-				continue;
-			}
+					const file = withMimeType(original);
+					if (attachedFiles.some((f) => f.file.name === file.name && f.file.size === file.size)) {
+						duplicates.push(file.name);
+						continue;
+					}
 
-			const category = categoryForMime(file.type);
-			const attachment: FileAttachment = {
-				id: crypto.randomUUID(),
-				file,
-				type: category
-			};
-
-			try {
-				attachment.base64 = await fileToBase64(file);
-
-				if (category === 'image') {
-					attachment.previewUrl = URL.createObjectURL(file);
+					const category = categoryForMime(file.type);
+					const attachment: FileAttachment = {
+						id: crypto.randomUUID(),
+						file,
+						type: category,
+						base64: await fileToBase64(file),
+						previewUrl: category === 'image' ? URL.createObjectURL(file) : undefined
+					};
+					attachedFiles = [...attachedFiles, attachment];
+				} catch (error) {
+					debug.error('chat', 'Error processing file:', error);
+					addNotification({
+						type: 'error',
+						title: 'File Processing Error',
+						message: `Failed to process ${original.name}`,
+						duration: 3000
+					});
+				} finally {
+					pendingCount--;
 				}
-
-				attachedFiles = [...attachedFiles, attachment];
-			} catch (error) {
-				debug.error('chat', 'Error processing file:', error);
+			}
+		} finally {
+			if (tooLarge.length > 0) {
 				addNotification({
 					type: 'error',
-					title: 'File Processing Error',
-					message: `Failed to process ${file.name}`,
+					title: tooLarge.length === 1 ? 'File Too Large' : 'Files Too Large',
+					message: `${listNames(tooLarge)} ${tooLarge.length === 1 ? 'exceeds' : 'exceed'} the ${MAX_FILE_SIZE / (1024 * 1024)}MB limit`,
+					duration: 4000
+				});
+			}
+			if (duplicates.length > 0) {
+				addNotification({
+					type: 'info',
+					title: 'Already Attached',
+					message: `${listNames(duplicates)} ${duplicates.length === 1 ? 'is' : 'are'} already attached`,
 					duration: 3000
 				});
 			}
 		}
+	}
 
-		processingCount--;
+	function listNames(names: string[]): string {
+		if (names.length <= 2) return names.join(' and ');
+		return `${names[0]} and ${names.length - 1} more`;
 	}
 
 	function removeAttachment(id: string) {
@@ -163,32 +193,9 @@ export function useFileHandling() {
 	async function handleFileInputChange(event: Event) {
 		const input = event.target as HTMLInputElement;
 		if (input.files && input.files.length > 0) {
-			await processFiles(input.files);
+			const files = Array.from(input.files);
 			input.value = '';
-		}
-	}
-
-	function handleDragOver(event: DragEvent) {
-		event.preventDefault();
-		isDragging = true;
-	}
-
-	function handleDragLeave(event: DragEvent) {
-		event.preventDefault();
-		// dragleave also fires when the pointer moves onto a child of the drop
-		// zone; only leaving the zone itself ends the drag.
-		const zone = event.currentTarget as Node | null;
-		const next = event.relatedTarget as Node | null;
-		if (zone && next && zone.contains(next)) return;
-		isDragging = false;
-	}
-
-	async function handleDrop(event: DragEvent) {
-		event.preventDefault();
-		isDragging = false;
-
-		if (event.dataTransfer?.files && event.dataTransfer.files.length > 0) {
-			await processFiles(event.dataTransfer.files);
+			await processFiles(files);
 		}
 	}
 
@@ -214,10 +221,9 @@ export function useFileHandling() {
 
 	return {
 		get attachedFiles() { return attachedFiles; },
-		get isDragging() { return isDragging; },
-		get isProcessingFiles() { return processingCount > 0; },
-
-		/** Set allowed MIME types (call when model changes) */
+		get isProcessingFiles() { return pendingCount > 0; },
+		/** Files still being read. */
+		get pendingCount() { return pendingCount; },
 
 		processFiles,
 		removeAttachment,
@@ -225,9 +231,6 @@ export function useFileHandling() {
 		clearAllAttachments,
 		handleFileSelect,
 		handleFileInputChange,
-		handleDragOver,
-		handleDragLeave,
-		handleDrop,
 		handlePaste,
 	};
 }

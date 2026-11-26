@@ -1,8 +1,23 @@
+<!--
+  One viewer for every file preview: the Files panel, Git diffs, the SSH file
+  browser and chat attachments.
+
+  - PDFs are drawn with PDF.js (PdfViewer), so they read the same on every
+    device — browsers' own viewers don't exist on Android.
+  - Whether an image, audio or video plays is up to the browser (HEIC shows in
+    Safari only, AVI almost nowhere). When it can't, the viewer says so and
+    offers the file instead of showing a broken player.
+  - With `textPreview`, a file of no known kind is shown as text when it reads
+    as text — what an attached log, CSV or source file needs.
+-->
 <script lang="ts">
 	import { onDestroy, untrack } from 'svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import LoadingSpinner from '$frontend/components/common/feedback/LoadingSpinner.svelte';
-	import { isImageFile, isSvgFile, isPdfFile, isAudioFile, isVideoFile } from '$frontend/utils/file-type';
+	import PdfViewer from './PdfViewer.svelte';
+	import { previewKind } from '$frontend/utils/file-type';
+	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
+	import { formatFileSize } from '$frontend/utils/format';
 	import { debug } from '$shared/utils/logger';
 	import ws from '$frontend/utils/ws';
 
@@ -11,6 +26,8 @@
 		fileName: string;
 		/** Absolute path used to load binary content via ws */
 		filePath: string;
+		/** The file's MIME type, when the name alone doesn't tell (a pasted "image"). */
+		mediaType?: string;
 		/** Optional text content for SVG inline rendering */
 		svgContent?: string;
 		/** Bump to force a reload of the same path (e.g. after an in-place edit). */
@@ -18,32 +35,41 @@
 		/**
 		 * How the file's bytes are fetched. Defaults to reading a project file
 		 * over the WebSocket; the SSH file browser passes a loader that pulls the
-		 * bytes off the remote host, so both panels preview media through this
-		 * one component rather than each growing its own viewer.
+		 * bytes off the remote host, and chat attachments decode their own — so
+		 * every panel previews through this one component.
 		 */
 		loadBlob?: (path: string) => Promise<Blob | null>;
+		/** Show files of no known kind as text when they read as text. */
+		textPreview?: boolean;
+		/** Offer download / open-in-new-tab inside the viewer (off where the window around it has them). */
+		fileActions?: boolean;
 	}
 
-	const { fileName, filePath, svgContent, reloadToken = 0, loadBlob }: Props = $props();
+	const { fileName, filePath, mediaType, svgContent, reloadToken = 0, loadBlob, textPreview = false, fileActions = true }: Props = $props();
 
+	/** Larger text is cut here — a preview, not an editor. */
+	const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
+
+	const kind = $derived(previewKind(fileName, mediaType));
+
+	let blob = $state<Blob | null>(null);
 	let blobUrl = $state<string | null>(null);
-	let pdfBlobUrl = $state<string | null>(null);
-	let mediaBlobUrl = $state<string | null>(null);
+	let text = $state<string | null>(null);
+	let textTruncated = $state(false);
 	let isLoading = $state(false);
+	let loadFailed = $state(false);
+	// The browser had the bytes but couldn't show them.
+	let unsupported = $state(false);
+	let generation = 0;
 
 	function cleanup() {
-		if (blobUrl) {
-			URL.revokeObjectURL(blobUrl);
-			blobUrl = null;
-		}
-		if (pdfBlobUrl) {
-			URL.revokeObjectURL(pdfBlobUrl);
-			pdfBlobUrl = null;
-		}
-		if (mediaBlobUrl) {
-			URL.revokeObjectURL(mediaBlobUrl);
-			mediaBlobUrl = null;
-		}
+		if (blobUrl) URL.revokeObjectURL(blobUrl);
+		blobUrl = null;
+		blob = null;
+		text = null;
+		textTruncated = false;
+		unsupported = false;
+		loadFailed = false;
 	}
 
 	/** The default source: a file in the open project, read over the socket. */
@@ -58,68 +84,160 @@
 		return new Blob([bytes], { type: response.contentType || 'application/octet-stream' });
 	}
 
-	async function loadBinaryContent(path: string, name: string) {
+	/** The text of a file that reads as UTF-8 text, or null for binary bytes. */
+	async function readAsText(source: Blob): Promise<{ text: string; truncated: boolean } | null> {
+		const truncated = source.size > MAX_TEXT_PREVIEW_BYTES;
+		const bytes = new Uint8Array(await source.slice(0, MAX_TEXT_PREVIEW_BYTES).arrayBuffer());
+		if (bytes.includes(0)) return null;
+		try {
+			// A cut can split a multi-byte character; only the end may be broken.
+			const decoded = new TextDecoder('utf-8', { fatal: !truncated }).decode(bytes);
+			return { text: decoded, truncated };
+		} catch {
+			return null;
+		}
+	}
+
+	async function load(path: string, currentKind: typeof kind) {
+		const current = ++generation;
 		isLoading = true;
 		try {
-			const blob = await (loadBlob ?? readProjectFile)(path);
-
-			if (blob) {
-				if (isPdfFile(name)) {
-					if (pdfBlobUrl) URL.revokeObjectURL(pdfBlobUrl);
-					pdfBlobUrl = URL.createObjectURL(blob);
-				} else if (isAudioFile(name) || isVideoFile(name)) {
-					if (mediaBlobUrl) URL.revokeObjectURL(mediaBlobUrl);
-					mediaBlobUrl = URL.createObjectURL(blob);
+			const loaded = await (loadBlob ?? readProjectFile)(path);
+			if (current !== generation) return;
+			if (!loaded) {
+				loadFailed = true;
+				return;
+			}
+			blob = loaded;
+			if (currentKind === 'other') {
+				const readable = textPreview ? await readAsText(loaded) : null;
+				if (current !== generation) return;
+				if (readable) {
+					text = readable.text;
+					textTruncated = readable.truncated;
 				} else {
-					if (blobUrl) URL.revokeObjectURL(blobUrl);
-					blobUrl = URL.createObjectURL(blob);
+					unsupported = true;
 				}
+			} else if (currentKind !== 'pdf') {
+				blobUrl = URL.createObjectURL(loaded);
 			}
 		} catch (err) {
+			if (current !== generation) return;
 			debug.error('file', 'Failed to load binary content:', err);
+			loadFailed = true;
 		} finally {
-			isLoading = false;
+			if (current === generation) isLoading = false;
 		}
 	}
 
 	$effect(() => {
 		const name = fileName;
 		const path = filePath;
+		const currentKind = kind;
 		// Track reloadToken so an in-place edit re-fetches the same path.
 		void reloadToken;
 		untrack(() => {
 			cleanup();
-			if (name && path) {
-				loadBinaryContent(path, name);
-			}
+			if (name && path) void load(path, currentKind);
 		});
 	});
 
-	onDestroy(cleanup);
+	onDestroy(() => {
+		generation++;
+		cleanup();
+	});
+
+	function download() {
+		if (!blob) return;
+		const url = URL.createObjectURL(blob);
+		const link = document.createElement('a');
+		link.href = url;
+		link.download = fileName;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 1000);
+	}
+
+	function openInNewTab() {
+		if (!blob) return;
+		const url = URL.createObjectURL(blob);
+		window.open(url, '_blank', 'noopener');
+		setTimeout(() => URL.revokeObjectURL(url), 60_000);
+	}
+
+	const unsupportedReason = $derived.by(() => {
+		switch (kind) {
+			case 'image':
+				return "This browser can't display this image format.";
+			case 'audio':
+				return "This browser can't play this audio format.";
+			case 'video':
+				return "This browser can't play this video format.";
+			default:
+				return 'There is no preview for this kind of file.';
+		}
+	});
 </script>
 
-{#if isImageFile(fileName)}
+{#snippet fallback(reason: string)}
+	<div class="flex flex-col items-center justify-center h-full gap-3 p-8 text-center">
+		<Icon name={getAttachmentIcon(fileName, mediaType ?? blob?.type ?? '')} class="w-14 h-14" />
+		<div class="flex flex-col gap-1 min-w-0 max-w-full">
+			<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 break-all">{fileName}</span>
+			{#if blob}
+				<span class="text-xs text-slate-500">{formatFileSize(blob.size)}</span>
+			{/if}
+		</div>
+		<p class="text-xs text-slate-500 dark:text-slate-400 max-w-xs">{reason}</p>
+		{#if blob}
+			<div class="flex flex-wrap justify-center gap-2">
+				<button
+					type="button"
+					class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium transition-colors"
+					onclick={download}
+				>
+					<Icon name="lucide:download" class="w-3.5 h-3.5" />
+					Download
+				</button>
+				<button
+					type="button"
+					class="inline-flex items-center gap-1.5 h-8 px-3 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium transition-colors"
+					onclick={openInNewTab}
+				>
+					<Icon name="lucide:external-link" class="w-3.5 h-3.5" />
+					Open in new tab
+				</button>
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+{#if isLoading}
+	<div class="flex items-center justify-center h-full">
+		<LoadingSpinner size="lg" />
+	</div>
+{:else if loadFailed && !(kind === 'svg' && svgContent)}
+	<div class="flex flex-col items-center justify-center h-full gap-2 text-slate-500 text-xs">
+		<Icon name="lucide:file-x" class="w-8 h-8 opacity-40" />
+		<span>Failed to load preview</span>
+	</div>
+{:else if unsupported}
+	{@render fallback(unsupportedReason)}
+{:else if kind === 'image'}
 	<div class="flex items-center justify-center h-full p-4 overflow-hidden checkerboard-bg">
-		{#if isLoading}
-			<LoadingSpinner size="lg" />
-		{:else if blobUrl}
+		{#if blobUrl}
 			<img
 				src={blobUrl}
 				alt={fileName}
 				class="max-w-full max-h-full object-contain"
+				onerror={() => (unsupported = true)}
 			/>
-		{:else}
-			<div class="flex flex-col items-center gap-2 text-slate-500 text-xs">
-				<Icon name="lucide:image-off" class="w-8 h-8 opacity-40" />
-				<span>Failed to load preview</span>
-			</div>
 		{/if}
 	</div>
-{:else if isSvgFile(fileName)}
+{:else if kind === 'svg'}
 	<div class="flex items-center justify-center h-full p-4 overflow-auto checkerboard-bg">
-		{#if isLoading}
-			<LoadingSpinner size="lg" />
-		{:else if blobUrl}
+		{#if blobUrl}
 			<img
 				src={blobUrl}
 				alt={fileName}
@@ -129,65 +247,44 @@
 			<div class="max-w-full max-h-full flex items-center justify-center">
 				{@html svgContent}
 			</div>
-		{:else}
-			<div class="flex flex-col items-center gap-2 text-slate-500 text-xs">
-				<Icon name="lucide:image-off" class="w-8 h-8 opacity-40" />
-				<span>Failed to load preview</span>
-			</div>
 		{/if}
 	</div>
-{:else if isPdfFile(fileName)}
-	<div class="h-full w-full">
-		{#if isLoading}
-			<div class="flex items-center justify-center h-full">
-				<LoadingSpinner size="lg" />
-			</div>
-		{:else if pdfBlobUrl}
-			<iframe
-				src={pdfBlobUrl}
-				title={fileName}
-				class="w-full h-full border-0"
-			></iframe>
-		{:else}
-			<div class="flex flex-col items-center justify-center h-full gap-2 text-slate-500 text-xs">
-				<Icon name="lucide:file-x" class="w-8 h-8 opacity-40" />
-				<span>Failed to load PDF preview</span>
-			</div>
-		{/if}
-	</div>
-{:else if isAudioFile(fileName)}
+{:else if kind === 'pdf'}
+	{#if blob}
+		<PdfViewer data={blob} {fileName} {fileActions} />
+	{/if}
+{:else if kind === 'audio'}
 	<div class="flex flex-col items-center justify-center h-full p-8 checkerboard-bg">
 		<Icon name="lucide:music" class="w-16 h-16 text-violet-400 mb-6" />
-		<h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-4">
+		<h3 class="text-sm font-semibold text-slate-900 dark:text-slate-100 mb-4 break-all text-center">
 			{fileName}
 		</h3>
-		{#if isLoading}
-			<LoadingSpinner size="lg" />
-		{:else if mediaBlobUrl}
-			<audio controls class="w-full max-w-md" src={mediaBlobUrl}>
+		{#if blobUrl}
+			<audio controls class="w-full max-w-md" src={blobUrl} onerror={() => (unsupported = true)}>
 				Your browser does not support the audio element.
 			</audio>
-		{:else}
-			<div class="flex flex-col items-center gap-2 text-slate-500 text-xs">
-				<Icon name="lucide:music" class="w-8 h-8 opacity-40" />
-				<span>Failed to load audio</span>
-			</div>
 		{/if}
 	</div>
-{:else if isVideoFile(fileName)}
+{:else if kind === 'video'}
 	<div class="flex items-center justify-center h-full p-4 overflow-hidden checkerboard-bg">
-		{#if isLoading}
-			<LoadingSpinner size="lg" />
-		{:else if mediaBlobUrl}
+		{#if blobUrl}
 			<!-- svelte-ignore a11y_media_has_caption -->
-			<video controls class="max-w-full max-h-full object-contain" src={mediaBlobUrl}>
+			<video
+				controls
+				playsinline
+				class="max-w-full max-h-full object-contain"
+				src={blobUrl}
+				onerror={() => (unsupported = true)}
+			>
 				Your browser does not support the video element.
 			</video>
-		{:else}
-			<div class="flex flex-col items-center gap-2 text-slate-500 text-xs">
-				<Icon name="lucide:video-off" class="w-8 h-8 opacity-40" />
-				<span>Failed to load video</span>
-			</div>
+		{/if}
+	</div>
+{:else if text !== null}
+	<div class="h-full overflow-auto bg-white dark:bg-slate-950">
+		<pre class="p-4 text-xs leading-relaxed font-mono text-slate-800 dark:text-slate-200 whitespace-pre-wrap break-words">{text}</pre>
+		{#if textTruncated}
+			<div class="px-4 pb-4 text-xs text-slate-500">Showing the first {formatFileSize(MAX_TEXT_PREVIEW_BYTES)}. Download the file to see all of it.</div>
 		{/if}
 	</div>
 {/if}

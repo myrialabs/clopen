@@ -2,38 +2,133 @@
 	import ErrorMessage from './ErrorMessage.svelte';
 	import TextMessage from './TextMessage.svelte';
 	import Tools from './Tools.svelte';
-	import Lightbox from '$frontend/components/common/overlay/Lightbox.svelte';
+	import Lightbox, { type ViewerItem } from '$frontend/components/common/overlay/Lightbox.svelte';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
-	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
+	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatFileSize } from '$frontend/utils/format';
+	import { mentionToken, splitMentions } from '$shared/utils/attachment-mentions';
 
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import { getCompactSummary } from '$frontend/utils/chat/message-grouper';
 
 	const { message }: { message: FrontendMessage } = $props();
 
-	let lightboxOpen = $state(false);
-	let lightboxData = $state<{ type: 'image' | 'document', data: string, mediaType: string, fileName?: string }>({
-		type: 'image',
-		data: '',
-		mediaType: '',
-		fileName: ''
+	type ContentElement =
+		| { type: 'text' | 'tool_use' | 'error'; content: any }
+		| { type: 'attachments' };
+
+	/** One attached file of a user message, under the number `@N` names. */
+	interface Attachment {
+		number: number;
+		kind: 'image' | 'document' | 'file';
+		name: string;
+		mediaType: string;
+		size: number;
+		/** The bytes, for a file the message holds inline. */
+		data?: string;
+		/** Where the file was saved, for one the model was given by path. */
+		path?: string;
+	}
+
+	// A user message's files, in the order (and with the numbers) they were sent.
+	// Messages from before numbering are numbered by position — the same order.
+	const attachments = $derived.by((): Attachment[] => {
+		if (message.type !== 'user' || !('content' in message)) return [];
+		const list: Attachment[] = [];
+		for (const block of message.content) {
+			if (block.type !== 'image' && block.type !== 'document' && block.type !== 'file') continue;
+			const number = block.index ?? list.length + 1;
+			const fallbackName = `${block.type === 'image' ? 'image' : 'document'}-${number}.${block.mediaType.split('/')[1] || 'bin'}`;
+			if (block.type === 'file') {
+				list.push({ number, kind: 'file', name: block.title || fallbackName, mediaType: block.mediaType, size: block.size, path: block.path });
+			} else {
+				list.push({
+					number,
+					kind: block.type,
+					name: block.title || fallbackName,
+					mediaType: block.mediaType,
+					size: block.data ? Math.floor(block.data.length * 0.75) : 0,
+					data: block.data || undefined
+				});
+			}
+		}
+		return list;
 	});
 
-	function openAttachment(type: 'image' | 'document', data: string, mediaType: string, fileName?: string) {
-		lightboxData = { type, data, mediaType, fileName };
-		lightboxOpen = true;
+	let viewerOpen = $state(false);
+	let viewerIndex = $state(0);
+	const viewerItems = $derived<ViewerItem[]>(
+		attachments.map((attachment) => ({
+			name: attachment.name,
+			mediaType: attachment.mediaType,
+			size: attachment.size,
+			number: attachment.number,
+			base64: attachment.data,
+			path: attachment.path
+		}))
+	);
+
+	function openAttachment(number: number) {
+		const index = attachments.findIndex((attachment) => attachment.number === number);
+		if (index === -1 || (!attachments[index].data && !attachments[index].path)) return;
+		viewerIndex = index;
+		viewerOpen = true;
 	}
 
-	function closeLightbox() {
-		lightboxOpen = false;
+	// `@N` in the text becomes a chip that opens that file. Done on the rendered
+	// markdown, skipping code, so `@2` inside a snippet stays as written.
+
+	function linkMentions(root: HTMLElement, numbers: Set<number>) {
+		const highest = Math.max(0, ...numbers);
+		const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+			acceptNode(node) {
+				const parent = node.parentElement;
+				if (!parent || parent.closest('code, pre, a, button')) return NodeFilter.FILTER_REJECT;
+				return node.nodeValue?.includes('@') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+			}
+		});
+		const nodes: Text[] = [];
+		while (walker.nextNode()) nodes.push(walker.currentNode as Text);
+		for (const node of nodes) {
+			const parts = splitMentions(node.nodeValue ?? '', highest);
+			if (!parts.some((part) => typeof part === 'number' && numbers.has(part))) continue;
+			const fragment = document.createDocumentFragment();
+			for (const part of parts) {
+				if (typeof part === 'number' && numbers.has(part)) {
+					const chip = document.createElement('button');
+					chip.type = 'button';
+					chip.dataset.attachmentMention = String(part);
+					chip.className = 'attachment-mention';
+					chip.textContent = mentionToken(part);
+					chip.title = attachments.find((attachment) => attachment.number === part)?.name ?? '';
+					fragment.append(chip);
+				} else {
+					fragment.append(String(part));
+				}
+			}
+			node.replaceWith(fragment);
+		}
 	}
 
-	type ContentElement = {
-		type: 'text' | 'tool_use' | 'error' | 'image' | 'document';
-		content: any;
-		fileName?: string;
-	};
+	/** Turns `@N` into chips in the text it wraps, once rendered. */
+	function mentionLinks(node: HTMLElement, numbers: Set<number>) {
+		queueMicrotask(() => linkMentions(node, numbers));
+		return {
+			update(next: Set<number>) {
+				queueMicrotask(() => linkMentions(node, next));
+			}
+		};
+	}
+
+	const attachmentNumbers = $derived(new Set(attachments.map((attachment) => attachment.number)));
+
+	function handleMentionClick(event: MouseEvent) {
+		const chip = (event.target as HTMLElement | null)?.closest<HTMLElement>('[data-attachment-mention]');
+		if (!chip) return;
+		event.preventDefault();
+		event.stopPropagation();
+		openAttachment(Number(chip.dataset.attachmentMention));
+	}
 	
 	// Parse content into structured elements
 	function parseContent() {
@@ -96,15 +191,14 @@
 			return elements;
 		}
 
-		// Handle user messages
+		// Handle user messages: the files together, then the text
 		if (message.type === 'user' && 'content' in message) {
+			if (message.content.some((block) => block.type === 'image' || block.type === 'document' || block.type === 'file')) {
+				elements.push({ type: 'attachments' });
+			}
 			for (const contentItem of message.content) {
 				if (contentItem.type === 'text') {
 					elements.push({ type: 'text', content: (contentItem as any).text });
-				} else if (contentItem.type === 'image') {
-					elements.push({ type: 'image', content: contentItem, fileName: contentItem.title || undefined });
-				} else if (contentItem.type === 'document') {
-					elements.push({ type: 'document', content: contentItem, fileName: contentItem.title || undefined });
 				}
 			}
 
@@ -118,84 +212,86 @@
 	const parsedElements = $derived.by(parseContent);
 </script>
 
+{#snippet attachmentCard(attachment: Attachment)}
+	{@const viewable = !!attachment.data || !!attachment.path}
+	<button
+		type="button"
+		onclick={() => openAttachment(attachment.number)}
+		disabled={!viewable}
+		class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-500 enabled:cursor-pointer enabled:hover:opacity-80"
+		title={attachment.name}
+		aria-label="View attachment {mentionToken(attachment.number)}, {attachment.name}"
+	>
+		{#if attachment.kind === 'image' && attachment.data}
+			<img
+				src="data:{attachment.mediaType};base64,{attachment.data}"
+				alt={attachment.name}
+				class="absolute inset-0 w-full h-full object-cover"
+				loading="lazy"
+			/>
+		{:else}
+			<span class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-2">
+				<Icon name={getAttachmentIcon(attachment.name, attachment.mediaType)} class="w-8 h-8 shrink-0" />
+				<span class="text-xs font-medium text-slate-700 dark:text-slate-300 line-clamp-2 w-full px-1 text-center leading-tight break-all">
+					{attachment.name}
+				</span>
+				{#if attachment.size}
+					<span class="text-xs text-slate-500 dark:text-slate-400 -mt-0.5">{formatFileSize(attachment.size)}</span>
+				{/if}
+			</span>
+		{/if}
+		<span class="absolute top-1 left-1 px-1 rounded bg-violet-600 text-white text-3xs font-semibold leading-4 tabular-nums">
+			{mentionToken(attachment.number)}
+		</span>
+	</button>
+{/snippet}
+
 {#each parsedElements as element}
 	{#if element.type === 'error'}
 		<ErrorMessage errorText={element.content} />
+	{:else if element.type === 'attachments'}
+		<div class="flex flex-wrap gap-2 mb-2">
+			{#each attachments as attachment (attachment.number)}
+				{@render attachmentCard(attachment)}
+			{/each}
+		</div>
 	{:else if element.type === 'text'}
-		<TextMessage content={element.content} />
+		{#if message.type === 'user' && attachments.length > 0}
+			<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+			<div use:mentionLinks={attachmentNumbers} onclick={handleMentionClick}>
+				<TextMessage content={element.content} />
+			</div>
+		{:else}
+			<TextMessage content={element.content} />
+		{/if}
 	{:else if element.type === 'tool_use'}
 		<Tools toolInput={element.content} />
-	{:else if element.type === 'image'}
-		<div class="inline-block mr-2 mb-2">
-			<div class="flex flex-col gap-1">
-				{#if element.content.data}
-					<button
-						onclick={() => openAttachment('image', element.content.data, element.content.mediaType, element.fileName || 'Image')}
-						class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 cursor-pointer hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-500"
-						aria-label="Click to view full image"
-					>
-						<img
-							src="data:{element.content.mediaType};base64,{element.content.data}"
-							alt={element.fileName || "User uploaded content"}
-							class="absolute inset-0 w-full h-full object-cover"
-							loading="lazy"
-						/>
-						</button>
-				{:else}
-					<div class="w-28 h-28 flex items-center justify-center bg-gradient-to-r from-slate-50 to-slate-100 dark:from-slate-800 dark:to-slate-750 rounded-lg border border-slate-200 dark:border-slate-700">
-						<svg class="w-12 h-12 text-slate-400 dark:text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
-						</svg>
-					</div>
-				{/if}
-			</div>
-		</div>
-	{:else if element.type === 'document'}
-		<div class="inline-block mr-2 mb-2">
-			<div class="flex flex-col gap-1">
-				{#if element.content.data}
-					<button
-						onclick={() => openAttachment('document', element.content.data, element.content.mediaType, element.fileName || 'Document')}
-						class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 cursor-pointer hover:opacity-80 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-500"
-						aria-label="Click to view document"
-					>
-						<div class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-2">
-							<Icon
-								name={element.fileName ? getFileIcon(element.fileName) : 'material:document'}
-								class="w-8 h-8 text-slate-600 dark:text-slate-400 flex-shrink-0"
-							/>
-							{#if element.fileName}
-								<span class="text-xs font-medium text-slate-700 dark:text-slate-300 line-clamp-2 w-full px-1 text-center leading-tight" title={element.fileName}>
-									{element.fileName}
-								</span>
-							{/if}
-							<span class="text-xs text-slate-500 dark:text-slate-400 -mt-0.5">
-								{formatFileSize(element.content.data.length * 0.75)}
-							</span>
-						</div>
-					</button>
-				{:else}
-					<div class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800">
-						<div class="absolute inset-0 flex flex-col items-center justify-center gap-1.5">
-							<Icon
-								name="material:document"
-								class="w-10 h-10 text-slate-600 dark:text-slate-400"
-							/>
-							<span class="text-xs font-medium text-slate-700 dark:text-slate-300">DOCUMENT</span>
-						</div>
-					</div>
-				{/if}
-			</div>
-		</div>
 	{/if}
 {/each}
 
-<!-- Lightbox for viewing attachments -->
-<Lightbox
-	bind:isOpen={lightboxOpen}
-	type={lightboxData.type}
-	mediaType={lightboxData.mediaType}
-	data={lightboxData.data}
-	fileName={lightboxData.fileName}
-	onClose={closeLightbox}
-/>
+<!-- Viewer for the message's files -->
+<Lightbox bind:isOpen={viewerOpen} bind:index={viewerIndex} items={viewerItems} onClose={() => (viewerOpen = false)} />
+
+<style>
+	:global(.attachment-mention) {
+		display: inline-flex;
+		align-items: center;
+		padding: 0 0.3em;
+		border-radius: 0.3em;
+		background: rgb(124 58 237 / 0.12);
+		color: rgb(109 40 217);
+		font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+		font-size: 0.9em;
+		font-weight: 600;
+		cursor: pointer;
+	}
+
+	:global(.attachment-mention:hover) {
+		background: rgb(124 58 237 / 0.22);
+	}
+
+	:global(.dark .attachment-mention) {
+		color: rgb(196 181 253);
+		background: rgb(167 139 250 / 0.16);
+	}
+</style>
