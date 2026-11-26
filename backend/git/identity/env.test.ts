@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildGitConfigPairs, buildGitIdentityEnv, remoteHost } from './env';
+import { buildGitConfigPairs, buildGitIdentityEnv, buildHostedCredentialPairs, remoteHost } from './env';
 
 const helper = { runtime: '/usr/local/bin/bun', script: '/opt/clopen/index.js' };
 
@@ -210,5 +210,56 @@ describe('the env block against real git', () => {
 		} finally {
 			await rm(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe('buildHostedCredentialPairs', () => {
+	test('scopes a reset plus Clopen\'s helper to each served host, with the path sent', () => {
+		const pairs = buildHostedCredentialPairs(['gitlab.com', 'github.com', 'github.com'], 'proj-1', helper);
+		expect(pairs.filter(([key]) => key === 'credential.https://github.com.helper')).toHaveLength(2);
+		expect(pairs[0]).toEqual(['credential.https://github.com.helper', '']);
+		expect(pairs[1]![1]).toContain('git-credential --hosted');
+		expect(pairs[1]![1]).toContain("'--project=proj-1'");
+		expect(pairs).toContainEqual(['credential.https://gitlab.com.useHttpPath', 'true']);
+	});
+
+	test('no helper or no hosts means nothing — the machine keeps its own helpers', () => {
+		expect(buildHostedCredentialPairs(['github.com'], 'p')).toEqual([]);
+		expect(buildHostedCredentialPairs([], 'p', helper)).toEqual([]);
+	});
+
+	test('hosted pairs alone still produce an environment', () => {
+		const env = buildGitIdentityEnv(null, helper, buildHostedCredentialPairs(['github.com'], 'p', helper));
+		expect(pairsOf(env).some(([key]) => key === 'user.name')).toBe(false);
+		expect(Number(env.GIT_CONFIG_COUNT)).toBe(3);
+	});
+});
+
+describe('helper commands carry the data directory', () => {
+	// Git starts the helper with Clopen's cleaned environment, which has no
+	// NODE_ENV. Without the directory in the command, a dev or relocated
+	// instance's helper opened the default database and found no account.
+	const pinned = { ...helper, dataDir: '/home/user/.clopen-dev' };
+
+	test('the hosted helper is prefixed with CLOPEN_DATA_DIR', () => {
+		const [, command] = buildHostedCredentialPairs(['github.com'], 'p', pinned)[1]!;
+		expect(command.startsWith("!CLOPEN_DATA_DIR='/home/user/.clopen-dev' ")).toBe(true);
+	});
+
+	test('the identity helper is prefixed too', () => {
+		const pairs = buildGitConfigPairs(
+			{ id: 'i', name: 'A', email: 'a@example.com', credentialHosts: ['github.com'], httpsUsername: 'a' },
+			pinned
+		);
+		const helperValue = pairs.filter(([key]) => key === 'credential.helper').map(([, value]) => value).find(Boolean);
+		expect(helperValue).toContain("CLOPEN_DATA_DIR='/home/user/.clopen-dev'");
+	});
+
+	test('a passphrase askpass gets the directory as a variable, since ssh runs it without a shell', () => {
+		const env = buildGitIdentityEnv(
+			{ id: 'i', name: 'A', email: 'a@example.com', sshKeyPath: '/k', needsPassphrase: true },
+			pinned
+		);
+		expect(env.CLOPEN_DATA_DIR).toBe('/home/user/.clopen-dev');
 	});
 });

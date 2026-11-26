@@ -84,6 +84,7 @@ import { browserPreviewServiceManager } from './preview';
 
 // MCP remote server for Open Code custom tools
 import { handleMcpRequest, handleExternalMcpRequest, handleProjectMcpRequest, closeMcpServer, completeAuthorization } from './mcp';
+import { completeBrowserFlow, failBrowserFlow } from './git-hosts';
 
 // Auth middleware
 import { checkRouteAccess, PUBLIC_ROUTES } from './auth/permissions';
@@ -235,6 +236,31 @@ const app = new Elysia({ websocket: WS_SERVER_OPTIONS })
 		} catch (err) {
 			const message = err instanceof Error ? err.message : 'Unknown error';
 			return page('Sign-in failed', `${message}. You can close this tab and try again.`);
+		}
+	})
+
+	// Stable OAuth redirect target for a git hosting sign-in in the browser
+	// (Gitea/Forgejo, self-managed GitLab). The connect dialog polls the flow,
+	// so this page only has to say how it went.
+	.get('/api/integrations/oauth/callback', async ({ query }) => {
+		const { code, state, error } = query as { code?: string; state?: string; error?: string };
+		const page = (title: string, body: string) =>
+			new Response(
+				`<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}div{text-align:center;max-width:28rem;padding:2rem}h1{font-size:1.1rem}p{color:#94a3b8;font-size:.9rem}</style></head><body><div><h1>${title}</h1><p>${body}</p><script>setTimeout(()=>window.close(),2500)</script></div></body></html>`,
+				{ headers: { 'Content-Type': 'text/html' } }
+			);
+		const escape = (value: string) => value.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+		if (error) {
+			if (state) failBrowserFlow(state, error);
+			return page('Sign-in failed', `The server returned: ${escape(error)}. You can close this tab and try again.`);
+		}
+		if (!code || !state) return page('Sign-in failed', 'Missing authorization code. You can close this tab and try again.');
+		try {
+			await completeBrowserFlow(state, code);
+			return page('Connected', 'Sign-in complete. You can close this tab and return to Clopen.');
+		} catch (err) {
+			const message = err instanceof Error ? err.message : 'Unknown error';
+			return page('Sign-in failed', `${escape(message)}. You can close this tab and try again.`);
 		}
 	})
 

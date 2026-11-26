@@ -8,9 +8,11 @@
 import { t } from 'elysia';
 import { createRouter } from '$shared/utils/ws-server';
 import { integrationsCrudHandler } from './crud';
+import { hostingAuthHandler } from './hosting-auth';
 
 export const integrationsRouter = createRouter()
 	.merge(integrationsCrudHandler)
+	.merge(hostingAuthHandler)
 	/**
 	 * Broadcast after any account mutation. The hub also shows connectors, whose
 	 * rows a projection creates and removes, so a client that only watched its

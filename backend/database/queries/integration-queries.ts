@@ -154,6 +154,16 @@ export const integrationAccountQueries = {
 		);
 	},
 
+	/** Record how the account's credential was obtained — a reconnect can change it. */
+	setAuthMethod(id: string, authMethod: IntegrationAuthMethod): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE integration_accounts SET auth_method = ?, updated_at = ? WHERE id = ?`).run(
+			authMethod,
+			new Date().toISOString(),
+			id
+		);
+	},
+
 	/**
 	 * Rename an account.
 	 *

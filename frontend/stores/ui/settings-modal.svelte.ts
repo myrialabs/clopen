@@ -61,12 +61,13 @@ interface SettingsModalState {
 	/**
 	 * Provider whose Connect dialog should open as soon as Integrations is shown.
 	 *
-	 * Set by a CTA that already knows what the user is trying to connect — the
-	 * Issues & PRs surface's empty state, for one. Sending them to a list and letting
+	 * Set by a CTA that already knows what the user is trying to connect. Sending them to a list and letting
 	 * them find Add → GitHub is three clicks of looking for something we already
 	 * knew. IntegrationsSettings consumes and clears it.
 	 */
 	integrationFocusProvider: string | null;
+	/** Tab Git Accounts should open on, for a deep link. Consumed and cleared there. */
+	gitAccountsTab: 'services' | 'identities' | null;
 }
 
 // Settings sections metadata
@@ -97,7 +98,7 @@ export const settingsSections: SettingsSectionMeta[] = [
 		id: 'git-identities',
 		label: 'Git Accounts',
 		icon: 'lucide:user-round-cog',
-		description: 'Commit identity and push access',
+		description: 'GitHub, GitLab… and commit identity',
 		group: 'infrastructure'
 	},
 	{
@@ -263,7 +264,8 @@ export const settingsModalState = $state<SettingsModalState>({
 	isOpen: false,
 	activeSection: 'assistant',
 	engineFocus: null,
-	integrationFocusProvider: null
+	integrationFocusProvider: null,
+	gitAccountsTab: null
 });
 
 // Helper functions

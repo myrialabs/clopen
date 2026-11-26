@@ -21,6 +21,7 @@
 	import { integrationsStore } from '$frontend/stores/features/integrations.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { GIT_HOST_KINDS } from '$shared/types/git-hosting';
 	import type { GitIdentityAuthMethod, GitIdentityDTO } from '$shared/types/git-identity';
 
 	interface Props {
@@ -29,15 +30,18 @@
 	const { showHeader = true }: Props = $props();
 
 	const identities = $derived(gitIdentityStore.identities);
-	const defaultIdentity = $derived(gitIdentityStore.defaultIdentity);
 	const currentProjectId = $derived(projectState.currentProject?.id ?? null);
 
 	const METHODS: { value: GitIdentityAuthMethod; label: string; hint: string }[] = [
 		{ value: 'none', label: 'Attribution only', hint: 'Name and email. Pushing uses whatever this machine already provides.' },
 		{ value: 'ssh-key', label: 'SSH key', hint: 'Generate one here or paste your own.' },
-		{ value: 'https-token', label: 'HTTPS token', hint: 'A personal access token, stored encrypted.' },
-		{ value: 'https-account', label: 'Connected account', hint: 'Borrow the token from an account in Integrations.' }
+		// For servers no service account covers. GitHub, GitLab, Gitea and
+		// Bitbucket push with the account in the Services tab, so "Connected
+		// account" is only shown to identities that already use it.
+		{ value: 'https-token', label: 'HTTPS token', hint: 'For a server not covered by a connected service.' },
+		{ value: 'https-account', label: 'Connected account', hint: 'Borrow the token from a service account.' }
 	];
+
 
 	let editing = $state<GitIdentityDTO | null>(null);
 	let showEditor = $state(false);
@@ -62,8 +66,9 @@
 		integrationAccountId: '' as string
 	});
 
+	// Every hosting account can lend its token — not only GitHub's.
 	const githubAccounts = $derived(
-		integrationsStore.accounts.filter((a) => a.provider === 'github')
+		integrationsStore.accounts.filter((a) => (GIT_HOST_KINDS as readonly string[]).includes(a.provider))
 	);
 
 	function openCreate() {
@@ -211,7 +216,7 @@
 	const publicKeyToShow = $derived(generatedKey?.publicKey ?? editing?.sshPublicKey ?? null);
 </script>
 
-<div class="space-y-5">
+<div class="space-y-4">
 	{#if showHeader}
 		<div>
 			<h3 class="text-base font-bold text-slate-900 dark:text-slate-100">Git Accounts</h3>
@@ -221,133 +226,79 @@
 		</div>
 	{/if}
 
-	<!--
-		The default, which is what every project uses unless it picks its own.
-		Scoped to all projects rather than the current one: this screen is reached
-		from Settings, where "this project" is not a meaningful scope — the
-		per-project override lives in the Git panel, next to the commit box.
-	-->
-	{#if identities.length > 0}
-		<div class="rounded-lg border border-slate-200 dark:border-slate-700 p-3">
-			<div class="flex items-start justify-between gap-3">
-				<div class="min-w-0">
-					<p class="text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">
-						Default account
-					</p>
-					{#if defaultIdentity}
-						<p class="text-sm font-semibold text-slate-900 dark:text-slate-100 mt-1 truncate">
-							{defaultIdentity.name} &lt;{defaultIdentity.email}&gt;
-						</p>
-					{:else}
-						<p class="text-sm text-slate-600 dark:text-slate-300 mt-1">
-							None chosen, so commits use whatever this machine is configured with.
-						</p>
-					{/if}
-					<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
-						Used by every project that has not chosen its own.
-					</p>
-				</div>
-				<select
-					class="text-sm rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 px-2 py-1.5 shrink-0"
-					value={defaultIdentity?.id ?? ''}
-					onchange={(e) => chooseDefault((e.currentTarget as HTMLSelectElement).value)}
-				>
-					{#each identities as identity (identity.id)}
-						<option value={identity.id}>{identity.label}</option>
-					{/each}
-				</select>
-			</div>
-		</div>
-	{/if}
+	<!-- Same shape as the Services tab: one line of purpose, the action beside it. -->
+	<div class="flex items-center justify-between gap-3">
+		<p class="m-0 text-xs text-slate-500 dark:text-slate-400">Who your commits are authored as. Starred is the global default.</p>
+		<Button variant="outline" size="sm" class="shrink-0 whitespace-nowrap" onclick={openCreate}>
+			<Icon name="lucide:plus" class="w-3.5 h-3.5 mr-1" />Add identity
+		</Button>
+	</div>
 
-	<!-- The list -->
-	<div class="space-y-2">
-		{#if identities.length === 0}
-			<div class="rounded-lg border border-dashed border-slate-300 dark:border-slate-600 p-6 text-center">
-				<Icon name="lucide:user-round-cog" class="w-8 h-8 mx-auto text-slate-400" />
-				<p class="text-sm font-semibold text-slate-700 dark:text-slate-300 mt-2">
-					No git accounts yet
-				</p>
-				<p class="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm mx-auto">
-					Add one and every commit you make in Clopen — from the Git panel, the terminal, or an
-					agent — is authored by it.
-				</p>
-			</div>
-		{:else}
+	{#if identities.length === 0}
+		<div class="flex flex-col items-center gap-2 py-8 rounded-xl border border-dashed border-slate-300 dark:border-slate-700 text-center">
+			<Icon name="lucide:user-round-pen" class="w-6 h-6 text-slate-400" />
+			<p class="m-0 text-sm text-slate-600 dark:text-slate-300">No identity yet</p>
+		</div>
+	{:else}
+		<div class="space-y-2">
 			{#each identities as identity (identity.id)}
-				<div class="rounded-lg border border-slate-200 dark:border-slate-700 p-3">
-					<div class="flex items-start justify-between gap-3">
-						<div class="min-w-0">
-							<div class="flex items-center gap-2 flex-wrap">
-								<span class="text-sm font-bold text-slate-900 dark:text-slate-100">
-									{identity.label}
-								</span>
-								{#if identity.isDefault}
-									<span class="text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">
-										Default
-									</span>
-								{/if}
-								<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-									{methodLabel(identity.authMethod)}
-								</span>
-							</div>
-							<p class="text-sm text-slate-600 dark:text-slate-300 mt-1 truncate">
-								{identity.name} &lt;{identity.email}&gt;
-							</p>
-							{#if identity.hosts.length > 0}
-								<p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5 truncate">
-									{identity.hosts.join(', ')}
-								</p>
-							{:else if identity.authMethod !== 'none'}
-								<p class="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
-									No host listed, so this credential is never used for a push.
-								</p>
+				<div class="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50 dark:bg-slate-800/50">
+					<span class="flex items-center justify-center w-8 h-8 shrink-0 rounded-full bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-400">
+						<Icon name={identity.authMethod === 'ssh-key' ? 'lucide:key-round' : identity.authMethod === 'none' ? 'lucide:user-round' : 'lucide:lock-keyhole'} class="w-4 h-4" />
+					</span>
+					<div class="flex-1 min-w-0">
+						<div class="flex items-center gap-1.5 min-w-0">
+							<span class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{identity.label}</span>
+							{#if identity.isDefault}
+								<span class="shrink-0 text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300">Default</span>
+							{/if}
+							{#if identity.authMethod !== 'none'}
+								<span class="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-slate-200/70 dark:bg-slate-700 text-slate-600 dark:text-slate-300">{methodLabel(identity.authMethod)}</span>
 							{/if}
 						</div>
-						<div class="flex items-center gap-1 shrink-0">
-							{#if !identity.isDefault}
-								<button
-									class="p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-slate-100 dark:hover:bg-slate-800"
-									title="Make this the default"
-									onclick={() => chooseDefault(identity.id)}
-								>
-									<Icon name="lucide:star" class="w-4 h-4" />
-								</button>
-							{/if}
+						<p class="m-0 text-[11px] text-slate-500 dark:text-slate-400 truncate">
+							{identity.name} &lt;{identity.email}&gt;{identity.hosts.length > 0 ? ` · ${identity.hosts.join(', ')}` : ''}
+						</p>
+						{#if identity.hosts.length === 0 && identity.authMethod !== 'none'}
+							<p class="m-0 text-[11px] text-amber-600 dark:text-amber-400">No host listed, so this credential is never used for a push.</p>
+						{/if}
+					</div>
+					<div class="flex items-center gap-0.5 shrink-0">
+						<button
+							class="inline-flex items-center justify-center w-8 h-8 rounded-md {identity.isDefault ? 'text-violet-500 cursor-default' : 'text-slate-400 hover:text-violet-600 hover:bg-slate-200/60 dark:hover:bg-slate-700'}"
+							title={identity.isDefault ? 'Default for every project' : 'Make this the default'}
+							onclick={() => !identity.isDefault && chooseDefault(identity.id)}
+						>
+							<Icon name="lucide:star" class="w-4 h-4 {identity.isDefault ? 'fill-current' : ''}" />
+						</button>
+						<button
+							class="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-400 hover:text-violet-600 hover:bg-slate-200/60 dark:hover:bg-slate-700"
+							title="Edit"
+							onclick={() => openEdit(identity)}
+						>
+							<Icon name="lucide:pencil" class="w-4 h-4" />
+						</button>
+						{#if identity.canDelete}
 							<button
-								class="p-1.5 rounded-md text-slate-400 hover:text-violet-600 hover:bg-slate-100 dark:hover:bg-slate-800"
-								title="Edit"
-								onclick={() => openEdit(identity)}
+								class="inline-flex items-center justify-center w-8 h-8 rounded-md text-slate-400 hover:text-rose-600 hover:bg-slate-200/60 dark:hover:bg-slate-700"
+								title="Delete"
+								onclick={() => askDelete(identity)}
 							>
-								<Icon name="lucide:pencil" class="w-4 h-4" />
+								<Icon name="lucide:trash-2" class="w-4 h-4" />
 							</button>
-							{#if identity.canDelete}
-								<button
-									class="p-1.5 rounded-md text-slate-400 hover:text-rose-600 hover:bg-slate-100 dark:hover:bg-slate-800"
-									title="Delete"
-									onclick={() => askDelete(identity)}
-								>
-									<Icon name="lucide:trash-2" class="w-4 h-4" />
-								</button>
-							{:else}
-								<span
-									class="p-1.5 text-slate-300 dark:text-slate-600"
-									title="Mirrored from this machine's git config, so it cannot be deleted. Edit it instead."
-								>
-									<Icon name="lucide:lock" class="w-4 h-4" />
-								</span>
-							{/if}
-						</div>
+						{:else}
+							<span
+								class="inline-flex items-center justify-center w-8 h-8 text-slate-300 dark:text-slate-600"
+								title="Mirrored from this machine's git config, so it cannot be deleted. Edit it instead."
+							>
+								<Icon name="lucide:lock" class="w-4 h-4" />
+							</span>
+						{/if}
 					</div>
 				</div>
 			{/each}
-		{/if}
-
-		<Button variant="outline" size="sm" onclick={openCreate}>
-			<Icon name="lucide:plus" class="w-4 h-4 mr-1.5" />
-			Add account
-		</Button>
-	</div>
+		</div>
+	{/if}
 </div>
 
 <!-- Editor -->
@@ -364,7 +315,7 @@
 				Authentication
 			</span>
 			<div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-				{#each METHODS as method (method.value)}
+				{#each METHODS.filter((method) => method.value !== 'https-account' || draft.authMethod === 'https-account') as method (method.value)}
 					<button
 						class="text-left p-2.5 rounded-lg border transition-colors {draft.authMethod === method.value
 							? 'border-violet-500 bg-violet-50 dark:bg-violet-900/20'
@@ -468,8 +419,8 @@
 			<div class="space-y-2 rounded-lg border border-slate-200 dark:border-slate-700 p-3">
 				{#if githubAccounts.length === 0}
 					<p class="text-sm text-slate-600 dark:text-slate-300">
-						No GitHub account is connected yet. Connect one in Settings → Integrations, then
-						pick it here.
+						No git hosting account is connected yet. Connect one in the Services tab,
+						then pick it here.
 					</p>
 				{:else}
 					<span class="block text-sm font-semibold text-slate-700 dark:text-slate-300">

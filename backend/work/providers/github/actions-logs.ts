@@ -82,7 +82,7 @@ async function fetchJobLog(credentials: GitHubCredentials, jobId: number): Promi
 }
 
 /** Keep the last `limit` bytes, cut on a line boundary, and say what was dropped. */
-function keepTail(text: string, limit: number): { text: string; truncated: boolean } {
+export function keepTail(text: string, limit: number): { text: string; truncated: boolean } {
 	if (text.length <= limit) return { text, truncated: false };
 	const tail = text.slice(text.length - limit);
 	const firstNewline = tail.indexOf('\n');

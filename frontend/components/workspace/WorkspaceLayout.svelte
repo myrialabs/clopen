@@ -18,6 +18,7 @@
 	import LoadingScreen from '$frontend/components/common/feedback/LoadingScreen.svelte';
 	import ModalProvider from '$frontend/components/workspace/ModalProvider.svelte';
 	import SettingsModal from '$frontend/components/settings/SettingsModal.svelte';
+	import HostConnectModal from '$frontend/components/settings/integrations/hosting/HostConnectModal.svelte';
 	import FilePeekModal from '$frontend/components/files/FilePeekModal.svelte';
 	import AiChangesModal from '$frontend/components/ai-changes/AiChangesModal.svelte';
 	import NotificationToast from '$frontend/components/common/feedback/NotificationToast.svelte';
@@ -204,6 +205,9 @@
 
 <!-- Settings Modal -->
 <SettingsModal />
+
+<!-- Git hosting sign-in, openable from the Git panel as well as Settings -->
+<HostConnectModal />
 
 <!-- File peek modal (opened when a file link fires while the Files panel is hidden) -->
 <FilePeekModal />

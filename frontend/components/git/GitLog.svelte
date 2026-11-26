@@ -2,6 +2,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import type { GitCommit } from '$shared/types/git';
+	import type { CommitCiStatus } from '$shared/types/git-hosting';
 
 	interface Props {
 		commits: GitCommit[];
@@ -19,9 +20,17 @@
 		originalCommits?: GitCommit[];
 		/** Search text to highlight inside commit messages. */
 		searchQuery?: string;
+		/** CI roll-up per commit hash, from the hosting service. Absent = no CI shown. */
+		ciStatuses?: Record<string, CommitCiStatus>;
 	}
 
-	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, isCheckingOut = false, getRemoteCommitUrl, originalCommits, searchQuery = '' }: Props = $props();
+	const { commits, isLoading, hasMore, activeHash = null, onLoadMore, onViewCommit, onCheckoutCommit, isCheckingOut = false, getRemoteCommitUrl, originalCommits, searchQuery = '', ciStatuses }: Props = $props();
+
+	const CI_STYLE = {
+		success: { icon: 'lucide:circle-check', class: 'text-emerald-500' },
+		failure: { icon: 'lucide:circle-x', class: 'text-rose-500' },
+		pending: { icon: 'lucide:circle-dot-dashed', class: 'text-amber-500' }
+	} as const;
 
 	let selectedHash = $state('');
 	const effectiveActiveHash = $derived(activeHash ?? selectedHash);
@@ -512,6 +521,17 @@
 							>
 								{commit.hashShort}
 							</button>
+							{#if ciStatuses?.[commit.hash] && ciStatuses[commit.hash]!.state !== 'none'}
+								{@const ci = ciStatuses[commit.hash]!}
+								{@const style = CI_STYLE[ci.state as keyof typeof CI_STYLE]}
+								{#if ci.url}
+									<a href={ci.url} target="_blank" rel="noopener noreferrer" class="flex shrink-0" title={ci.summary} onclick={(e) => e.stopPropagation()}>
+										<Icon name={style.icon} class="w-3 h-3 {style.class}" />
+									</a>
+								{:else}
+									<span class="flex shrink-0" title={ci.summary}><Icon name={style.icon} class="w-3 h-3 {style.class}" /></span>
+								{/if}
+							{/if}
 							<span class="text-3xs text-slate-400 shrink-0 whitespace-nowrap">{formatDate(commit.date)}</span>
 							<span class="flex-1 min-w-0 text-xs text-slate-500 truncate">{commit.author}</span>
 						</div>

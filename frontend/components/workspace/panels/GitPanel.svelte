@@ -3,6 +3,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
+	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import { projectState } from '$frontend/stores/core/projects.svelte';
 	import { currentScopeKey } from '$frontend/stores/features/worktrees.svelte';
 	import { showError as notifyError, showInfo } from '$frontend/stores/ui/notification.svelte';
@@ -74,6 +75,16 @@
 	import ConflictResolver from '$frontend/components/git/ConflictResolver.svelte';
 	import GitOperationBanner from '$frontend/components/git/GitOperationBanner.svelte';
 	import GitReflogModal from '$frontend/components/git/GitReflogModal.svelte';
+	import HostingView from '$frontend/components/git/hosting/HostingView.svelte';
+	import HostingDetail from '$frontend/components/git/hosting/HostingDetail.svelte';
+	import PublishRepoModal from '$frontend/components/git/hosting/PublishRepoModal.svelte';
+	import RepoPickerModal from '$frontend/components/git/hosting/RepoPickerModal.svelte';
+	import ForkOfferDialog from '$frontend/components/git/hosting/ForkOfferDialog.svelte';
+	import PullRequestComposer from '$frontend/components/work/PullRequestComposer.svelte';
+	import ProviderMark from '$frontend/components/common/display/ProviderMark.svelte';
+	import { hostingStore, initHostingEvents } from '$frontend/stores/features/hosting.svelte';
+	import { workStore } from '$frontend/stores/features/work.svelte';
+	import { openHostConnect } from '$frontend/stores/ui/host-connect.svelte';
 
 	// Derived state
 	const hasActiveProject = $derived(projectState.currentProject !== null);
@@ -294,9 +305,22 @@
 	}
 
 	// View state
-	let activeView = $state<'changes' | 'log' | 'branches' | 'more'>('changes');
+	let activeView = $state<'changes' | 'log' | 'branches' | 'more' | 'host'>('changes');
+
+	// --- Hosting (GitHub, GitLab, …) ---
+	let showPublishModal = $state(false);
+	let showRepoPicker = $state(false);
+	let prComposerOpen = $state(false);
+	let forkOffer = $state<{ accountId: string; remote: string; repoName: string; login: string | null; hasUpstream: boolean } | null>(null);
 	// Sub-tab for the "More" view (Tags / Stash / Contributors)
 	let moreSubTab = $state<'tags' | 'stash' | 'contributors'>('tags');
+	/** The ⋯ menu at the end of the view tabs — where Tags, Stash and Contributors live. */
+	let showMoreViewMenu = $state(false);
+	const MORE_VIEWS: { id: 'tags' | 'stash' | 'contributors'; label: string; icon: IconName }[] = [
+		{ id: 'tags', label: 'Tags', icon: 'lucide:tag' },
+		{ id: 'stash', label: 'Stash', icon: 'lucide:archive' },
+		{ id: 'contributors', label: 'Contributors', icon: 'lucide:users' }
+	];
 	let viewMode = $state<'list' | 'diff'>('list');
 	let showMergeBranchModal = $state(false);
 	let mergeBranchName = $state('');
@@ -1105,9 +1129,9 @@
 	}
 
 	// Per-view tab isolation — each view (Changes, History, Branches, More) has its own tabs
-	const _tabStore: Record<string, DiffTab[]> = { changes: [], log: [], branches: [], more: [] };
-	const _activeTabStore: Record<string, string | null> = { changes: null, log: null, branches: null, more: null };
-	const _viewModeStore: Record<string, 'list' | 'diff'> = { changes: 'list', log: 'list', branches: 'list', more: 'list' };
+	const _tabStore: Record<string, DiffTab[]> = { changes: [], log: [], branches: [], more: [], host: [] };
+	const _activeTabStore: Record<string, string | null> = { changes: null, log: null, branches: null, more: null, host: null };
+	const _viewModeStore: Record<string, 'list' | 'diff'> = { changes: 'list', log: 'list', branches: 'list', more: 'list', host: 'list' };
 
 	let openTabs = $state<DiffTab[]>([]);
 	let activeTabId = $state<string | null>(null);
@@ -1574,6 +1598,8 @@
 		try {
 			const list = await ws.http('git:remotes', { projectId });
 			remotes = list;
+			// Remotes decide which service and account the hosting view reads.
+			void hostingStore.load({ force: true });
 			// Only restore from localStorage if current selection is empty or invalid
 			// (otherwise we'd overwrite the user's just-clicked star with the stale saved value)
 			if (!selectedRemote || !list.find(r => r.name === selectedRemote)) {
@@ -3612,6 +3638,7 @@
 				const result = await ws.http('git:push', { projectId: pid, remote: useRemote, branch, repoPath });
 				if (!result.success) {
 					showError('Push Failed', result.message);
+					if (!repoPath) void offerForkIfRefused(result.message, pushTarget?.hasUpstream && !pushTarget.isUrl ? pushTarget.remote : useRemote);
 				} else {
 					await Promise.all([loadBranches(), loadPushTarget()]);
 					const destination = repoPath
@@ -5237,8 +5264,150 @@
 		{ id: 'changes' as const, label: 'Changes', icon: 'lucide:file-pen' as IconName, badge: totalChanges > 0 ? totalChanges : null },
 		{ id: 'log' as const, label: 'History', icon: 'lucide:history' as IconName, badge: null },
 		{ id: 'branches' as const, label: 'Branches', icon: 'lucide:git-branch' as IconName, badge: branchInfo?.local.length ? branchInfo.local.length : null },
-		{ id: 'more' as const, label: 'More', icon: 'lucide:ellipsis' as IconName, badge: null }
+		// Named after the service the remote lives on, and only there when it
+		// lives on one — a repository with no remote gets the Publish card in
+		// Changes instead of an empty tab.
+		...(hostingStore.primaryProvider
+			? [{
+				id: 'host' as const,
+				label: hostingStore.providerName ?? 'Remote',
+				icon: 'lucide:git-pull-request' as IconName,
+				badge: hostingStore.offersWork && workStore.forYouCount > 0 ? workStore.forYouCount : null
+			}]
+			: [])
 	]);
+
+	// ============================
+	// Hosting — GitHub, GitLab, Gitea, Bitbucket
+	// ============================
+
+	onMount(() => initHostingEvents());
+
+	// Re-match remotes against accounts whenever the repository changes under us.
+	$effect(() => {
+		if (!projectId || !isRepo) return;
+		untrack(() => void hostingStore.load({ force: true }));
+	});
+
+	// A restored "host" view on a repository that no longer has a hosted remote.
+	$effect(() => {
+		if (activeView === 'host' && hostingStore.context && !hostingStore.isLoading && !hostingStore.primaryProvider) {
+			untrack(() => switchToView('changes'));
+		}
+	});
+
+	// Branch badges and the current branch's CI, once an account can answer.
+	$effect(() => {
+		if (!hostingStore.offersWork) return;
+		untrack(() => void hostingStore.loadBranchPrs());
+	});
+	$effect(() => {
+		const branch = branchInfo?.current ?? null;
+		if (!hostingStore.offersWork || !branch) return;
+		untrack(() => void hostingStore.loadCurrentChecks(branch));
+	});
+
+	// CI dots for the commits History is showing.
+	$effect(() => {
+		if (activeView !== 'log' || !hostingStore.primaryAccount) return;
+		const shas = filteredCommits.slice(0, 40).map((commit) => commit.hash);
+		untrack(() => void hostingStore.loadCi(shas));
+	});
+
+	// The command palette's hosting commands land here. Each intent is a
+	// counter, so the effect only acts on a change, never on mount.
+	let seenIntents = { ...hostingStore.intents };
+	$effect(() => {
+		const intents = hostingStore.intents;
+		untrack(() => {
+			if (intents.publish !== seenIntents.publish) {
+				if (hostingStore.publishAccounts.length > 0) showPublishModal = true;
+				else openHostConnect({ onConnected: () => (showPublishModal = true) });
+			}
+			if (intents['open-pr'] !== seenIntents['open-pr']) {
+				const pr = branchInfo?.current ? hostingStore.branchPrs[branchInfo.current] : undefined;
+				if (pr) openWorkItem(pr);
+				else openCreatePullRequest();
+			}
+			if (intents['show-host'] !== seenIntents['show-host'] && hostingStore.primaryProvider) {
+				switchToView('host');
+				if (!isTwoColumnMode) viewMode = 'list';
+			}
+			seenIntents = { ...intents };
+		});
+	});
+
+	/** The service's own page for a commit, from the hosting links when there are some. */
+	function remoteCommitUrl(hash: string, repoPath?: string): string | null {
+		if (repoPath) return buildRemoteCommitUrl(hash, repoPath);
+		return hostingStore.link('commit', { sha: hash }) ?? buildRemoteCommitUrl(hash);
+	}
+
+	/** The active diff tab's file on the service, at the branch or commit it shows. */
+	const activeTabWebUrl = $derived.by(() => {
+		const tab = activeTab;
+		if (!tab?.filePath || nestedRepoPathFor(tab.filePath)) return null;
+		const ref = tab.commitHash ?? branchInfo?.current;
+		if (!ref) return null;
+		// A working-tree file only exists on the service once its branch is pushed.
+		if (!tab.commitHash && !headIsPushed()) return null;
+		return hostingStore.link('file', { ref, path: tab.filePath });
+	});
+
+	/** Open an item in the hosting view, from anywhere in the panel. */
+	function openWorkItem(item: import('$shared/types/work').WorkItem) {
+		const account = hostingStore.primaryAccount;
+		if (!account?.offersWork) return;
+		workStore.activate(account.accountId);
+		switchToView('host');
+		void workStore.select(item);
+		if (!isTwoColumnMode) viewMode = 'diff';
+	}
+
+	function openCreatePullRequest() {
+		if (!hostingStore.offersWork) return;
+		prComposerOpen = true;
+	}
+
+	async function handlePublished() {
+		await Promise.all([loadRemotes(), loadBranches(), loadPushTarget(), loadStatus()]);
+		await hostingStore.load({ force: true });
+	}
+
+	async function addRemoteFromPicker(name: string, url: string) {
+		await runGitOp(watchScope, 'isConfiguring', async () => {
+			await ws.http('git:add-remote', { projectId, name, url });
+			showInfo('Remote added', `${name} → ${url}`);
+			await Promise.all([loadBranches(), loadRemotes()]);
+		});
+	}
+
+	/**
+	 * Whether a push failure reads as "you may not write here" — the one
+	 * failure a fork fixes. Matched on what the services actually print.
+	 */
+	function isPermissionRefusal(message: string): boolean {
+		return /permission to .* denied|requested url returned error: 403|you are not allowed to push|access denied|not authorized to push|403 forbidden|write access to repository not granted/i.test(message);
+	}
+
+	/** After a refused push, check with the service and offer a fork when that is the fix. */
+	async function offerForkIfRefused(message: string, remote: string) {
+		if (!isPermissionRefusal(message) || !projectId) return;
+		try {
+			const check = await ws.http('hosting:can-push', { projectId, remote });
+			if (check.canPush !== false || !check.accountId || !check.repo) return;
+			const account = hostingStore.accounts.find((entry) => entry.accountId === check.accountId);
+			forkOffer = {
+				accountId: check.accountId,
+				remote,
+				repoName: check.repo.fullName,
+				login: account?.login ?? null,
+				hasUpstream: remotes.some((entry) => entry.name === 'upstream')
+			};
+		} catch (err) {
+			debug.warn('git', 'Could not check push permission:', err);
+		}
+	}
 
 	// Exported panel actions for PanelHeader
 	export const panelActions = {
@@ -6315,6 +6484,17 @@
 					</div>
 				{/each}
 			</div>
+			{#if activeTabWebUrl}
+				<a
+					href={activeTabWebUrl}
+					target="_blank"
+					rel="noopener noreferrer"
+					class="flex items-center justify-center px-2.5 border-l border-slate-200/50 dark:border-slate-700/50 text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors flex-shrink-0"
+					title="Open this file on {hostingStore.providerName ?? 'the web'}"
+				>
+					<Icon name="lucide:external-link" class="w-3.5 h-3.5" />
+				</a>
+			{/if}
 			<button
 				type="button"
 				class="flex items-center justify-center px-2.5 border-l border-slate-200/50 dark:border-slate-700/50 text-slate-400 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors bg-transparent cursor-pointer flex-shrink-0"
@@ -6329,25 +6509,87 @@
 
 <!-- View tabs snippet (always visible, even in single-column diff mode) -->
 {#snippet viewTabBar()}
-	<div class="relative flex border-b border-slate-200 dark:border-slate-700">
+	<!--
+		Four tabs and a ⋯ menu, never five labels squeezed into "Chan…". The bar
+		is a container: wide enough, each tab shows its name; narrower, its icon
+		(with the name in the tooltip). Tags, Stash and Contributors are reached
+		less often than the rest, so they sit behind ⋯ rather than in a fifth tab.
+	-->
+	<div class="@container relative flex border-b border-slate-200 dark:border-slate-700">
 		{#each viewTabs as tab (tab.id)}
 			{@const isActive = activeView === tab.id}
+			{@const isHost = tab.id === 'host'}
+			<!-- Every tab flips together at one width: all names, or all icons.
+			     As icons each tab is the same width, ⋯ included, and the badge
+			     sits on the icon's corner so it cannot push the icon off centre. -->
 			<button
 				type="button"
-				class="relative flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors {isActive
+				class="relative flex-1 min-w-0 flex items-center justify-center gap-1.5 px-2 py-2 text-xs font-medium transition-colors {isActive
 					? 'text-violet-600 dark:text-violet-400'
 					: 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
 				onclick={() => switchToView(tab.id)}
+				title={isHost && hostingStore.primaryRemote?.locator ? `${tab.label} · ${hostingStore.primaryRemote.locator}` : tab.label}
+				aria-label={tab.label}
 			>
-				{tab.label}
-				{#if tab.badge}
-					<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{tab.badge}</span>
-				{/if}
+				<span class="relative flex @[26rem]:hidden">
+					{#if isHost && hostingStore.primaryProvider}
+						<ProviderMark provider={hostingStore.primaryProvider} size="w-4 h-4" />
+					{:else}
+						<Icon name={tab.icon} class="w-4 h-4" />
+					{/if}
+					{#if tab.badge}
+						<span class="absolute -top-1.5 left-3 min-w-3.5 h-3.5 px-0.5 rounded-full bg-violet-500 text-white text-[9px] leading-none font-semibold flex items-center justify-center">{tab.badge > 99 ? '99+' : tab.badge}</span>
+					{/if}
+				</span>
+				<span class="hidden @[26rem]:flex items-center gap-1.5 min-w-0">
+					{#if isHost && hostingStore.primaryProvider}<ProviderMark provider={hostingStore.primaryProvider} size="w-3.5 h-3.5" />{/if}
+					<span class="whitespace-nowrap">{tab.label}</span>
+					{#if tab.badge}
+						<span class="min-w-4 h-4 px-1 rounded-full bg-violet-500/15 dark:bg-violet-500/25 text-3xs font-semibold flex items-center justify-center">{tab.badge}</span>
+					{/if}
+				</span>
 				{#if isActive}
 					<span class="absolute bottom-0 inset-x-0 h-px bg-violet-600 dark:bg-violet-400"></span>
 				{/if}
 			</button>
 		{/each}
+		<div class="relative flex flex-1 @[26rem]:flex-none" use:clickOutside={() => (showMoreViewMenu = false)}>
+			<button
+				type="button"
+				class="relative flex flex-1 items-center justify-center h-full px-3 transition-colors {activeView === 'more'
+					? 'text-violet-600 dark:text-violet-400'
+					: 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'}"
+				onclick={() => (showMoreViewMenu = !showMoreViewMenu)}
+				title="Tags, stash and contributors"
+				aria-label="More views"
+				aria-expanded={showMoreViewMenu}
+			>
+				<Icon name="lucide:ellipsis" class="w-4 h-4" />
+				{#if activeView === 'more'}
+					<span class="absolute bottom-0 inset-x-0 h-px bg-violet-600 dark:bg-violet-400"></span>
+				{/if}
+			</button>
+			{#if showMoreViewMenu}
+				<div
+					class="absolute right-1.5 top-full mt-1 w-44 py-1 z-30 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg"
+					transition:scale={{ duration: 120, easing: cubicOut, start: 0.95, opacity: 0 }}
+				>
+					{#each MORE_VIEWS as entry (entry.id)}
+						{@const current = activeView === 'more' && moreSubTab === entry.id}
+						<button
+							type="button"
+							class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-left bg-transparent border-none cursor-pointer {current ? 'text-violet-600 dark:text-violet-400' : 'text-slate-700 dark:text-slate-300'} hover:bg-violet-500/10"
+							onclick={() => { moreSubTab = entry.id; switchToView('more'); showMoreViewMenu = false; }}
+						>
+							<Icon name={entry.icon} class="w-3.5 h-3.5" />
+							<span class="flex-1">{entry.label}</span>
+							{#if entry.id === 'tags' && tags.length > 0}<span class="text-3xs text-slate-400">{tags.length}</span>{/if}
+							{#if entry.id === 'stash' && stashEntries.length > 0}<span class="text-3xs text-slate-400">{stashEntries.length}</span>{/if}
+						</button>
+					{/each}
+				</div>
+			{/if}
+		</div>
 	</div>
 {/snippet}
 
@@ -6435,6 +6677,58 @@
 			hasPackageJson={Boolean(branchInfo?.hasPackageJson)}
 			hasSubmodules={Boolean(branchInfo?.hasSubmodules)}
 		/>
+
+		{#if remotes.length === 0 && branchInfo && !branchInfo.operation}
+			<!-- A repository on no server yet. One click to put it on one, instead
+				of creating it in a browser and pasting its URL into Add Remote. -->
+			<div class="px-2 pb-2">
+				<div class="flex items-center gap-2.5 rounded-lg border border-violet-500/30 bg-violet-500/5 px-2.5 py-2">
+					<Icon name="lucide:cloud-upload" class="w-4 h-4 shrink-0 text-violet-600 dark:text-violet-400" />
+					<div class="flex-1 min-w-0">
+						<div class="text-xs font-semibold text-slate-800 dark:text-slate-100">Publish this repository</div>
+						<div class="text-3xs text-slate-500">
+							{hostingStore.publishAccounts.length > 0
+								? `Create it on ${[...new Set(hostingStore.publishAccounts.map((account) => account.providerName))].join(' or ')} and push.`
+								: 'Connect GitHub, GitLab or another service to create the repository and push.'}
+						</div>
+					</div>
+					<button
+						type="button"
+						class="shrink-0 cursor-pointer rounded-md border-none bg-violet-600 px-2.5 py-1 text-3xs font-semibold text-white hover:bg-violet-700"
+						onclick={() => (hostingStore.publishAccounts.length > 0 ? (showPublishModal = true) : openHostConnect({ onConnected: () => (showPublishModal = true) }))}
+					>
+						{hostingStore.publishAccounts.length > 0 ? 'Publish' : 'Connect'}
+					</button>
+				</div>
+			</div>
+		{:else if hostingStore.offersWork && branchInfo?.current && !branchInfo.detached}
+			{@const branchPr = hostingStore.branchPrs[branchInfo.current]}
+			{#if branchPr}
+				<div class="px-2 pb-2">
+					<button
+						type="button"
+						class="flex w-full items-center gap-2 rounded-lg border border-green-500/30 bg-green-500/5 px-2.5 py-1.5 text-left cursor-pointer hover:bg-green-500/10"
+						onclick={() => openWorkItem(branchPr)}
+						title={branchPr.title}
+					>
+						<Icon name="lucide:git-pull-request" class="w-3.5 h-3.5 shrink-0 text-green-600 dark:text-green-400" />
+						<span class="flex-1 min-w-0 truncate text-xs text-slate-700 dark:text-slate-200"><span class="font-mono">#{branchPr.identifier}</span> {branchPr.title}</span>
+						<Icon name="lucide:chevron-right" class="w-3.5 h-3.5 shrink-0 text-slate-400" />
+					</button>
+				</div>
+			{:else if headIsPushed() && branchInfo.current !== hostingStore.primaryRemote?.defaultBranch && (branchInfo.ahead ?? 0) === 0}
+				<div class="px-2 pb-2">
+					<button
+						type="button"
+						class="flex w-full items-center gap-2 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 bg-transparent px-2.5 py-1.5 text-left text-xs text-slate-600 dark:text-slate-300 cursor-pointer hover:border-violet-400 hover:text-violet-600"
+						onclick={openCreatePullRequest}
+					>
+						<Icon name="lucide:git-pull-request-create" class="w-3.5 h-3.5 shrink-0" />
+						<span class="flex-1">Open a {hostingStore.prNoun.long} for <span class="font-mono">{branchInfo.current}</span></span>
+					</button>
+				</div>
+			{/if}
+		{/if}
 
 		<!-- Main repo changes -->
 		<div
@@ -6531,7 +6825,8 @@
 				<!-- History search & filter bar -->
 				<div class="px-2 pt-2 pb-2 space-y-2 flex-shrink-0 border-b border-slate-200/50 dark:border-slate-800/50 bg-white/50 dark:bg-slate-900/50">
 					<div class="flex items-center gap-2">
-						<div class="flex-1 flex items-center gap-2 py-1.5 px-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg">
+						<!-- h-8, the same as the filter button beside it. -->
+						<div class="flex-1 flex items-center gap-2 h-8 px-2.5 bg-slate-100/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-800 rounded-lg">
 							<Icon name="lucide:search" class="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
 							<input
 								type="text"
@@ -6548,22 +6843,20 @@
 						<div class="relative" use:clickOutside={() => (showHistoryFilterMenu = false)}>
 							<button
 								type="button"
-								class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors cursor-pointer {hasHistoryFilter ? 'bg-violet-500/10 border-violet-500/30 text-violet-600 dark:text-violet-400' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}"
+								class="relative flex items-center justify-center w-8 h-8 shrink-0 rounded-lg border transition-colors cursor-pointer {hasHistoryFilter ? 'bg-violet-500/10 border-violet-500/30 text-violet-600 dark:text-violet-400' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}"
 								onclick={() => (showHistoryFilterMenu = !showHistoryFilterMenu)}
 								title="Filter history"
 								aria-label="Filter history"
 							>
-								<Icon name="lucide:sliders-horizontal" class="w-3.5 h-3.5" />
-								<span>Filter</span>
+								<Icon name="lucide:list-filter" class="w-3.5 h-3.5" />
 								{#if hasHistoryFilter}
-									<span class="w-1.5 h-1.5 rounded-full bg-violet-600 dark:bg-violet-400"></span>
+									<span class="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-violet-600 dark:bg-violet-400"></span>
 								{/if}
 							</button>
 							{#if showHistoryFilterMenu}
-								<div
-									class="absolute right-0 top-full mt-1 w-64 origin-top-right bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg p-3 z-20 space-y-3"
-									transition:scale={{ duration: 130, easing: cubicOut, start: 0.95, opacity: 0 }}
-								>
+								<!-- Floating (fixed, measured), like the hosting view's filters:
+								     an absolute panel was clipped by the list it sits over. -->
+								<MenuSurface width="w-64" class="p-3 space-y-3">
 									<div class="space-y-1">
 										<label class="flex text-3xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wide">Author</label>
 										<select
@@ -6621,7 +6914,7 @@
 											Clear filters
 										</button>
 									{/if}
-								</div>
+								</MenuSurface>
 							{/if}
 						</div>
 					</div>
@@ -6664,7 +6957,8 @@
 							onViewCommit={viewCommitDiff}
 							onCheckoutCommit={checkoutCommit}
 							isCheckingOut={ops.isBranching}
-							getRemoteCommitUrl={buildRemoteCommitUrl}
+							getRemoteCommitUrl={remoteCommitUrl}
+							ciStatuses={hostingStore.ci}
 						/>
 					{/if}
 				</div>
@@ -6737,6 +7031,12 @@
 											<div class="flex-1 min-w-0 flex flex-col justify-center overflow-hidden">
 												<div class="flex min-w-0 items-center gap-2">
 													<span class="flex-1 min-w-0 text-sm text-slate-900 dark:text-slate-100 leading-tight truncate" title={branch.name}>{branch.name}</span>
+													{#if hostingStore.branchPrs[branch.name]}
+														{@const pr = hostingStore.branchPrs[branch.name]}
+														<button type="button" class="shrink-0 inline-flex items-center gap-0.5 px-1 rounded text-3xs font-semibold font-mono border-none cursor-pointer bg-green-500/10 text-green-700 dark:text-green-400 hover:bg-green-500/20" onclick={(e) => { e.stopPropagation(); openWorkItem(pr); }} title={pr.title}><Icon name="lucide:git-pull-request" class="w-3 h-3" />#{pr.identifier}</button>
+													{:else if pushedBranchNames.has(branch.name) && hostingStore.primaryRemote?.defaultBranch && branch.name !== hostingStore.primaryRemote.defaultBranch && hostingStore.link('compare')}
+														<a href={hostingStore.link('compare', { base: hostingStore.primaryRemote.defaultBranch, head: branch.name })} target="_blank" rel="noopener noreferrer" class="shrink-0 flex items-center text-slate-400 hover:text-violet-500" onclick={(e) => e.stopPropagation()} title="Compare with {hostingStore.primaryRemote.defaultBranch} on {hostingStore.providerName}"><Icon name="lucide:git-compare-arrows" class="w-3 h-3" /></a>
+													{/if}
 													{#if upstreamName}<span class="min-w-0 max-w-[45%] truncate text-3xs text-slate-400" title="Tracks {branch.upstream}">{upstreamName}</span>{/if}
 												</div>
 												<div class="flex min-w-0 items-center gap-1.5 mt-0.5 text-xs text-slate-500 leading-tight">
@@ -6870,7 +7170,13 @@
 								</div>
 							</div>
 						{:else}
-							<button type="button" class="flex items-center justify-center gap-2 w-full py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showAddRemoteForm = true}><Icon name="lucide:plus" class="w-3.5 h-3.5" /><span>Add Remote</span></button>
+							<div class="flex gap-1.5">
+								<button type="button" class="flex flex-1 items-center justify-center gap-2 py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => (hostingStore.publishAccounts.length > 0 ? (showRepoPicker = true) : openHostConnect({ onConnected: () => (showRepoPicker = true) }))} title="Pick one of your repositories on a connected account"><Icon name="lucide:book-marked" class="w-3.5 h-3.5" /><span>From your repositories</span></button>
+								<button type="button" class="flex items-center justify-center gap-2 py-2 px-3 border border-dashed border-slate-300 dark:border-slate-600 rounded-lg text-xs text-slate-500 hover:text-violet-600 hover:border-violet-400 transition-colors cursor-pointer bg-transparent" onclick={() => showAddRemoteForm = true} title="Add a remote by URL"><Icon name="lucide:link" class="w-3.5 h-3.5" /><span>By URL</span></button>
+							</div>
+							{#if remotes.length === 0}
+								<button type="button" class="mt-1.5 flex items-center justify-center gap-2 w-full py-2 px-3 rounded-lg text-xs font-semibold text-white bg-violet-600 hover:bg-violet-700 transition-colors cursor-pointer border-none" onclick={() => (hostingStore.publishAccounts.length > 0 ? (showPublishModal = true) : openHostConnect({ onConnected: () => (showPublishModal = true) }))}><Icon name="lucide:cloud-upload" class="w-3.5 h-3.5" /><span>Publish repository</span></button>
+							{/if}
 						{/if}
 					</div>
 					{#if !branchInfo}
@@ -6958,6 +7264,14 @@
 				{/if}
 			</div>
 		</div>
+	{:else if activeView === 'host'}
+		<HostingView
+			currentBranch={branchInfo?.current ?? null}
+			branchPushed={headIsPushed()}
+			onCreatePullRequest={openCreatePullRequest}
+			onPublish={() => (showPublishModal = true)}
+			onItemOpened={() => { if (!isTwoColumnMode) viewMode = 'diff'; }}
+		/>
 	{:else if activeView === 'more'}
 		<!-- More View: Tags / Stash / Contributors -->
 		<div class="flex-1 flex flex-col pt-2 min-h-0">
@@ -7297,6 +7611,9 @@
 
 <!-- Diff panel snippet -->
 {#snippet diffPanel()}
+	{#if activeView === 'host'}
+		<HostingDetail onBack={isTwoColumnMode ? undefined : () => (viewMode = 'list')} />
+	{:else}
 	{@render tabBar()}
 	<div class="flex-1 overflow-hidden">
 		{#if activeTab}
@@ -7315,6 +7632,7 @@
 			</div>
 		{/if}
 	</div>
+	{/if}
 {/snippet}
 
 <div class="h-full flex flex-col bg-transparent" bind:this={containerRef}>
@@ -7398,6 +7716,33 @@
 		</div>
 	{/if}
 
+
+	<PublishRepoModal
+		isOpen={showPublishModal}
+		{projectId}
+		defaultName={projectState.currentProject?.name ?? ''}
+		existingRemotes={remotes.map((remote) => remote.name)}
+		onClose={() => (showPublishModal = false)}
+		onPublished={() => void handlePublished()}
+	/>
+	<RepoPickerModal
+		isOpen={showRepoPicker}
+		{projectId}
+		existingRemotes={remotes.map((remote) => remote.name)}
+		onClose={() => (showRepoPicker = false)}
+		onAdd={addRemoteFromPicker}
+	/>
+	<ForkOfferDialog
+		offer={forkOffer}
+		{projectId}
+		onClose={() => (forkOffer = null)}
+		onForked={() => void handlePublished()}
+	/>
+	<PullRequestComposer
+		bind:isOpen={prComposerOpen}
+		accountId={hostingStore.primaryAccount?.offersWork ? hostingStore.primaryAccount.accountId : null}
+		onClose={() => (prComposerOpen = false)}
+	/>
 
 	<!-- Merge Branch Modal -->
 	<Modal

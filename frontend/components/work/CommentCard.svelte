@@ -92,8 +92,8 @@
 	}
 </script>
 
-<article class="flex flex-col rounded-lg border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/40 overflow-hidden">
-	<header class="flex items-center gap-2 px-3 py-2 border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/60">
+<article class="flex flex-col rounded-lg border border-slate-200 dark:border-slate-700/80 bg-white dark:bg-slate-800/60 shadow-sm overflow-hidden">
+	<header class="flex items-center gap-2 px-3 py-1 border-b border-slate-200 dark:border-slate-700/80 bg-slate-100/80 dark:bg-slate-800">
 		{#if authorUrl}
 			<a
 				href={authorUrl}

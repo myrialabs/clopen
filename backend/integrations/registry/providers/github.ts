@@ -19,10 +19,13 @@
  * and are not rejected — the diagnosis in the adapter names the difference when
  * one of them cannot see a repository.
  *
- * The OAuth device flow the spec sketched is still not used: it needs an
- * embedded client id that makes every self-hosted install depend on one app we
- * own, and it can be added later without changing what is stored, since it is
- * only another way to fill the same `token` field.
+ * Three ways in, cheapest first. A `gh` CLI that is already signed in is
+ * borrowed — LINKED, so the token is re-read from `gh` on every use and
+ * rotating or logging out there is followed here. The OAuth device flow needs
+ * only a client id, never a secret, which is why it suits a self-hosted app:
+ * the id ships with Clopen (or is overridden by the user's own app for
+ * Enterprise Server). And the token form stays, because it is the one method
+ * that works on every server and under every policy.
  *
  * `agent-tools` is DECLARED but OFF by default. GitHub's official remote MCP
  * server accepts the same token, so offering it costs nothing — but adding a
@@ -37,10 +40,24 @@ export default defineProvider({
 	name: 'GitHub',
 	category: 'source-control',
 	description:
-		'Issues, pull requests and Actions for the repository this project pushes to. Start work on an issue in its own worktree, open and merge pull requests, and send a failing CI run into the chat.',
-	docsUrl: 'https://github.com/settings/tokens/new?scopes=repo,read:org&description=Clopen',
+		'Publish repositories, push without a separate credential, and work with issues, pull requests and Actions from the Git panel.',
+	docsUrl: 'https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=Clopen',
 	consoleUrl: 'https://github.com',
 	authMethod: 'api-key',
+	authMethods: ['cli', 'oauth-device', 'api-key'],
+	hosting: {
+		defaultHost: 'github.com',
+		selfHosted: true,
+		requiresServerUrl: false,
+		cli: 'gh',
+		deviceFlow: true,
+		browserFlow: false,
+		oauthAppUrl: 'https://github.com/settings/applications/new',
+		// `workflow` because pushing a change under .github/workflows over
+		// HTTPS is refused without it — a failure that otherwise reads as a
+		// broken token on the one commit that touched CI.
+		scopes: ['repo', 'read:org', 'workflow']
+	},
 	capabilities: ['work', 'agent-tools'],
 	// Connecting GitHub means "show me my work", not "give every agent GitHub
 	// tools". The second is one switch away in the hub.
@@ -53,7 +70,7 @@ export default defineProvider({
 			// Deliberately short. The full explanation of why classic beats
 			// fine-grained belongs in the error a failing token produces, where
 			// it is actionable — not in a paragraph nobody reads while pasting.
-			help: 'Scope: "repo" (plus "read:org" for SAML organisations). Fine-grained tokens work too, but only for repositories their owner granted.',
+			help: 'Scopes: "repo" and "workflow" (plus "read:org" for SAML organisations). Fine-grained tokens work too, but only for repositories their owner granted.',
 			isSecret: true,
 			isRequired: true
 		},

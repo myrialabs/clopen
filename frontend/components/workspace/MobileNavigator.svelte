@@ -19,7 +19,6 @@
 	import ContainersModal from '$frontend/components/containers/ContainersModal.svelte';
 	import MemoryModal from '$frontend/components/memory/MemoryModal.svelte';
 	import NotesModal from '$frontend/components/notes/NotesModal.svelte';
-	import WorkModal from '$frontend/components/work/WorkModal.svelte';
 	import DeploymentsModal from '$frontend/components/deployments/DeploymentsModal.svelte';
 	import SettingButton from '$frontend/components/settings/SettingButton.svelte';
 	import type { Project } from '$shared/types/database/schema';
@@ -50,8 +49,6 @@
 		closeMemoryDialog,
 		openNotesDialog,
 		closeNotesDialog,
-		openWorkDialog,
-		closeWorkDialog,
 		openDeploymentsDialog,
 		closeDeploymentsDialog
 	} from '$frontend/stores/ui/quick-panels.svelte';
@@ -406,7 +403,6 @@
 					onContainers={openContainersDialog}
 					onMemory={openMemoryDialog}
 					onNotes={openNotesDialog}
-					onWork={() => openWorkDialog()}
 					onDeployments={() => openDeploymentsDialog()}
 		/>
 
@@ -868,12 +864,6 @@
 <DeploymentsModal
 	bind:isOpen={quickPanelsState.deploymentsOpen}
 	onClose={closeDeploymentsDialog}
-/>
-
-<WorkModal
-	bind:isOpen={quickPanelsState.workOpen}
-	composePullRequest={quickPanelsState.workComposePr}
-	onClose={closeWorkDialog}
 />
 
 <ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />

@@ -30,7 +30,7 @@ import { showError } from '$frontend/stores/ui/notification.svelte';
 import { debug } from '$shared/utils/logger';
 import type { GitActiveOp, GitOpCategory, GitOpClass, GitRepoOpState } from '$shared/types/git';
 
-export type GitView = 'changes' | 'log' | 'branches' | 'more';
+export type GitView = 'changes' | 'log' | 'branches' | 'more' | 'host';
 
 /**
  * The diff tab open in the active view (the file the user picked from Changes or

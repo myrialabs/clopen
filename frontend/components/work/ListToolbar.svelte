@@ -14,6 +14,16 @@
 	import MenuSurface from '$frontend/components/common/overlay/MenuSurface.svelte';
 	import { workStore } from '$frontend/stores/features/work.svelte';
 	import type { WorkItemState } from '$shared/types/work';
+	import type { Snippet } from 'svelte';
+
+	interface Props {
+		/** Controls before the state picker — the hosting view puts its PR/issue switch here. */
+		leading?: Snippet;
+		/** Controls after refresh — new item, settings. */
+		trailing?: Snippet;
+	}
+
+	const { leading, trailing }: Props = $props();
 
 	const filters = $derived(workStore.filters);
 	const activeCount = $derived(workStore.activeFilterCount);
@@ -55,27 +65,29 @@
 	}
 </script>
 
-<div class="flex flex-col gap-1.5 px-2 py-1.5 border-y border-slate-200 dark:border-slate-800 shrink-0">
-	<div class="flex items-center gap-1">
-		{#each STATES as entry (entry.id)}
-			<button
-				type="button"
-				class="flex items-center h-7 shrink-0 px-1.5 text-xs rounded-md border transition-colors duration-150 cursor-pointer
-					{filters.state === entry.id
-					? 'bg-violet-500/10 border-violet-500/40 text-slate-900 dark:text-slate-100'
-					: 'bg-transparent border-transparent text-slate-500 dark:text-slate-400 hover:bg-violet-500/10'}"
-				onclick={() => workStore.setFilters({ state: entry.id })}
-			>
-				{entry.label}
-			</button>
-		{/each}
+<!-- A container: the controls compact by the column's width, not the window's. -->
+<div class="@container flex flex-col gap-1.5 px-2 py-1.5 border-b border-slate-200 dark:border-slate-800 shrink-0">
+	<div class="flex items-center gap-1 min-w-0">
+		{@render leading?.()}
+		<!-- A select, not three buttons: the column is narrow, and which slice
+			you are looking at is one choice, not three controls. -->
+		<select
+			class="h-7 min-w-0 shrink pl-1.5 pr-5 text-xs bg-transparent border border-slate-200 dark:border-slate-700 rounded-md text-slate-700 dark:text-slate-300 cursor-pointer focus:outline-none focus:border-violet-500"
+			value={filters.state}
+			onchange={(event) => workStore.setFilters({ state: event.currentTarget.value as WorkItemState })}
+			aria-label="Which items"
+		>
+			{#each STATES as entry (entry.id)}
+				<option value={entry.id}>{entry.label}</option>
+			{/each}
+		</select>
 
 		<span class="flex-1"></span>
 
 		<div class="relative" use:clickOutside={() => (panelOpen = false)}>
 			<button
 				type="button"
-				class="flex items-center gap-1 h-7 px-1.5 text-xs rounded-md border transition-colors duration-150 cursor-pointer
+				class="flex items-center justify-center gap-1 h-7 min-w-7 px-1 text-xs rounded-md border transition-colors duration-150 cursor-pointer
 					{activeCount > 0
 					? 'bg-violet-500/10 border-violet-500/40 text-slate-900 dark:text-slate-100'
 					: 'bg-transparent border-transparent text-slate-500 dark:text-slate-400 hover:bg-violet-500/10'}"
@@ -184,14 +196,17 @@
 		<RefreshButton
 			isLoading={workStore.isLoadingItems}
 			onRefresh={() => workStore.loadItems()}
-			label="Refresh the list"
+			label={workStore.rateLimit
+				? `Refresh · ${workStore.rateLimit.remaining} of ${workStore.rateLimit.limit} API requests left`
+				: 'Refresh the list'}
 		/>
+		{@render trailing?.()}
 	</div>
 
 	<input
 		type="search"
 		class="w-full h-7 px-2 text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-md text-slate-900 dark:text-slate-100 focus:outline-none focus:border-violet-500"
-		placeholder="Filter by title, label or assignee…"
+		placeholder="Search…"
 		value={workStore.search}
 		oninput={(event) => onSearchInput(event.currentTarget.value)}
 	/>

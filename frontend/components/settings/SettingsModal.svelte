@@ -26,7 +26,7 @@
 	import MemorySettings from './memory/MemorySettings.svelte';
 	import MemoryModelSettings from './model/MemoryModelSettings.svelte';
 	import ProfilesSettings from './profiles/ProfilesSettings.svelte';
-	import GitIdentitiesSettings from './git/GitIdentitiesSettings.svelte';
+	import GitAccountsSettings from './git/GitAccountsSettings.svelte';
 	import AppearanceSettings from './appearance/AppearanceSettings.svelte';
 	import NotificationSettings from './notifications/NotificationSettings.svelte';
 	import ChatAppsSettings from './chat-apps/ChatAppsSettings.svelte';
@@ -276,7 +276,7 @@
 						</div>
 					{:else if activeSection === 'git-identities'}
 						<div in:fly={{ x: 20, duration: 200 }}>
-							<GitIdentitiesSettings />
+							<GitAccountsSettings />
 						</div>
 					{:else if activeSection === 'artifacts'}
 						<div in:fly={{ x: 20, duration: 200 }}>

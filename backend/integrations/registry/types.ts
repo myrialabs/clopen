@@ -15,7 +15,8 @@ import type {
 	IntegrationAuthMethod,
 	IntegrationCapability,
 	IntegrationCategory,
-	IntegrationCredentialField
+	IntegrationCredentialField,
+	IntegrationHostingInfo
 } from '$shared/types/integrations';
 import type { McpTransport } from '$backend/database/queries';
 
@@ -99,6 +100,17 @@ export interface IntegrationProvider {
 	/** The provider's own dashboard, for what Clopen cannot do — see `IntegrationProviderInfo`. */
 	consoleUrl?: string;
 	authMethod: IntegrationAuthMethod;
+	/**
+	 * Every way this provider can be connected, preferred first. Omitted means
+	 * `[authMethod]`. The token form (`api-key`) is always the last resort: it
+	 * works everywhere, and it is the one that asks the most of the user.
+	 */
+	authMethods?: IntegrationAuthMethod[];
+	/**
+	 * Present for a provider that hosts git repositories. Whether a client id
+	 * ships with Clopen is decided at runtime, not declared, so it is left out.
+	 */
+	hosting?: Omit<IntegrationHostingInfo, 'hasBundledClientId'>;
 	credentialFields: IntegrationCredentialField[];
 	/** Everything this provider is able to offer. */
 	capabilities: IntegrationCapability[];

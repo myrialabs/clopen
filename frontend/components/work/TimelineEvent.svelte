@@ -55,9 +55,11 @@
 	negative margin plus a half-width translate — the old pair drew the dot half
 	a centimetre to the left of the line it was supposed to be sitting on.
 -->
-<div class="relative py-0.5">
-	<span class="absolute -left-7 top-0 flex items-center justify-center w-5 h-5 rounded-full bg-slate-100 dark:bg-slate-800 border-2 border-white dark:border-slate-900 {look.tone}">
-		<Icon name={look.icon} class="w-2.5 h-2.5" />
+<!-- Same marker size as a comment's, so the rail reads as one line of
+     equal stops; the event's text stays small, which is what tells them apart. -->
+<div class="relative flex items-center min-h-7">
+	<span class="absolute -left-10 top-0 flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 dark:bg-slate-800 border-2 border-white dark:border-slate-900 {look.tone}">
+		<Icon name={look.icon} class="w-3.5 h-3.5" />
 	</span>
 
 	<p class="flex items-center gap-1 flex-wrap m-0 text-xs text-slate-500 dark:text-slate-400">

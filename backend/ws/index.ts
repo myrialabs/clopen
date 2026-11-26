@@ -48,6 +48,7 @@ import { memoryRouter } from './memory';
 import { worktreesRouter } from './worktrees';
 import { notesRouter } from './notes';
 import { workRouter } from './work';
+import { hostingRouter } from './hosting';
 import { deploymentsRouter } from './deployments';
 import { chatAppsRouter } from './chat-apps';
 
@@ -129,8 +130,11 @@ export const wsRouter = createRouter()
 	// Notes (project-scoped markdown)
 	.merge(notesRouter)
 
-	// Issues & PRs surface — work items, pull requests and CI for the current project
+	// Issues & PRs — work items, pull requests and CI for the current project,
+	// shown in the Git panel's hosting view. Then hosting itself: publish, fork,
+	// remotes from an account, commit CI.
 	.merge(workRouter)
+	.merge(hostingRouter)
 
 	// Deployments surface — builds, logs and what is live, for the current project
 	.merge(deploymentsRouter)

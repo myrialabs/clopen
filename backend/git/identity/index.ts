@@ -10,13 +10,16 @@
  *    credential helper.
  */
 
-import { buildGitIdentityEnv, remoteHost } from './env';
+import { buildGitIdentityEnv, buildHostedCredentialPairs, remoteHost } from './env';
 import { helperCommand, pickCredentialIdentity, resolveIdentity, toEnvIdentity } from './resolve';
 import { toDTO } from './service';
+import { hostAccounts } from '$backend/git-hosts/accounts';
+import type { GitIdentityRow } from '$backend/database/queries';
+import { debug } from '$shared/utils/logger';
 import type { ResolvedGitIdentity } from '$shared/types/git-identity';
 
 export { gitIdentityService, toDTO } from './service';
-export { buildGitIdentityEnv, buildGitConfigPairs, remoteHost } from './env';
+export { buildGitIdentityEnv, buildGitConfigPairs, buildHostedCredentialPairs, remoteHost } from './env';
 export type { GitEnvIdentity, HelperCommand } from './env';
 export { resolveIdentity, pickCredentialIdentity, toEnvIdentity, helperCommand } from './resolve';
 export { identityKeyPath, removeKeyFiles, writeKeyFile } from './keys';
@@ -36,11 +39,27 @@ export { readMachineIdentity, syncLocalMachineIdentity } from './import-local';
  */
 export function resolveGitEnv(projectId: string, remoteUrl?: string | null): Record<string, string> {
 	const { row } = resolveIdentity(projectId);
-	if (!row) return {};
-
 	const host = remoteUrl ? remoteHost(remoteUrl) : null;
-	const credential = pickCredentialIdentity(host, row);
-	return buildGitIdentityEnv(toEnvIdentity(row, credential), helperCommand());
+	const credential = row ? pickCredentialIdentity(host, row) : null;
+	const hosted = buildHostedCredentialPairs(hostedHosts(projectId, row), projectId, helperCommand());
+	return buildGitIdentityEnv(row ? toEnvIdentity(row, credential) : null, helperCommand(), hosted);
+}
+
+/**
+ * Hosts a connected hosting account answers for, in this project.
+ *
+ * A host an identity's own credential claims is left out: a token chosen in
+ * Settings → Git Accounts is an explicit override, and it keeps winning over
+ * the account connected for the Git panel.
+ */
+export function hostedHosts(projectId: string, row: GitIdentityRow | null): string[] {
+	try {
+		const hosts = new Set(hostAccounts(projectId).map((ref) => ref.host));
+		return [...hosts].filter((host) => !(row && pickCredentialIdentity(host, row)));
+	} catch (error) {
+		debug.warn('git', 'Could not list hosting accounts for git credentials:', error);
+		return [];
+	}
 }
 
 /**

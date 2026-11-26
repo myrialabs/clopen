@@ -1,30 +1,28 @@
 /**
- * Issues & PRs surface store.
+ * Issues & pull requests — the hosting view of the Git panel.
  *
- * Holds what is being LOOKED AT — which project, which source, which tab, which
- * item is open — and nothing that the server owns. Work items are not cached
+ * Holds what is being LOOKED AT — which source, which list, which items are
+ * open as tabs — and nothing that the server owns. Work items are not cached
  * across opens: the provider is the truthful answer and a list that is three
- * hours stale is worse than a spinner, especially for a panel whose whole point
+ * hours stale is worse than a spinner, especially for a view whose whole point
  * is "what should I work on now".
  *
- * The project is part of that state and NOT read from the workspace. This
- * surface lives in More Tools, which is global: looking at another project's
- * issues must not require abandoning the session you are in. Every request
- * carries the project explicitly, and the workspace only moves when an action
- * genuinely relocates you — starting work.
+ * Follows the WORKSPACE project. This used to live in a global More Tools
+ * modal with its own project picker, which meant two answers to "which
+ * repository is this" — the workspace's and the modal's — and the second was
+ * the one users kept tripping over. In the Git panel there is one answer.
  *
- * The panel is provider-agnostic, and so is this file. Anything that reads
+ * The view is provider-agnostic, and so is this file. Anything that reads
  * `provider === 'github'` here would be a bug in the interface, not a feature.
  */
 
 import ws from '$frontend/utils/ws';
 import { debug } from '$shared/utils/logger';
-import { projectState, setCurrentProject } from '$frontend/stores/core/projects.svelte';
+import { projectState } from '$frontend/stores/core/projects.svelte';
 import { settings } from '$frontend/stores/features/settings.svelte';
 import { chatService } from '$frontend/services/chat/chat.service';
 import { showPanel } from '$frontend/stores/ui/workspace.svelte';
 import { showError, showInfo, showSuccess } from '$frontend/stores/ui/notification.svelte';
-import { closeWorkDialog } from '$frontend/stores/ui/quick-panels.svelte';
 import { loadWorktrees, switchToSession } from '$frontend/stores/features/worktrees.svelte';
 import { resolveGenerationModel, GENERATION_TIMEOUT_MS } from '$frontend/utils/model-override';
 import type { ChatSession } from '$shared/types/database/schema';
@@ -89,16 +87,17 @@ const START_WORK_TIMEOUT_MS = 10 * 60 * 1000;
 
 interface IssuesState {
 	/**
-	 * Mirrors the modal's visibility, set by the modal itself.
-	 *
-	 * `quickPanelsState.workOpen` is the source of truth for whether the
-	 * surface is on screen — it is what the navigators bind to. This flag exists
-	 * only so a server-pushed change knows whether anyone is looking, and it
-	 * must never be the thing that closes the modal.
+	 * True while the Git panel's hosting view is on screen, so a server-pushed
+	 * change knows whether anyone is looking.
 	 */
 	isActive: boolean;
-	/** Project being VIEWED here, which need not be the workspace's. */
+	/** The workspace project the loaded state belongs to. */
 	projectId: string | null;
+	/** Items open as tabs beside the list, in the order they were opened. */
+	openItems: WorkItem[];
+	/** Open items assigned to, or opened by, the signed-in account — "For you". */
+	forYou: { issues: WorkItem[]; pulls: WorkItem[] };
+	isLoadingForYou: boolean;
 	sources: WorkSource[];
 	activeAccountId: string | null;
 	tab: WorkTab;
@@ -157,6 +156,9 @@ interface IssuesState {
 const state = $state<IssuesState>({
 	isActive: false,
 	projectId: null,
+	openItems: [],
+	forYou: { issues: [], pulls: [] },
+	isLoadingForYou: false,
 	sources: [],
 	activeAccountId: null,
 	tab: 'issue',
@@ -219,8 +221,18 @@ export const workStore = {
 	get projectId(): string | null {
 		return state.projectId;
 	},
-	get project() {
-		return projectState.projects.find((entry) => entry.id === state.projectId) ?? null;
+	get openItems(): WorkItem[] {
+		return state.openItems;
+	},
+	get forYou(): { issues: WorkItem[]; pulls: WorkItem[] } {
+		return state.forYou;
+	},
+	get isLoadingForYou(): boolean {
+		return state.isLoadingForYou;
+	},
+	/** How many open items are waiting on the signed-in account — the hosting tab's badge. */
+	get forYouCount(): number {
+		return state.forYou.issues.length + state.forYou.pulls.length;
 	},
 	get sources(): WorkSource[] {
 		return state.sources;
@@ -341,36 +353,42 @@ export const workStore = {
 		return this.source !== null && this.source.binding === null;
 	},
 
-	/** Called by the modal when it opens. */
-	activate(): void {
+	/**
+	 * Called when the hosting view is shown. `accountId` is the account the Git
+	 * panel matched to the repository's remote; it wins over whatever was
+	 * selected before, because the remote is what decides which service this
+	 * repository is on.
+	 */
+	activate(accountId?: string | null): void {
 		state.isActive = true;
-		// Defaults to the workspace's project the FIRST time only; after that the
-		// user's choice here survives, because this surface is not tied to what
-		// the workspace happens to be showing.
-		state.projectId ??= projectState.currentProject?.id ?? null;
+		const projectId = projectState.currentProject?.id ?? null;
+		if (projectId !== state.projectId) {
+			this.reset();
+			state.projectId = projectId;
+		}
+		if (accountId) state.activeAccountId = accountId;
 		void this.loadSources();
 	},
 
-	/** Called by the modal when it closes. */
+	/** Called when the hosting view is hidden. Open tabs survive; the next show refreshes them. */
 	deactivate(): void {
 		state.isActive = false;
-		// Detail state is dropped, list state is not: closing and reopening should
-		// land back on the tab and filter the user chose, but never on a stale
-		// issue body from before someone else edited it.
-		state.selectedId = null;
-		state.detail = null;
 	},
 
-	/** Look at another project without leaving the session you are in. */
-	async selectProject(projectId: string): Promise<void> {
-		if (state.projectId === projectId) return;
-		state.projectId = projectId;
-		state.activeAccountId = null;
-		state.selectedId = null;
-		state.detail = null;
-		state.items = [];
-		state.checks = [];
-		await this.loadSources();
+	/** Close one item's tab, moving to its neighbour when it was the one on screen. */
+	closeItem(id: string): void {
+		const index = state.openItems.findIndex((item) => item.id === id);
+		if (index < 0) return;
+		state.openItems = state.openItems.filter((item) => item.id !== id);
+		if (state.selectedId === id) {
+			const next = state.openItems[index] ?? state.openItems[index - 1] ?? null;
+			void this.select(next);
+		}
+	},
+
+	closeAllItems(): void {
+		state.openItems = [];
+		void this.select(null);
 	},
 
 	/**
@@ -391,7 +409,7 @@ export const workStore = {
 			const stillThere = sources.some((entry) => entry.accountId === state.activeAccountId);
 			if (!stillThere) state.activeAccountId = sources[0]?.accountId ?? null;
 
-			if (state.activeAccountId) await this.loadItems();
+			if (state.activeAccountId) await Promise.all([this.loadItems(), this.loadForYou()]);
 		} catch (error) {
 			debug.error('work', 'Failed to load issue sources:', error);
 			state.error = messageOf(error);
@@ -406,14 +424,23 @@ export const workStore = {
 		state.activeAccountId = accountId;
 		state.selectedId = null;
 		state.detail = null;
-		await this.loadItems();
+		// Another account is another repository's items; its tabs do not carry over.
+		state.openItems = [];
+		state.labels = [];
+		state.assignees = [];
+		await Promise.all([this.loadItems(), this.loadForYou()]);
 	},
 
 	async setTab(tab: WorkTab): Promise<void> {
 		if (state.tab === tab) return;
 		state.tab = tab;
-		state.selectedId = null;
-		state.detail = null;
+		// Issues and pull requests are different lists. Keeping the old one on
+		// screen while the new one loads read as "the switch did nothing", so
+		// it is emptied at once and the list shows it is loading.
+		state.items = [];
+		state.hasMore = false;
+		state.error = null;
+		state.isLoadingItems = true;
 		await this.loadItems();
 	},
 
@@ -441,6 +468,37 @@ export const workStore = {
 
 	async loadItems(): Promise<void> {
 		await this.fetchPage(1);
+	},
+
+	/**
+	 * Open issues assigned to the account, and open pull requests it opened or
+	 * is assigned — the short list at the top of the hosting view. Independent
+	 * of the main list's filters, so narrowing "All" never hides your own work.
+	 */
+	async loadForYou(): Promise<void> {
+		const accountId = state.activeAccountId;
+		if (!accountId || !this.source?.binding) {
+			state.forYou = { issues: [], pulls: [] };
+			return;
+		}
+		state.isLoadingForYou = true;
+		try {
+			const ask = (kind: WorkItemKind) => ws.http('work:list', {
+				...scope(),
+				accountId,
+				kind,
+				state: 'open',
+				mineOnly: true
+			}) as Promise<{ items: WorkItem[] }>;
+			const [issues, pulls] = await Promise.all([ask('issue'), ask('pull-request')]);
+			if (accountId !== state.activeAccountId) return;
+			state.forYou = { issues: issues.items.slice(0, 8), pulls: pulls.items.slice(0, 8) };
+		} catch (error) {
+			debug.warn('work', 'Could not load the items waiting on you:', error);
+			state.forYou = { issues: [], pulls: [] };
+		} finally {
+			state.isLoadingForYou = false;
+		}
 	},
 
 	/** Append the next page. Called when the list is scrolled near its end. */
@@ -558,6 +616,13 @@ export const workStore = {
 		const accountId = state.activeAccountId;
 		if (!accountId) return;
 
+		// One tab per item. Re-selecting an open one keeps its place in the
+		// strip, and refreshes its copy of the title and state.
+		const existing = state.openItems.findIndex((entry) => entry.id === item.id && entry.kind === item.kind);
+		state.openItems = existing >= 0
+			? state.openItems.map((entry, index) => (index === existing ? item : entry))
+			: [...state.openItems, item];
+
 		state.selectedId = item.id;
 		state.detail = null;
 		state.detailTab = 'conversation';
@@ -579,6 +644,7 @@ export const workStore = {
 			debug.error('work', 'Failed to load work item:', error);
 			showError('Could not open item', messageOf(error));
 			state.selectedId = null;
+			state.openItems = state.openItems.filter((entry) => entry.id !== item.id);
 		} finally {
 			state.isLoadingDetail = false;
 		}
@@ -868,6 +934,33 @@ export const workStore = {
 		}
 	},
 
+	async setLabels(labels: string[]): Promise<void> {
+		const accountId = state.activeAccountId;
+		const detail = state.detail;
+		if (!accountId || !detail) return;
+
+		try {
+			await ws.http('work:set-labels', { ...scope(), accountId, kind: detail.kind, id: detail.id, labels });
+			await this.refreshDetail();
+			await this.loadItems();
+		} catch (error) {
+			showError('Could not change labels', messageOf(error));
+		}
+	},
+
+	async setReviewers(logins: string[]): Promise<void> {
+		const accountId = state.activeAccountId;
+		const detail = state.detail;
+		if (!accountId || !detail || detail.kind !== 'pull-request') return;
+
+		try {
+			await ws.http('work:set-reviewers', { ...scope(), accountId, id: detail.id, logins });
+			await this.refreshDetail();
+		} catch (error) {
+			showError('Could not request reviewers', messageOf(error));
+		}
+	},
+
 	async createIssue(draft: { title: string; body: string; assignees: string[]; labels: string[] }): Promise<WorkItem | null> {
 		const accountId = state.activeAccountId;
 		if (!accountId) return null;
@@ -935,9 +1028,8 @@ export const workStore = {
 	 * message, the streaming state and the active session are all owned by the
 	 * browser.
 	 *
-	 * This is the one action that DOES relocate the workspace, so when the
-	 * surface is pointed at another project it switches to that project first —
-	 * starting work means going there.
+	 * The workspace moves into the new worktree's session: starting work means
+	 * going there.
 	 */
 	async startWork(item: WorkItem): Promise<void> {
 		const accountId = state.activeAccountId;
@@ -961,16 +1053,6 @@ export const workStore = {
 				transitionError: string | null;
 				needsSetup: boolean;
 			};
-
-			closeWorkDialog();
-
-			// Move the workspace to the project the work was started in, when it
-			// is not the one already open. The session lives there, and switching
-			// afterwards would leave the chat pointed at another project's tree.
-			if (state.projectId && state.projectId !== projectState.currentProject?.id) {
-				const target = projectState.projects.find((entry) => entry.id === state.projectId);
-				if (target) await setCurrentProject(target);
-			}
 
 			// The worktree list must hold the new tree before the workspace is
 			// pointed at it, or the switch resolves to a tree the client cannot
@@ -1047,7 +1129,6 @@ export const workStore = {
 				runUrl: run.url
 			})) as { runName: string; prompt: string; truncated: boolean };
 
-			closeWorkDialog();
 			showPanel('chat');
 			await chatService.sendMessage(result.prompt);
 		} catch (error) {
@@ -1151,6 +1232,8 @@ export const workStore = {
 
 	reset(): void {
 		state.projectId = null;
+		state.openItems = [];
+		state.forYou = { issues: [], pulls: [] };
 		state.sources = [];
 		state.activeAccountId = null;
 		state.items = [];
@@ -1181,9 +1264,6 @@ export function initIssuesEvents(): void {
 	eventsBound = true;
 
 	ws.on('work:changed', (payload) => {
-		// Keyed on the project this surface is VIEWING, not the workspace's:
-		// they are allowed to differ, and using the workspace here would ignore
-		// changes to the project actually on screen.
 		if (payload.projectId !== workStore.projectId) return;
 		workStore.invalidate();
 	});
