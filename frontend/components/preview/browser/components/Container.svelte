@@ -382,6 +382,16 @@
 		!loadStopped && (isLaunchingBrowser || !sessionInfo || !hasPaintedContent)
 	);
 
+	/**
+	 * A failed load is a final state, not a loading one. The failure panel sits
+	 * over the whole container while the loading overlay sits inside the frame,
+	 * so both used to render at once — "Loading preview…" spinning under
+	 * "Failed to Load Page". While it shows, the screen is still covered (so a
+	 * half-painted or stale page does not bleed through the text) but nothing
+	 * on it claims the page is still coming.
+	 */
+	const showFailurePanel = $derived(!!errorMessage && !isLaunchingBrowser && !isLoading);
+
 	// Navigation overlay state with debounce to prevent flickering during state transitions
 	let showNavigationOverlay = $state(false);
 	let overlayHideTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -901,7 +911,7 @@
 			{/if}
 
 			<!-- Solid Loading Overlay: Initial load states (launching, no session, waiting for first frame) -->
-			{#if showSolidOverlay}
+			{#if showSolidOverlay || showFailurePanel}
 				<div
 					class="absolute bg-white dark:bg-slate-800 flex items-center justify-center z-10"
 					style="
@@ -912,18 +922,20 @@
 						border-radius: {cornersToCss(layout.screenRadius, currentScale)};
 					"
 				>
-					<div class="flex flex-col items-center gap-2">
-						<Icon name="lucide:loader-circle" class="w-8 h-8 animate-spin text-violet-600" />
-						<div class="text-slate-500 text-center">
-							<div class="text-sm">Loading preview...</div>
+					{#if !showFailurePanel}
+						<div class="flex flex-col items-center gap-2">
+							<Icon name="lucide:loader-circle" class="w-8 h-8 animate-spin text-violet-600" />
+							<div class="text-slate-500 text-center">
+								<div class="text-sm">Loading preview...</div>
+							</div>
 						</div>
-					</div>
+					{/if}
 				</div>
 			{/if}
 
 			<!-- Navigation Overlay: Only for user-initiated toolbar navigations (Go button/Enter) -->
 			<!-- In-browser link clicks only show the progress bar, not this overlay -->
-			{#if showNavigationOverlay}
+			{#if showNavigationOverlay && !showFailurePanel}
 				<div
 					class="absolute bg-white/60 dark:bg-slate-800/60 backdrop-blur-[2px] flex items-center justify-center z-10"
 					style="
@@ -1083,7 +1095,7 @@
 		stream — "Try Again" now just re-navigates the same live session instead
 		of forcing the whole panel through a fresh reconnect.
 	-->
-	{#if errorMessage && !isLaunchingBrowser && !isLoading}
+	{#if showFailurePanel}
 		<div
 			class="text-center text-slate-500 absolute z-40"
 			in:scale={{ duration: 250, easing: cubicOut, start: 0.95 }}
