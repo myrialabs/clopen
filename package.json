@@ -107,6 +107,7 @@
     "eslint": "^9.31.0",
     "eslint-plugin-svelte": "^3.10.1",
     "globals": "^16.3.0",
+    "pdfjs-dist": "6.5.438",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "tailwindcss": "^4.1.11",

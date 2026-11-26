@@ -24,11 +24,14 @@
 	import { containersStore } from '$frontend/stores/features/containers.svelte';
 	import { startUpdateChecker, stopUpdateChecker } from '$frontend/stores/ui/update.svelte';
 	import { debug } from '$shared/utils/logger';
+	import { installFileDropGuard } from '$frontend/utils/file-drop';
 
 	let servicesInitialized = false;
 
 	// Initialize auth on mount
 	onMount(async () => {
+		// A file dropped outside a drop zone must not replace the app with it.
+		installFileDropGuard();
 		await authStore.initialize();
 	});
 

@@ -71,6 +71,8 @@ export interface ImageBlock {
 	data: string;
 	/** Original file name, so the message (and editing it) shows what was attached. */
 	title?: string | null;
+	/** Attachment number within its message, from 1 — what `@1` in the text names. */
+	index?: number;
 }
 
 export interface DocumentBlock {
@@ -78,13 +80,33 @@ export interface DocumentBlock {
 	mediaType: string;
 	data: string;
 	title: string | null;
+	/** Attachment number within its message, from 1 — what `@1` in the text names. */
+	index?: number;
+}
+
+/**
+ * An attachment the model does not read inline: saved into the session's
+ * working tree and named in the prompt instead (see backend/chat/attachments).
+ * The message keeps where it went, not its bytes.
+ */
+export interface FileBlock {
+	type: 'file';
+	mediaType: string;
+	title: string | null;
+	/** Size in bytes. */
+	size: number;
+	/** Absolute path of the saved copy. */
+	path: string;
+	/** Attachment number within its message, from 1 — what `@1` in the text names. */
+	index?: number;
 }
 
 export type UserContentBlock =
 	| TextBlock
 	| ToolResult
 	| ImageBlock
-	| DocumentBlock;
+	| DocumentBlock
+	| FileBlock;
 
 export type AssistantContentBlock =
 	| TextBlock

@@ -67,6 +67,14 @@ interface QueuedMessage {
 
 /** chatSessionId → its draft. */
 const drafts = new Map<string, Draft>();
+/**
+ * chatSessionId → attachment id → its bytes. A save sends the bytes of a file
+ * once, then names it by id; the draft is rebuilt from here. Kept a moment
+ * past the draft that dropped them, because another tab's write that lost the
+ * revision race may still be followed by one that names them.
+ */
+const draftBytes = new Map<string, Map<string, { base64: string; receivedAt: number }>>();
+const DRAFT_BYTES_GRACE_MS = 60_000;
 /** chatSessionId → the message being edited. */
 const edits = new Map<string, EditState>();
 /** chatSessionId → messages waiting for the current turn to finish, in order. */
@@ -244,6 +252,7 @@ streamManager.on('session:turn-started', (chatSessionId: string) => {
 // Deleting a session drops everything its composer was holding.
 streamManager.on('session:cleanup', (chatSessionId: string) => {
 	drafts.delete(chatSessionId);
+	draftBytes.delete(chatSessionId);
 	edits.delete(chatSessionId);
 	queues.delete(chatSessionId);
 });
@@ -258,6 +267,15 @@ const attachmentSchema = t.Object({
 	type: t.String(),
 	mediaType: t.String(),
 	base64: t.String()
+});
+
+/** An attachment in a save: its bytes the first time, its id alone after that. */
+const savedAttachmentSchema = t.Object({
+	id: t.String(),
+	fileName: t.String(),
+	type: t.String(),
+	mediaType: t.String(),
+	base64: t.Optional(t.String())
 });
 
 const engineSchema = t.Object({
@@ -317,14 +335,15 @@ export const composerHandler = createRouter()
 	})
 
 	// Save the draft. Omitted fields are left as they are, so typing
-	// sends text only and attachments travel only when they change. A part is
-	// only replaced by a write newer than the one it holds.
+	// sends text only and attachments travel only when they change — and then
+	// only the bytes of files the server hasn't had yet. A part is only
+	// replaced by a write newer than the one it holds.
 	.on('chat:draft-save', {
 		data: t.Object({
 			chatSessionId: t.String(),
 			revision: t.Number(),
 			text: t.Optional(t.String()),
-			attachments: t.Optional(t.Array(attachmentSchema))
+			attachments: t.Optional(t.Array(savedAttachmentSchema))
 		})
 	}, ({ data }) => {
 		requireSessionAccess(data.chatSessionId);
@@ -333,9 +352,31 @@ export const composerHandler = createRouter()
 			draft.text = data.text;
 			draft.textRevision = data.revision;
 		}
-		if (data.attachments !== undefined && data.revision > draft.attachmentsRevision) {
-			draft.attachments = data.attachments;
-			draft.attachmentsRevision = data.revision;
+		if (data.attachments !== undefined) {
+			const bytes = draftBytes.get(data.chatSessionId) ?? new Map<string, { base64: string; receivedAt: number }>();
+			const now = Date.now();
+			for (const attachment of data.attachments) {
+				if (attachment.base64 !== undefined) bytes.set(attachment.id, { base64: attachment.base64, receivedAt: now });
+			}
+			if (data.revision > draft.attachmentsRevision) {
+				const attachments: DraftAttachment[] = [];
+				for (const attachment of data.attachments) {
+					const base64 = attachment.base64 ?? bytes.get(attachment.id)?.base64;
+					if (base64 === undefined) {
+						debug.warn('chat', `Draft attachment ${attachment.id} was named before its bytes arrived; left out`);
+						continue;
+					}
+					attachments.push({ ...attachment, base64 });
+				}
+				draft.attachments = attachments;
+				draft.attachmentsRevision = data.revision;
+				const kept = new Set(attachments.map((attachment) => attachment.id));
+				for (const [id, entry] of bytes) {
+					if (!kept.has(id) && now - entry.receivedAt > DRAFT_BYTES_GRACE_MS) bytes.delete(id);
+				}
+			}
+			if (bytes.size > 0) draftBytes.set(data.chatSessionId, bytes);
+			else draftBytes.delete(data.chatSessionId);
 		}
 		drafts.set(data.chatSessionId, draft);
 	})

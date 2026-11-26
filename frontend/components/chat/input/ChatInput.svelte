@@ -33,7 +33,7 @@
 	import QueuedMessages from './components/QueuedMessages.svelte';
 	import ChatInputActions from './components/ChatInputActions.svelte';
 	import LoadingIndicator from './components/LoadingIndicator.svelte';
-	import DragDropOverlay from './components/DragDropOverlay.svelte';
+	import MentionMenu, { type MentionItem } from './components/MentionMenu.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
 	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
 	import WorkItemRefMenu from './components/WorkItemRefMenu.svelte';
@@ -52,8 +52,14 @@
 	import { useTextareaResize } from './composables/use-textarea-resize.svelte';
 	import { useChatActions } from './composables/use-chat-actions.svelte';
 	import { useInputState } from './composables/use-input-state.svelte';
+	import { useChatDropTarget } from './composables/use-chat-drop-zone.svelte';
+	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
+	import { formatFileSize } from '$frontend/utils/format';
+	import { mentionToken, removeMention, rewriteMentions, shiftMentions } from '$shared/utils/attachment-mentions';
 
 	let messageText = $state('');
+	// Where the caret is in the box, for the `@` picker.
+	let caret = $state(0);
 	let textareaElement: HTMLTextAreaElement;
 	// Hidden twin of the textarea that measures the placeholder (see use-textarea-resize)
 	let sizingMirror: HTMLTextAreaElement;
@@ -128,6 +134,8 @@
 	// Helper functions for composables
 	const setMessageText = (text: string) => {
 		messageText = text;
+		// Setting a textarea's value puts the caret at the end.
+		caret = text.length;
 	};
 	const adjustTextareaHeight = () =>
 		textareaResize.adjustTextareaHeight(textareaElement, sizingMirror, messageText, sizingPlaceholder);
@@ -259,6 +267,70 @@
 		return () => clearTimeout(handle);
 	});
 
+	// --- `@` mentions (typing "@" lists what can be mentioned: the attachments) ---
+	// Read at the caret (see `caret` above), not the end of the text: a mention
+	// is often added to a sentence already written.
+	let mentionActiveIndex = $state(0);
+	let mentionDismissed = $state(false);
+
+	function syncCaret() {
+		if (textareaElement) caret = textareaElement.selectionStart ?? messageText.length;
+	}
+
+	const mentionMatch = $derived.by(() => {
+		if (slashQuery !== null || fileHandling.attachedFiles.length === 0) return null;
+		const before = messageText.slice(0, caret);
+		const m = /(?:^|[\s([{"'])@([^\s@]{0,40})$/.exec(before);
+		if (!m) return null;
+		return { query: m[1].toLowerCase(), start: before.length - m[1].length - 1 };
+	});
+
+	const mentionItems = $derived.by((): MentionItem[] => {
+		const match = mentionMatch;
+		if (!match) return [];
+		const query = match.query;
+		return fileHandling.attachedFiles
+			.map((attachment, i): MentionItem => ({
+				key: attachment.id,
+				group: 'Attachments',
+				token: mentionToken(i + 1),
+				label: attachment.file.name,
+				detail: formatFileSize(attachment.file.size),
+				icon: getAttachmentIcon(attachment.file.name, attachment.file.type),
+				thumbnailUrl: attachment.type === 'image' ? attachment.previewUrl : undefined
+			}))
+			.filter((item) => !query || item.token.slice(1).startsWith(query) || item.label.toLowerCase().includes(query));
+	});
+	const mentionOpen = $derived(mentionMatch !== null && !mentionDismissed && mentionItems.length > 0);
+
+	$effect(() => {
+		if (mentionMatch === null) {
+			mentionDismissed = false;
+			mentionActiveIndex = 0;
+		} else if (mentionActiveIndex >= mentionItems.length) {
+			mentionActiveIndex = 0;
+		}
+	});
+
+	function selectMention(item: MentionItem) {
+		const match = mentionMatch;
+		if (!match) return;
+		const after = messageText.slice(caret);
+		const spacer = after.startsWith(' ') ? '' : ' ';
+		const next = `${messageText.slice(0, match.start)}${item.token}${spacer}${after}`;
+		const position = match.start + item.token.length + 1;
+		setMessageText(next);
+		inputState.saveText();
+		mentionDismissed = true;
+		requestAnimationFrame(() => {
+			if (!textareaElement) return;
+			textareaElement.focus();
+			textareaElement.setSelectionRange(position, position);
+			caret = position;
+			adjustTextareaHeight();
+		});
+	}
+
 	/** UTF-8 text as base64, the form attachments are stored in. */
 	function utf8Base64(text: string): string {
 		const bytes = new TextEncoder().encode(text);
@@ -303,17 +375,70 @@
 		inputState.saveAttachments(fileHandling.attachedFiles);
 	}
 	const handleFileInputChange = (event: Event) => afterAttachmentChange(fileHandling.handleFileInputChange(event));
-	const handleDrop = (event: DragEvent) => afterAttachmentChange(fileHandling.handleDrop(event));
 	const handlePaste = (event: ClipboardEvent) => afterAttachmentChange(fileHandling.handlePaste(event));
-	const handleRemoveAttachment = (id: string) => afterAttachmentChange(fileHandling.removeAttachment(id));
+
+	// Files dropped anywhere on the chat panel land here.
+	useChatDropTarget((files) => {
+		if (!hasActiveProject) return;
+		void afterAttachmentChange(fileHandling.processFiles(files));
+	});
+
+	/** Put text in the box as if typed: saved, and the box re-fitted. */
+	function replaceTextKeepingDraft(text: string) {
+		if (text === messageText) return;
+		setMessageText(text);
+		inputState.saveText();
+		setTimeout(() => adjustTextareaHeight(), 0);
+	}
+
+	// Removing a file renumbers the ones after it, and `@N` in the text follows:
+	// later numbers move down, the removed file's own become its name.
+	function handleRemoveAttachment(id: string) {
+		const files = fileHandling.attachedFiles;
+		const position = files.findIndex((file) => file.id === id);
+		if (position === -1) return;
+		const removed = files[position];
+		replaceTextKeepingDraft(removeMention(messageText, position + 1, files.length, removed.file.name));
+		void afterAttachmentChange(fileHandling.removeAttachment(id));
+	}
+
+	function handleClearAllAttachments() {
+		const names = fileHandling.attachedFiles.map((file) => file.file.name);
+		replaceTextKeepingDraft(rewriteMentions(messageText, (index) => (index <= names.length ? `"${names[index - 1]}"` : null)));
+		void afterAttachmentChange(fileHandling.clearAllAttachments());
+	}
 
 	// --- Event handlers ---
 
 	const handleTextareaInput = () => {
+		syncCaret();
 		adjustTextareaHeight();
 		inputState.saveText();
 	};
 	const handleKeyDown = (event: KeyboardEvent) => {
+		// The `@` picker owns navigation keys while it is open.
+		if (mentionOpen) {
+			if (event.key === 'ArrowDown') {
+				event.preventDefault();
+				mentionActiveIndex = (mentionActiveIndex + 1) % mentionItems.length;
+				return;
+			}
+			if (event.key === 'ArrowUp') {
+				event.preventDefault();
+				mentionActiveIndex = (mentionActiveIndex - 1 + mentionItems.length) % mentionItems.length;
+				return;
+			}
+			if (event.key === 'Enter' || event.key === 'Tab') {
+				event.preventDefault();
+				selectMention(mentionItems[mentionActiveIndex]);
+				return;
+			}
+			if (event.key === 'Escape') {
+				event.preventDefault();
+				mentionDismissed = true;
+				return;
+			}
+		}
 		// The `#` picker owns navigation keys while it has something to pick.
 		if (refOpen && refItems.length > 0) {
 			if (event.key === 'ArrowDown') {
@@ -377,11 +502,13 @@
 	};
 
 	/** Add a message's text and attachments to what is in the box already. */
-	function appendToComposer(text: string, attachments: { fileName: string; mediaType: string; data: string }[]) {
-		if (text) setMessageText(messageText.trim() ? `${messageText.trimEnd()}\n\n${text}` : text);
+	function appendToComposer(incomingText: string, attachments: { fileName: string; mediaType: string; data: string }[]) {
 		const restored = attachments
 			.map((a) => attachmentFromBase64({ fileName: a.fileName, mediaType: a.mediaType, base64: a.data }))
 			.filter((a): a is FileAttachment => a !== null);
+		// Its `@1` meant its own first file, which now follows the ones already here.
+		const text = shiftMentions(incomingText, fileHandling.attachedFiles.length, restored.length);
+		if (text) setMessageText(messageText.trim() ? `${messageText.trimEnd()}\n\n${text}` : text);
 		if (restored.length > 0) {
 			fileHandling.replaceAttachments([...fileHandling.attachedFiles, ...restored]);
 			inputState.saveAttachments(fileHandling.attachedFiles);
@@ -608,11 +735,22 @@
 
 	<!-- Input container with modern design -->
 	<div class="{isWelcomeState ? 'max-w-3xl mx-auto' : 'max-w-4xl mx-auto'} relative">
-		<!-- File attachments preview -->
+		<!-- Attached files: one sideways-scrolling row, numbered for `@N` -->
 		<FileAttachmentPreview
 			attachedFiles={fileHandling.attachedFiles}
+			pendingCount={fileHandling.pendingCount}
 			onRemove={handleRemoveAttachment}
+			onClearAll={handleClearAllAttachments}
 		/>
+
+		{#if mentionOpen}
+			<MentionMenu
+				items={mentionItems}
+				activeIndex={mentionActiveIndex}
+				onselect={selectMention}
+				onhover={(i) => (mentionActiveIndex = i)}
+			/>
+		{/if}
 
 		<!-- Slash command autocomplete (typing "/" surfaces slash-invocable Skills) -->
 		{#if slashOpen}
@@ -635,17 +773,14 @@
 			/>
 		{/if}
 
-		<!-- Main input area with drag and drop support -->
+		<!-- Main input area (files are dropped on the whole chat panel, see ChatPanel) -->
 		<div
 			class="
 			relative z-10 flex items-end gap-3 lg:gap-4 overflow-hidden bg-white dark:bg-slate-900
 			border border-slate-200 dark:border-slate-700 rounded-xl transition-all duration-200
-			focus-within:ring-1 focus-within:ring-violet-500 {fileHandling.isDragging && 'ring-1 ring-violet-500'}"
+			focus-within:ring-1 focus-within:ring-violet-500"
 			role="region"
-			aria-label="Message input with file drop zone"
-			ondragover={fileHandling.handleDragOver}
-			ondragleave={fileHandling.handleDragLeave}
-			ondrop={handleDrop}
+			aria-label="Message input"
 		>
 			<div class="flex-1 min-w-0">
 				<!-- What this chat has changed so far, and the way into the detail -->
@@ -681,6 +816,9 @@
 							aria-label="Message"
 							oninput={handleTextareaInput}
 							onkeydown={handleKeyDown}
+							onkeyup={syncCaret}
+							onclick={syncCaret}
+							onselect={syncCaret}
 							onpaste={handlePaste}
 							oncompositionstart={chatActions.handleCompositionStart}
 							oncompositionend={chatActions.handleCompositionEnd}
@@ -705,12 +843,6 @@
 				</div>
 			</div>
 		</div>
-
-		<!-- Overlays -->
-		<DragDropOverlay
-			isDragging={fileHandling.isDragging}
-			isProcessingFiles={fileHandling.isProcessingFiles}
-		/>
 
 		<!-- Loading indicator -->
 		<LoadingIndicator

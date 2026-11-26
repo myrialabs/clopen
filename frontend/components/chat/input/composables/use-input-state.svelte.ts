@@ -5,7 +5,7 @@ import { setQueue } from '$frontend/stores/ui/message-queue.svelte';
 import { projectState } from '$frontend/stores/core/projects.svelte';
 import { sessionState } from '$frontend/stores/core/sessions.svelte';
 import { debug } from '$shared/utils/logger';
-import ws from '$frontend/utils/ws';
+import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { attachmentFromBase64, type FileAttachment } from './use-file-handling.svelte';
 
 /**
@@ -69,12 +69,42 @@ const localWrites = new Map<
 	}
 >();
 
+/**
+ * Attachments whose bytes the server already holds, per session. A save
+ * names those by id and sends only the bytes of new files — re-sending every
+ * file on every change made adding the tenth file upload all ten again.
+ */
+const bytesOnServer = new Map<string, Set<string>>();
+
+// A dropped socket may have lost a save in flight, and a restarted server has
+// nothing: after a reconnect every file goes up once more.
+onWsReconnect(() => bytesOnServer.clear());
+
 function writeDraft(chatSessionId: string, revision: number, text?: string, attachments?: SyncAttachment[]) {
 	const local = localWrites.get(chatSessionId) ?? {};
 	if (text !== undefined) local.text = { value: text, revision };
 	if (attachments !== undefined) local.attachments = { value: attachments, revision };
 	localWrites.set(chatSessionId, local);
-	ws.emit('chat:draft-save', { chatSessionId, revision, text, attachments });
+
+	let wire: Array<Omit<SyncAttachment, 'base64'> & { base64?: string }> | undefined;
+	if (attachments !== undefined) {
+		const sent = bytesOnServer.get(chatSessionId) ?? new Set<string>();
+		wire = attachments.map((attachment) => {
+			if (!sent.has(attachment.id)) return attachment;
+			const { base64: _bytes, ...named } = attachment;
+			return named;
+		});
+		for (const attachment of attachments) sent.add(attachment.id);
+		bytesOnServer.set(chatSessionId, sent);
+	}
+	ws.emit('chat:draft-save', { chatSessionId, revision, text, attachments: wire });
+}
+
+/** Files that came from the server's own draft are already there. */
+function markOnServer(chatSessionId: string, attachments: Array<{ id: string }>) {
+	const sent = bytesOnServer.get(chatSessionId) ?? new Set<string>();
+	for (const attachment of attachments) sent.add(attachment.id);
+	bytesOnServer.set(chatSessionId, sent);
 }
 
 export function useInputState(params: InputStateParams) {
@@ -154,6 +184,7 @@ export function useInputState(params: InputStateParams) {
 
 			const { draft } = state;
 			lastRevision = Math.max(lastRevision, draft.textRevision, draft.attachmentsRevision);
+			markOnServer(chatSessionId, draft.attachments);
 
 			if (editedSinceRestore) {
 				// Typed into the box before the draft arrived: keep it, and make it

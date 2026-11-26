@@ -64,7 +64,8 @@ export function slimMessage(message: UnifiedMessage): UnifiedMessage | null {
 			if (block.type === 'image' || block.type === 'document') {
 				changed = true;
 				const label = block.type === 'image' ? 'Image' : 'Document';
-				return { type: 'text' as const, text: `[${label}${block.title ? ` "${block.title}"` : ''} removed by Storage cleanup]` };
+				const number = block.index ? ` @${block.index}` : '';
+				return { type: 'text' as const, text: `[${label}${number}${block.title ? ` "${block.title}"` : ''} removed by Storage cleanup]` };
 			}
 			return block;
 		});
