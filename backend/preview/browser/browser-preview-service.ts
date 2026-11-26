@@ -13,8 +13,20 @@ import { WorkspaceClipboard, type ClipboardSource } from './browser-clipboard.js
 import { browserMcpControl } from './browser-mcp-control.js';
 import { browserPool } from './browser-pool.js';
 import { ws } from '$backend/utils/ws';
-import { defaultRotation, type DeviceRequest } from '$shared/constants/preview.js';
-import { applyViewport, type EmulationPatch } from './viewport';
+import { defaultRotation, planDevice, type DeviceRequest } from '$shared/constants/preview.js';
+import { applyDevice, applyViewport, mergeEmulation, type EmulationPatch } from './viewport';
+import { frameDrawInput, type FrameSpec } from '$shared/utils/device-frame';
+import {
+	captureScreenshot,
+	elementAtPoint,
+	frameScreenshot,
+	type CapturedScreenshot,
+	type ElementAtPoint,
+	type ResponsiveScreenshot,
+	type ScreenshotOptions,
+	type ScreenshotSource,
+	type ScreenshotTarget
+} from './browser-screenshot';
 import { debug } from '$shared/utils/logger';
 import { emitToPreviewWatchers, forgetAgentCursor, rememberAgentCursor } from '../../ws/preview/watchers';
 import { sleep } from '$shared/utils/async';
@@ -856,6 +868,144 @@ export class BrowserPreviewService extends EventEmitter {
 	 */
 	getAllTabs(): BrowserTab[] {
 		return this.tabManager.getAllTabs();
+	}
+
+	// ============================================================================
+	// Screenshots
+	// ============================================================================
+
+	/**
+	 * A tab that can be captured right now, awake.
+	 *
+	 * A page blocked on a dialog cannot render a frame until someone answers,
+	 * so the capture would hang for its whole timeout and then fail without
+	 * saying why. Refused up front instead, with the reason.
+	 */
+	private async screenshotTab(tabId: string): Promise<BrowserTab> {
+		const tab = this.tabManager.getTab(tabId);
+		if (!tab || tab.page.isClosed()) throw new Error('That tab is no longer open');
+		if (this.dialogHandler.getPendingDialog(tabId)) {
+			throw new Error('The page is showing a dialog — answer it first');
+		}
+		await this.lifecycle.ensureAwake(tabId);
+		this.lifecycle.touch(tabId);
+		return tab;
+	}
+
+	/**
+	 * Capture a tab — the toolbar's, the context menu's and the agent's path.
+	 *
+	 * Every viewer of the tab is told, whoever asked: they all see the same
+	 * page, so they all see the shutter. A full-page capture also announces
+	 * its start, because Chrome lays the page out at its full height for it
+	 * and the stream visibly jumps while it does.
+	 */
+	async takeScreenshot(
+		tabId: string,
+		target: ScreenshotTarget,
+		options: ScreenshotOptions,
+		source: ScreenshotSource
+	): Promise<CapturedScreenshot> {
+		const tab = await this.screenshotTab(tabId);
+		const fullPage = target.kind === 'fullPage';
+
+		// The agent owns the page while it holds the tab; a capture that relays
+		// out the page would move it under the agent's next action.
+		if (source === 'user' && fullPage && browserMcpControl.isTabControlled(tabId, this.projectId)) {
+			throw new Error('A full-page screenshot is not available while an agent is using this tab');
+		}
+
+		if (fullPage) this.emit('preview:browser-screenshot', { tabId, source, phase: 'start', fullPage, timestamp: Date.now() });
+		let ok = false;
+		try {
+			const shot = await captureScreenshot(tab.page, target, options);
+			ok = true;
+			return shot;
+		} finally {
+			this.emit('preview:browser-screenshot', { tabId, source, phase: 'end', fullPage, ok, timestamp: Date.now() });
+		}
+	}
+
+	/** The device spec a tab's captures are framed in. */
+	screenshotFrameSpec(tabId: string): FrameSpec | null {
+		const tab = this.tabManager.peekTab(tabId);
+		if (!tab) return null;
+		return { deviceSize: tab.deviceSize, viewport: tab.viewport, deviceModel: tab.deviceModel, pageColors: tab.pageColors };
+	}
+
+	/**
+	 * Put captures inside their device mockups — the agent's path to what the
+	 * viewer's editor does. Drawn in a scratch page, never in a tab's page.
+	 */
+	async frameScreenshots(
+		items: Array<{ image: CapturedScreenshot; spec: FrameSpec }>,
+		options: ScreenshotOptions
+	): Promise<CapturedScreenshot[]> {
+		const inputs = items.map((item) => {
+			const input = frameDrawInput(item.spec);
+			if (!input) throw new Error(`The ${item.spec.deviceSize} device has no frame to draw`);
+			return input;
+		});
+		return this.tabManager.withScratchPage(async (page) => {
+			const framed: CapturedScreenshot[] = [];
+			for (const [index, item] of items.entries()) {
+				framed.push(await frameScreenshot(page, item.image, inputs[index], options));
+			}
+			return framed;
+		});
+	}
+
+	/** What the element picker highlights under the viewer's pointer. */
+	async screenshotElementAt(tabId: string, x: number, y: number, depth: number): Promise<ElementAtPoint | null> {
+		const tab = await this.screenshotTab(tabId);
+		return elementAtPoint(tab.page, x, y, depth);
+	}
+
+	/**
+	 * Capture a tab's page as it looks on other devices.
+	 *
+	 * Laid out in a scratch page of the same profile rather than by resizing
+	 * the tab: switching between a phone and a desktop changes the mobile and
+	 * touch flags, which reloads the page — the tab would lose whatever state
+	 * the user had brought it to, and every viewer would watch it happen. The
+	 * scratch page loads the tab's address fresh, signed in as the tab is.
+	 */
+	async takeResponsiveScreenshots(
+		tabId: string,
+		devices: DeviceSize[],
+		options: ScreenshotOptions
+	): Promise<ResponsiveScreenshot[]> {
+		const tab = await this.screenshotTab(tabId);
+		const url = tab.page.url();
+		if (!/^(https?|file):/i.test(url)) throw new Error('This page cannot be opened again at another size');
+
+		// Colour scheme and reduced motion are the user's choice, not the
+		// device's, so they carry over; touch and mobile belong to each device.
+		const emulation = mergeEmulation({}, {
+			colorScheme: tab.emulation.colorScheme,
+			reducedMotion: tab.emulation.reducedMotion
+		});
+
+		let ok = false;
+		try {
+			const shots = await this.tabManager.withScratchPage(async (page) => {
+				const taken: ResponsiveScreenshot[] = [];
+				for (const deviceSize of devices) {
+					const plan = planDevice(null, { deviceSize });
+					await applyDevice(page, { deviceSize, viewport: plan.viewport, emulation });
+					await page.goto(url, { waitUntil: 'load' });
+					// Load fires before late layout — web fonts, a hydrating app.
+					await sleep(600);
+					const image = await captureScreenshot(page, { kind: 'viewport' }, options);
+					taken.push({ deviceSize, deviceModel: plan.deviceModel, viewport: plan.viewport, image });
+				}
+				return taken;
+			});
+			ok = true;
+			return shots;
+		} finally {
+			this.emit('preview:browser-screenshot', { tabId, source: 'user', phase: 'end', fullPage: false, ok, timestamp: Date.now() });
+		}
 	}
 
 	/**
@@ -1769,6 +1919,11 @@ class BrowserPreviewServiceManager {
 
 		service.on('preview:browser-tab-meta', (data) => {
 			ws.emit.project(roomId, 'preview:browser-tab-meta', { ...data, projectId });
+		});
+
+		// A screenshot of a tab, whoever took it — every viewer shows the shutter.
+		service.on('preview:browser-screenshot', (data) => {
+			ws.emit.project(roomId, 'preview:browser-screenshot', { ...data, projectId });
 		});
 
 		// Forward host-capability requests (geolocation, camera, clipboard, …)

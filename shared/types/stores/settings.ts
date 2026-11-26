@@ -96,6 +96,22 @@ export interface AppSettings {
 	 * level chosen per model. Absent key → use the engine/model default.
 	 */
 	reasoningDefaults: Record<string, string>;
+	/** How the preview browser's screenshot button captures and saves. */
+	previewScreenshot: PreviewScreenshotSettings;
+}
+
+/** Preview browser screenshot preferences, remembered per user. */
+export interface PreviewScreenshotSettings {
+	/** Format for downloads and saves. Copies are always PNG — clipboards take nothing else. */
+	format: 'png' | 'jpeg';
+	/** JPEG quality, 1–100. */
+	quality: number;
+	/** Capture the whole scrollable page instead of what is on screen. */
+	fullPage: boolean;
+	/** Draw the device mockup around an on-screen capture. */
+	deviceFrame: boolean;
+	/** Workspace-relative folder that "Save to project" writes into. */
+	folder: string;
 }
 
 /** Authentication mode */

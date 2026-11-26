@@ -3,6 +3,9 @@
 	import Canvas from './Canvas.svelte';
 	import DeviceFrame from './DeviceFrame.svelte';
 	import VirtualCursor from './VirtualCursor.svelte';
+	import ScreenshotSelectOverlay from './ScreenshotSelectOverlay.svelte';
+	import type { ScreenshotTarget } from '$frontend/services/preview/browser/screenshot.service';
+	import type { ScreenshotSelectMode } from '../core/screenshot-controller.svelte';
 	import { scale } from 'svelte/transition';
 	import { cubicOut } from 'svelte/easing';
 	import { onDestroy } from 'svelte';
@@ -121,8 +124,31 @@
 
 		// Callbacks
 		onInteraction = $bindable<(action: any) => void>(() => {}),
-		onRetry = $bindable<() => void>(() => {})
+		onRetry = $bindable<() => void>(() => {}),
+
+		// Screenshots
+		/** When a capture of this tab last finished — the shutter flashes on it. */
+		screenshotFlashAt = 0,
+		/** A full-page capture is laying the page out at its full height right now. */
+		capturingFullPage = false,
+		/** The area or element picker, when one is open. */
+		screenshotSelectMode = null as ScreenshotSelectMode | null,
+		onScreenshotSelect = (_target: ScreenshotTarget) => {},
+		onScreenshotSelectCancel = () => {}
 	} = $props();
+
+	/**
+	 * The shutter. Only for a capture that has just finished: switching to a
+	 * tab whose last screenshot was a minute ago must not flash it again.
+	 */
+	let isFlashing = $state(false);
+	$effect(() => {
+		const at = screenshotFlashAt;
+		if (!at || Date.now() - at > 800) return;
+		isFlashing = true;
+		const timer = setTimeout(() => (isFlashing = false), 450);
+		return () => clearTimeout(timer);
+	});
 
 	let previewContainer = $state<HTMLDivElement | undefined>();
 	let touchCursorPos = $state<{ x: number; y: number; visible: boolean; clicking?: boolean; pressed?: boolean }>({ x: 0, y: 0, visible: false });
@@ -1052,6 +1078,50 @@
 				></div>
 			{/if}
 
+			{#if isFlashing && sessionInfo}
+				<div
+					class="shutter-flash pointer-events-none absolute z-[35] bg-white"
+					style="
+						left: {previewDimensions.screenOffsetLeft};
+						top: {previewDimensions.screenOffsetTop};
+						width: {previewDimensions.screenWidth};
+						height: {previewDimensions.screenHeight};
+						border-radius: {cornersToCss(layout.screenRadius, currentScale)};
+					"
+				></div>
+			{/if}
+
+			<!-- The page jumps to its full height for the capture; say why. -->
+			{#if capturingFullPage && sessionInfo}
+				<div
+					class="pointer-events-none absolute z-[35] flex justify-center p-3"
+					style="
+						left: {previewDimensions.screenOffsetLeft};
+						top: {previewDimensions.screenOffsetTop};
+						width: {previewDimensions.screenWidth};
+					"
+				>
+					<span class="flex items-center gap-1.5 rounded-full bg-slate-900/85 px-3 py-1.5 text-xs font-medium text-white shadow-lg">
+						<Icon name="lucide:camera" class="h-3.5 w-3.5" />
+						Capturing the full page…
+					</span>
+				</div>
+			{/if}
+
+			{#if screenshotSelectMode && sessionInfo && hasPaintedContent}
+				<ScreenshotSelectOverlay
+					mode={screenshotSelectMode}
+					tabId={sessionId ?? ''}
+					{viewport}
+					left={previewDimensions.screenOffsetLeft}
+					top={previewDimensions.screenOffsetTop}
+					width={previewDimensions.screenWidth}
+					height={previewDimensions.screenHeight}
+					onComplete={onScreenshotSelect}
+					onCancel={onScreenshotSelectCancel}
+				/>
+			{/if}
+
 			<!-- MCP Control Overlay - blocks user interaction (screen only) -->
 			{#if isMcpControlled && hasPaintedContent}
 				<div
@@ -1187,6 +1257,30 @@
 </div>
 
 <style>
+	/* Screenshot shutter: a quick white flash over the page, then gone. */
+	.shutter-flash {
+		opacity: 0;
+		animation: shutter-flash 420ms ease-out;
+	}
+
+	@keyframes shutter-flash {
+		0% {
+			opacity: 0;
+		}
+		15% {
+			opacity: 0.75;
+		}
+		100% {
+			opacity: 0;
+		}
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.shutter-flash {
+			animation-duration: 200ms;
+		}
+	}
+
 	/*
 	 * Agent control glow, inside the screen. The resting glow is declared on
 	 * the class so "the agent is driving this browser" stays visible when the

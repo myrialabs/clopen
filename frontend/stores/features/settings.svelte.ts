@@ -55,7 +55,14 @@ const defaultSettings: AppSettings = {
 		branchConfig: { maxWords: 3, allowedPrefixes: '', context: '' }
 	},
 	pinnedModels: [],
-	reasoningDefaults: {}
+	reasoningDefaults: {},
+	previewScreenshot: {
+		format: 'png',
+		quality: 90,
+		fullPage: false,
+		deviceFrame: false,
+		folder: 'screenshots'
+	}
 };
 
 // Default system settings
@@ -109,6 +116,9 @@ export function applyServerSettings(serverSettings: Partial<AppSettings> | null)
 		// Deep merge nested objects so new default fields are preserved
 		if (serverSettings.commitGenerator) {
 			merged.commitGenerator = { ...defaultSettings.commitGenerator, ...serverSettings.commitGenerator };
+		}
+		if (serverSettings.previewScreenshot) {
+			merged.previewScreenshot = { ...defaultSettings.previewScreenshot, ...serverSettings.previewScreenshot };
 		}
 		Object.assign(settings, merged);
 		applyFontSize(settings.fontSize);

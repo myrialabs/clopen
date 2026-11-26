@@ -1,4 +1,4 @@
-import type { Browser, BrowserContext, Page, Target } from 'puppeteer';
+import type { Browser, BrowserContext, Dialog, Page, Target } from 'puppeteer';
 import { EventEmitter } from 'events';
 import { planDevice, type DeviceRequest } from '$shared/constants/preview.js';
 import type { BrowserTab, BrowserTabInfo, DeviceSize, Rotation, ViewportSize } from './types';
@@ -1322,6 +1322,34 @@ export class BrowserTabManager extends EventEmitter {
 			return await open();
 		} finally {
 			this.adoptingPages -= 1;
+		}
+	}
+
+	/**
+	 * Run something against a page of this workspace that is not a tab.
+	 *
+	 * Shares the workspace profile — cookies, storage, a login — so it sees
+	 * the site as the tabs do, but it is never listed, streamed or handed to
+	 * an agent, and it is closed when `run` settles. For work that must not
+	 * disturb a live tab, like laying a page out at another device's size.
+	 *
+	 * Nobody watches this page, so a dialog it raises is dismissed on sight
+	 * rather than left to block whatever `run` is waiting for.
+	 */
+	async withScratchPage<T>(run: (page: Page) => Promise<T>): Promise<T> {
+		const sessionId = `${this.projectId}:scratch-${crypto.randomUUID().slice(0, 8)}`;
+		const pooled = await this.adopt(() => browserPool.createSession(sessionId, this.projectId));
+		const page = pooled.page;
+		const dismiss = (dialog: Dialog) => void dialog.dismiss().catch(() => {});
+		page.on('dialog', dismiss);
+		page.setDefaultTimeout(30000);
+		page.setDefaultNavigationTimeout(30000);
+
+		try {
+			return await run(page);
+		} finally {
+			page.off('dialog', dismiss);
+			await browserPool.destroySession(sessionId).catch(() => {});
 		}
 	}
 

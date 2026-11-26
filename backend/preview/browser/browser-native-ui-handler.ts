@@ -14,6 +14,16 @@ import { debug } from '$shared/utils/logger';
 import { nanoid } from 'nanoid';
 
 /**
+ * Context menu entries the viewer carries out itself: it takes the
+ * screenshot and keeps the image. Their response only closes the menu here.
+ */
+export const SCREENSHOT_MENU_ITEMS: ReadonlySet<string> = new Set([
+	'screenshot-copy',
+	'screenshot-element',
+	'screenshot-annotate'
+]);
+
+/**
  * Read the current text selection from wherever it actually lives.
  *
  * A selection inside an iframe is invisible to the top document, so asking only
@@ -548,6 +558,14 @@ export class BrowserNativeUIHandler extends EventEmitter {
 			{ id: 'print', label: 'Print…', enabled: true, icon: 'lucide:printer' }
 		);
 		divider();
+		// Carried out by the viewer, which holds the image afterwards; the
+		// backend only has to close the menu (see SCREENSHOT_MENU_ITEMS).
+		items.push(
+			{ id: 'screenshot-copy', label: 'Copy Screenshot', enabled: true, icon: 'lucide:camera' },
+			{ id: 'screenshot-element', label: 'Screenshot This Element', enabled: true, icon: 'lucide:square-dashed-mouse-pointer' },
+			{ id: 'screenshot-annotate', label: 'Annotate Screenshot…', enabled: true, icon: 'lucide:pencil-line' }
+		);
+		divider();
 		items.push({ id: 'inspect', label: 'Inspect', enabled: true, icon: 'lucide:code' });
 
 		return items;
@@ -873,6 +891,7 @@ export class BrowserNativeUIHandler extends EventEmitter {
 					break;
 
 				default:
+					if (SCREENSHOT_MENU_ITEMS.has(itemId)) break;
 					debug.warn('preview', `⚠️ Unknown context menu action: ${itemId}`);
 					return false;
 			}
