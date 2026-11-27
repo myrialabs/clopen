@@ -12,6 +12,11 @@ export interface ComposerAddition {
 	chatSessionId: string;
 	text: string;
 	attachments: { fileName: string; mediaType: string; data: string }[];
+	/**
+	 * Sent over as a mention (an editor selection, a page element): its `@N`
+	 * is written into the text, the way picking it from `@` would.
+	 */
+	mention?: boolean;
 }
 
 interface ChatInputState {

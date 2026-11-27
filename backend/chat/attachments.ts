@@ -12,14 +12,22 @@
  * Every attachment is numbered within its message (`@1`, `@2`, …) and the
  * engine prompt labels each one with its number — see `labelAttachments`.
  *
+ * An `@` mention arrives as a context document (see
+ * shared/utils/context-document.ts): it is always saved, and its header
+ * becomes the attachment's `source`, so the engine is told what the snapshot
+ * is. A mentioned project file is not copied at all — the engine is pointed at
+ * the file itself.
+ *
  * Files land in `.clopen/attachments/` under the session's working root. The
  * folder ignores itself (`.clopen/.gitignore` is `*`), so an attachment never
  * shows up in git or in a turn's snapshot as a change the agent made.
  */
 
-import { mkdirSync, writeFileSync, existsSync } from 'fs';
-import { join, extname, basename, relative, isAbsolute } from 'path';
+import { mkdirSync, writeFileSync, existsSync, statSync } from 'fs';
+import { join, extname, basename, relative, isAbsolute, resolve, sep } from 'path';
 import type { EngineModel, EngineType, FileBlock, StreamRequest, UserContentBlock } from '$shared/types/unified';
+import type { ContextSource } from '$shared/types/mentions';
+import { CONTEXT_MEDIA_TYPE, CONTEXT_NOUNS, isReferenceKind, readContextHeaderFromBase64 } from '$shared/utils/context-document';
 import { getModelsByEngine, registerModels } from '$shared/constants/engines';
 import { debug } from '$shared/utils/logger';
 import { MAX_ATTACHMENT_BYTES, MAX_INLINE_ATTACHMENT_BYTES } from '$shared/constants/attachments';
@@ -136,7 +144,12 @@ export async function normalizeAttachments(request: StreamRequest, root: string)
 		const mediaType = typeof block.mediaType === 'string' && block.mediaType ? block.mediaType : 'application/octet-stream';
 		const title = typeof block.title === 'string' && block.title.trim() ? block.title.trim() : null;
 		const size = base64Size(block.data);
-		if (isNative(mediaType, modalities) && size <= MAX_INLINE_ATTACHMENT_BYTES) {
+		const source = mediaType === CONTEXT_MEDIA_TYPE ? readContextHeaderFromBase64(block.data, mediaType) : null;
+		if (source && isReferenceKind(source.kind)) {
+			normalized.push(referenceBlock(root, source, index));
+			continue;
+		}
+		if (!source && isNative(mediaType, modalities) && size <= MAX_INLINE_ATTACHMENT_BYTES) {
 			normalized.push({ ...block, index });
 			continue;
 		}
@@ -146,13 +159,32 @@ export async function normalizeAttachments(request: StreamRequest, root: string)
 		}
 		try {
 			const path = saveAttachment(root, { data: Buffer.from(block.data, 'base64'), mediaType, name: title });
-			normalized.push({ type: 'file', mediaType, title, size, path: join(root, path), index } satisfies FileBlock);
+			normalized.push({ type: 'file', mediaType, title, size, path: join(root, path), index, ...(source && { source }) } satisfies FileBlock);
 		} catch (error) {
 			debug.warn('chat', 'Saving an attachment failed:', error);
 			normalized.push({ type: 'text', text: `[Attachment @${index} "${title ?? 'attachment'}" could not be saved.]` });
 		}
 	}
 	return { ...request, prompt: { ...request.prompt, content: normalized } as StreamRequest['prompt'] };
+}
+
+/**
+ * A mentioned project file: the engine reads the file itself. One that has
+ * gone since it was mentioned is said to be gone rather than silently dropped.
+ */
+function referenceBlock(root: string, source: ContextSource, index: number): UserContentBlock {
+	const absolute = source.path ? resolve(root, source.path) : null;
+	const inside = !!absolute && (absolute === resolve(root) || absolute.startsWith(resolve(root) + sep));
+	if (absolute && inside && existsSync(absolute)) {
+		let size = 0;
+		try {
+			size = statSync(absolute).size;
+		} catch {
+			// The size is only for the card.
+		}
+		return { type: 'file', mediaType: 'text/plain', title: basename(absolute), size, path: absolute, index, source };
+	}
+	return { type: 'text', text: `[Attachment @${index} "${source.label}" is no longer in the project.]` };
 }
 
 type AttachmentLike = { type: 'image' | 'document' | 'file'; data?: unknown; mediaType?: unknown; title?: unknown };
@@ -175,6 +207,18 @@ function displayPath(path: string, root: string): string {
 	return `./${inside.split('\\').join('/')}`;
 }
 
+/** How the prompt names a mention: what it is a snapshot of, and when it was taken. */
+export function contextLabel(input: { index: number; source: ContextSource }): string {
+	const { source } = input;
+	if (isReferenceKind(source.kind)) return `Attachment @${input.index}: ${CONTEXT_NOUNS[source.kind]} "${source.label}"`;
+	const extra = [source.detail, source.capturedAt && `captured ${source.capturedAt}`].filter(Boolean).join(', ');
+	return `Attachment @${input.index}: ${CONTEXT_NOUNS[source.kind]} "${source.label}"${extra ? ` (${extra})` : ''}`;
+}
+
+/** Said once, before the first mention: the snapshots are part of the request. */
+export const CONTEXT_NOTE =
+	'[The user attached snapshots of their workspace to this message, saved as files. Read the ones the message refers to before acting on it — they show what the user was looking at.]';
+
 /**
  * What the engine is given for a user message. Every numbered attachment is
  * preceded by its label, and a saved file becomes a label saying where it is —
@@ -188,8 +232,17 @@ export function labelAttachments(content: UserContentBlock[], root: string): Use
 	if (!labelled) return content;
 
 	const result: UserContentBlock[] = [];
+	let noted = false;
 	for (const block of content) {
-		if (block.type === 'file') {
+		if (block.type === 'file' && block.source) {
+			if (!noted && !isReferenceKind(block.source.kind)) {
+				result.push({ type: 'text', text: CONTEXT_NOTE });
+				noted = true;
+			}
+			const label = contextLabel({ index: block.index ?? 0, source: block.source });
+			const where = isReferenceKind(block.source.kind) ? 'at' : 'saved at';
+			result.push({ type: 'text', text: `[${label}, ${where} ${displayPath(block.path, root)}]` });
+		} else if (block.type === 'file') {
 			const label = attachmentLabel({ index: block.index ?? 0, title: block.title, mediaType: block.mediaType, size: block.size });
 			result.push({ type: 'text', text: `[${label}, saved at ${displayPath(block.path, root)}]` });
 		} else if ((block.type === 'image' || block.type === 'document') && block.index) {

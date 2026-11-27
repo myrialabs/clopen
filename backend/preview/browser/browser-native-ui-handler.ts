@@ -20,7 +20,8 @@ import { nanoid } from 'nanoid';
 export const SCREENSHOT_MENU_ITEMS: ReadonlySet<string> = new Set([
 	'screenshot-copy',
 	'screenshot-element',
-	'screenshot-annotate'
+	'screenshot-annotate',
+	'mention-element'
 ]);
 
 /**
@@ -563,7 +564,8 @@ export class BrowserNativeUIHandler extends EventEmitter {
 		items.push(
 			{ id: 'screenshot-copy', label: 'Copy Screenshot', enabled: true, icon: 'lucide:camera' },
 			{ id: 'screenshot-element', label: 'Screenshot This Element', enabled: true, icon: 'lucide:square-dashed-mouse-pointer' },
-			{ id: 'screenshot-annotate', label: 'Annotate Screenshot…', enabled: true, icon: 'lucide:pencil-line' }
+			{ id: 'screenshot-annotate', label: 'Annotate Screenshot…', enabled: true, icon: 'lucide:pencil-line' },
+			{ id: 'mention-element', label: 'Mention This Element in Chat', enabled: true, icon: 'lucide:at-sign' }
 		);
 		divider();
 		items.push({ id: 'inspect', label: 'Inspect', enabled: true, icon: 'lucide:code' });

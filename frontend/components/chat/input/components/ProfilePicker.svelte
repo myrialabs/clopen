@@ -141,13 +141,13 @@
 	<button
 		bind:this={triggerButton}
 		type="button"
-		class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
-			bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
-			text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
-			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+		class="flex shrink-0 items-center gap-1 h-8 px-1.5 pointer-coarse:h-10 text-xs rounded-lg transition-all duration-150
+			bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 aria-expanded:bg-slate-100 dark:aria-expanded:bg-slate-800
+			text-slate-600 dark:text-slate-400
+			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
 		onclick={toggle}
 		disabled={appState.isLoading}
-		title="Active profile for this session"
+		title="Active profile: {triggerLabel}"
 		aria-haspopup="listbox"
 		aria-expanded={open}
 	>

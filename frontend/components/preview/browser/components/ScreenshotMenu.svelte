@@ -22,7 +22,6 @@
 		fullPageAvailable = true,
 		/** Whether the device on screen has a mockup to draw. */
 		frameAvailable = false,
-		hasOpenChat = false,
 		onAction = (_action: ScreenshotMenuAction) => {}
 	} = $props();
 
@@ -37,28 +36,20 @@
 		action: ScreenshotMenuAction;
 		label: string;
 		icon: IconName;
-		hint?: string;
 		enabled?: boolean;
 	}
 
 	const deliveries = $derived<MenuItem[]>([
 		{ action: 'copy', label: 'Copy', icon: 'lucide:copy' },
-		{ action: 'download', label: 'Download', icon: 'lucide:download', hint: 'To your Downloads folder' },
-		{
-			action: 'attach',
-			label: 'Attach to chat',
-			icon: 'lucide:paperclip',
-			hint: hasOpenChat ? 'Into the open chat’s message box' : 'Open a chat first',
-			enabled: hasOpenChat
-		},
-		{ action: 'save', label: 'Save to project', icon: 'lucide:folder-down', hint: `Into ${prefs.folder || 'screenshots'}/` },
-		{ action: 'annotate', label: 'Annotate…', icon: 'lucide:pencil-line', hint: 'Draw, crop, then send' }
+		{ action: 'download', label: 'Download', icon: 'lucide:download' },
+		{ action: 'save', label: 'Save to project', icon: 'lucide:folder-down' },
+		{ action: 'annotate', label: 'Annotate…', icon: 'lucide:pencil-line' }
 	]);
 
 	const captures: MenuItem[] = [
 		{ action: 'region', label: 'Select an area…', icon: 'lucide:crop' },
 		{ action: 'element', label: 'Pick an element…', icon: 'lucide:square-dashed-mouse-pointer' },
-		{ action: 'devices', label: 'All device sizes…', icon: 'lucide:monitor-smartphone', hint: 'Phone, tablet, laptop, desktop' }
+		{ action: 'devices', label: 'All device sizes…', icon: 'lucide:monitor-smartphone' }
 	];
 
 	function run(action: ScreenshotMenuAction) {
@@ -122,12 +113,7 @@
 					class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-slate-700 transition-colors hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent dark:text-slate-200 dark:hover:bg-slate-800"
 				>
 					<Icon name={item.icon} class="h-4 w-4 shrink-0 text-slate-400" />
-					<span class="flex min-w-0 flex-col">
-						<span>{item.label}</span>
-						{#if item.hint}
-							<span class="truncate text-2xs text-slate-400">{item.hint}</span>
-						{/if}
-					</span>
+					<span class="min-w-0 truncate">{item.label}</span>
 				</button>
 			{/each}
 
@@ -141,12 +127,7 @@
 					class="flex w-full items-center gap-2.5 px-3 py-1.5 text-left text-slate-700 transition-colors hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
 				>
 					<Icon name={item.icon} class="h-4 w-4 shrink-0 text-slate-400" />
-					<span class="flex min-w-0 flex-col">
-						<span>{item.label}</span>
-						{#if item.hint}
-							<span class="truncate text-2xs text-slate-400">{item.hint}</span>
-						{/if}
-					</span>
+					<span class="min-w-0 truncate">{item.label}</span>
 				</button>
 			{/each}
 

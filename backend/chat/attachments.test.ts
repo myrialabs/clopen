@@ -4,12 +4,14 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { StreamRequest } from '$shared/types/unified';
 import { registerModels } from '$shared/constants/engines';
-import { base64Size, isNative, labelAttachments, normalizeAttachments } from './attachments';
+import { base64Size, CONTEXT_NOTE, isNative, labelAttachments, normalizeAttachments } from './attachments';
+import { buildContextDocument, fileReferenceDocument } from '$shared/utils/context-document';
+import type { FileBlock } from '$shared/types/unified';
 
 const VISION = { text: true, image: true, pdf: true, audio: false, video: false };
 const TEXT_ONLY = { text: true, image: false, pdf: false, audio: false, video: false };
@@ -115,5 +117,61 @@ describe('attachments', () => {
 	it('leaves messages from before numbering as they were', () => {
 		const content = [{ type: 'image' as const, mediaType: 'image/png', data: b64('png') }, { type: 'text' as const, text: 'hi' }];
 		expect(labelAttachments(content, root)).toBe(content);
+	});
+
+	it('saves a mention snapshot and names what it is', async () => {
+		const snapshot = buildContextDocument({
+			kind: 'terminal',
+			label: 'dev server',
+			detail: '2 lines',
+			capturedAt: '2026-11-27T10:00:00.000Z',
+			sections: [{ title: 'Output', body: 'ready\nerror: port in use', fence: 'text' }]
+		});
+		const result = await normalizeAttachments(
+			request('vision', [
+				{ type: 'document', mediaType: 'text/markdown', data: b64(snapshot.text), title: snapshot.fileName },
+				{ type: 'text', text: 'why does @1 fail' }
+			]),
+			root
+		);
+		const [file] = result.prompt.content as FileBlock[];
+		expect(file.type).toBe('file');
+		expect(file.index).toBe(1);
+		expect(file.source).toEqual({ kind: 'terminal', label: 'dev server', detail: '2 lines', capturedAt: '2026-11-27T10:00:00.000Z' });
+		expect(readFileSync(file.path, 'utf8')).toBe(snapshot.text);
+
+		const labelled = labelAttachments(result.prompt.content as FileBlock[], root);
+		expect((labelled[0] as { text: string }).text).toBe(CONTEXT_NOTE);
+		expect((labelled[1] as { text: string }).text).toMatch(
+			/^\[Attachment @1: terminal output "dev server" \(2 lines, captured 2026-11-27T10:00:00\.000Z\), saved at \.\/\.clopen\/attachments\/.+\.md\]$/
+		);
+	});
+
+	it('points the engine at a mentioned project file rather than a copy', async () => {
+		mkdirSync(join(root, 'src'), { recursive: true });
+		writeFileSync(join(root, 'src', 'app.ts'), 'export {};\n');
+		const reference = fileReferenceDocument('src/app.ts');
+		const result = await normalizeAttachments(
+			request('vision', [{ type: 'document', mediaType: 'text/markdown', data: b64(reference.text), title: reference.fileName }]),
+			root
+		);
+		const [file] = result.prompt.content as FileBlock[];
+		expect(file.path).toBe(join(root, 'src', 'app.ts'));
+		expect(file.source?.kind).toBe('file');
+		expect(existsSync(join(root, '.clopen', 'attachments'))).toBe(false);
+
+		const labelled = labelAttachments([file], root);
+		expect(labelled).toEqual([{ type: 'text', text: '[Attachment @1: project file "src/app.ts", at ./src/app.ts]' }]);
+	});
+
+	it('says so when a mentioned file is gone or outside the project', async () => {
+		for (const path of ['src/missing.ts', '../outside.ts']) {
+			const reference = fileReferenceDocument(path);
+			const result = await normalizeAttachments(
+				request('vision', [{ type: 'document', mediaType: 'text/markdown', data: b64(reference.text), title: reference.fileName }]),
+				root
+			);
+			expect(result.prompt.content).toEqual([{ type: 'text', text: `[Attachment @1 "${path}" is no longer in the project.]` }]);
+		}
 	});
 });

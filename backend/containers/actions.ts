@@ -291,6 +291,28 @@ export async function readStats(hostId: string, containerId: string): Promise<Co
 }
 
 /** Everything `inspect` knows, read only when a detail pane asks for it. */
+/**
+ * The last lines a container wrote, read once — what a chat mention attaches.
+ * Following a log is logs.ts; this is a snapshot of it.
+ */
+export async function readRecentLogs(hostId: string, containerId: string, lines = 2000): Promise<string | null> {
+	assertContainerId(containerId);
+
+	return containerMonitor.withHost(hostId, async (runner, platform) => {
+		const info = await detectRuntime(hostId, runner, platform);
+		if (info.problem !== 'none' || !info.runtime) return null;
+
+		const result = await tryRun(
+			runner,
+			containerArgv(info.runtime, platform, ['logs', '--tail', String(Math.max(1, Math.floor(lines))), '--timestamps', containerId]),
+			CONTAINER_TIMEOUTS.inspect
+		);
+		if (result.code !== 0) return null;
+		// The runtime writes the container's stderr to its own; both are the log.
+		return [result.stdout, result.stderr].filter((part) => part.trim()).join('\n');
+	});
+}
+
 export async function inspectContainer(
 	hostId: string,
 	containerId: string

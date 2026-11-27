@@ -7,6 +7,7 @@
 
 import type { TokenUsage, StopReason } from './common';
 import type { ToolUseBlock, ToolResult } from './tool';
+import type { ContextSource } from '../mentions';
 
 // ============================================================
 // Message Base
@@ -95,10 +96,12 @@ export interface FileBlock {
 	title: string | null;
 	/** Size in bytes. */
 	size: number;
-	/** Absolute path of the saved copy. */
+	/** Absolute path of the saved copy — or of the file itself, for a mentioned project file. */
 	path: string;
 	/** Attachment number within its message, from 1 — what `@1` in the text names. */
 	index?: number;
+	/** What an `@` mention attached: read from the document's header when it was saved. */
+	source?: ContextSource;
 }
 
 export type UserContentBlock =

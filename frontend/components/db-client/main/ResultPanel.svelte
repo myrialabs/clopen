@@ -2,6 +2,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import NullValue from '../shared/NullValue.svelte';
 	import { downloadFile, toCsv } from './export-utils';
+	import { addContextToChat, clientContext } from '$frontend/services/chat/mentions';
 	import type {
 		DbClientQueryResult,
 		DbClientStatementResult,
@@ -12,9 +13,13 @@
 		result: DbClientQueryResult | null;
 		error: string | null;
 		running: boolean;
+		/** The query in the editor, attached with the result when it is mentioned. */
+		query?: string;
+		/** Where it ran, for the mention. */
+		source?: string;
 	}
 
-	const { result, error, running }: Props = $props();
+	const { result, error, running, query = '', source = '' }: Props = $props();
 
 	interface ResultTab {
 		label: string;
@@ -147,6 +152,32 @@
 		downloadFile([header, sep, ...lines].join('\n'), 'query-result.md', 'text/markdown');
 	}
 
+	/** The result on screen, into the open chat's message box as `@N`. */
+	function mentionInChat(): void {
+		if (!activeResult) return;
+		const cols = activeResult.columns.map((c) => c.name);
+		const rows = activeResult.rows.map((r) => cols.map((c) => r[c]));
+		const firstLine = query.trim().split('\n')[0]?.slice(0, 80);
+		addContextToChat([
+			clientContext({
+				kind: 'db-result',
+				label: activeTab && activeTab.label !== 'Result 1' ? activeTab.label : firstLine || 'Query result',
+				detail: `${activeResult.rowCount} ${activeResult.rowCount === 1 ? 'row' : 'rows'}`,
+				facts: [
+					['Database', source],
+					['Rows', activeResult.rowCount],
+					['Affected', activeResult.affectedRows],
+					['Duration', `${activeResult.durationMs} ms`],
+					['Columns', activeResult.columns.map((c) => (c.type ? `${c.name} (${c.type})` : c.name)).join(', ')]
+				],
+				sections: [
+					...(query.trim() ? [{ title: 'Query', body: query.trim(), fence: 'sql' }] : []),
+					{ title: 'Result (CSV)', body: toCsv(cols, rows), fence: 'csv' }
+				]
+			})
+		]);
+	}
+
 	async function copyCell(value: unknown): Promise<void> {
 		await navigator.clipboard.writeText(fmt(value));
 	}
@@ -210,6 +241,13 @@
 				disabled={!activeResult || activeResult.rows.length === 0}
 				title="Export Markdown"
 			>MD</button>
+			<button
+				type="button"
+				class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-50"
+				onclick={mentionInChat}
+				disabled={!activeResult}
+				title="Mention this result in the open chat"
+			><Icon name="lucide:at-sign" class="w-3.5 h-3.5" />Chat</button>
 		</div>
 	</div>
 

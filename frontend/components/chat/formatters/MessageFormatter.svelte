@@ -7,6 +7,9 @@
 	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatFileSize } from '$frontend/utils/format';
 	import { mentionToken, splitMentions } from '$shared/utils/attachment-mentions';
+	import { contextNoun, describeContext, readContextHeaderFromBase64 } from '$shared/utils/context-document';
+	import { CONTEXT_ICONS } from '$frontend/utils/context-icons';
+	import type { ContextSource } from '$shared/types/mentions';
 
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import { getCompactSummary } from '$frontend/utils/chat/message-grouper';
@@ -28,6 +31,8 @@
 		data?: string;
 		/** Where the file was saved, for one the model was given by path. */
 		path?: string;
+		/** What an `@` mention attached. */
+		context?: ContextSource;
 	}
 
 	// A user message's files, in the order (and with the numbers) they were sent.
@@ -40,7 +45,7 @@
 			const number = block.index ?? list.length + 1;
 			const fallbackName = `${block.type === 'image' ? 'image' : 'document'}-${number}.${block.mediaType.split('/')[1] || 'bin'}`;
 			if (block.type === 'file') {
-				list.push({ number, kind: 'file', name: block.title || fallbackName, mediaType: block.mediaType, size: block.size, path: block.path });
+				list.push({ number, kind: 'file', name: block.title || fallbackName, mediaType: block.mediaType, size: block.size, path: block.path, context: block.source });
 			} else {
 				list.push({
 					number,
@@ -48,7 +53,9 @@
 					name: block.title || fallbackName,
 					mediaType: block.mediaType,
 					size: block.data ? Math.floor(block.data.length * 0.75) : 0,
-					data: block.data || undefined
+					data: block.data || undefined,
+					// A message still on its way holds the document itself; its header says what it is.
+					context: block.type === 'document' && block.data ? readContextHeaderFromBase64(block.data, block.mediaType) ?? undefined : undefined
 				});
 			}
 		}
@@ -100,7 +107,8 @@
 					chip.dataset.attachmentMention = String(part);
 					chip.className = 'attachment-mention';
 					chip.textContent = mentionToken(part);
-					chip.title = attachments.find((attachment) => attachment.number === part)?.name ?? '';
+					const named = attachments.find((attachment) => attachment.number === part);
+					chip.title = named ? (named.context ? describeContext(named.context) : named.name) : '';
 					fragment.append(chip);
 				} else {
 					fragment.append(String(part));
@@ -219,8 +227,8 @@
 		onclick={() => openAttachment(attachment.number)}
 		disabled={!viewable}
 		class="relative w-28 h-28 overflow-hidden rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800 transition-opacity focus:outline-none focus:ring-2 focus:ring-violet-500 enabled:cursor-pointer enabled:hover:opacity-80"
-		title={attachment.name}
-		aria-label="View attachment {mentionToken(attachment.number)}, {attachment.name}"
+		title={attachment.context ? describeContext(attachment.context) : attachment.name}
+		aria-label="View attachment {mentionToken(attachment.number)}, {attachment.context ? describeContext(attachment.context) : attachment.name}"
 	>
 		{#if attachment.kind === 'image' && attachment.data}
 			<img
@@ -229,6 +237,16 @@
 				class="absolute inset-0 w-full h-full object-cover"
 				loading="lazy"
 			/>
+		{:else if attachment.context}
+			<span class="absolute inset-0 flex flex-col items-center justify-center gap-1 p-2">
+				<Icon name={CONTEXT_ICONS[attachment.context.kind]} class="w-7 h-7 shrink-0 text-violet-600 dark:text-violet-400" />
+				<span class="text-3xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400 line-clamp-1 w-full px-1 text-center">
+					{contextNoun(attachment.context.kind)}
+				</span>
+				<span class="text-xs font-medium text-slate-700 dark:text-slate-300 line-clamp-2 w-full px-1 text-center leading-tight break-all">
+					{attachment.context.label}
+				</span>
+			</span>
 		{:else}
 			<span class="absolute inset-0 flex flex-col items-center justify-center gap-1.5 p-2">
 				<Icon name={getAttachmentIcon(attachment.name, attachment.mediaType)} class="w-8 h-8 shrink-0" />

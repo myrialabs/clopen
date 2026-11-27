@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { mentionedIndexes, removeMention, rewriteMentions, shiftMentions, splitMentions } from './attachment-mentions';
+import { mentionedIndexes, removeAllMentions, removeMention, rewriteMentions, shiftMentions, splitMentions } from './attachment-mentions';
 
 describe('attachment mentions', () => {
 	test('finds standalone tokens only', () => {
@@ -8,13 +8,19 @@ describe('attachment mentions', () => {
 		expect(mentionedIndexes('@4 at the start')).toEqual([4]);
 	});
 
-	test('removing renumbers the rest and names the removed file', () => {
-		const text = 'see @1, @2 and @3';
-		expect(removeMention(text, 2, 3, 'b.png')).toBe('see @1, "b.png" and @2');
+	test('removing deletes the removed file’s tokens and renumbers the rest', () => {
+		expect(removeMention('compare @1 with @2 and @3', 2, 3)).toBe('compare @1 with and @2');
+		expect(removeMention('Lorem Ipsum @2', 2, 2)).toBe('Lorem Ipsum');
+		expect(removeMention('@1 fix this', 1, 1)).toBe('fix this');
+		expect(removeMention('look (@2) here\n@2\nnext', 2, 3)).toBe('look () here\n\nnext');
 	});
 
 	test('removing leaves numbers beyond the attachments alone', () => {
-		expect(removeMention('@1 and @9', 1, 2, 'a.png')).toBe('"a.png" and @9');
+		expect(removeMention('@1 and @9', 1, 2)).toBe('and @9');
+	});
+
+	test('clearing deletes every attachment token', () => {
+		expect(removeAllMentions('see @1 and @2, not @7', 2)).toBe('see and, not @7');
 	});
 
 	test('shifting moves only the appended message’s own numbers', () => {

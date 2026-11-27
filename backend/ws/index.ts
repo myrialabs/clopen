@@ -51,6 +51,7 @@ import { workRouter } from './work';
 import { hostingRouter } from './hosting';
 import { deploymentsRouter } from './deployments';
 import { chatAppsRouter } from './chat-apps';
+import { mentionsRouter } from './mentions';
 
 // ============================================
 // Main App Router - Merge All Module Routers
@@ -140,7 +141,10 @@ export const wsRouter = createRouter()
 	.merge(deploymentsRouter)
 
 	// Notification channels — pairing a chat with a connected bot, per user
-	.merge(chatAppsRouter);
+	.merge(chatAppsRouter)
+
+	// The chat composer's `@` picker — search and snapshot everything mentionable
+	.merge(mentionsRouter);
 
 // Export API type for frontend type-safe access
 export type WSAPI = typeof wsRouter['$api'];

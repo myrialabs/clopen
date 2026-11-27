@@ -208,34 +208,6 @@ export function hasOpenChat(): boolean {
 	return !!sessionState.currentSession?.id;
 }
 
-/**
- * Add images to the open chat's message box, with what they show.
- *
- * Into the box, not sent: the user still writes what they want done about it.
- */
-export async function attachToChat(images: Array<{ blob: Blob; fileName: string }>, text: string): Promise<void> {
-	const chatSessionId = sessionState.currentSession?.id;
-	if (!chatSessionId) throw new Error('Open a chat first — the screenshot goes into its message box');
-
-	const tooLarge = images.find((image) => image.blob.size > MAX_ATTACHMENT_BYTES);
-	if (tooLarge) {
-		const limit = Math.round(MAX_ATTACHMENT_BYTES / (1024 * 1024));
-		throw new Error(`${tooLarge.fileName} is larger than the ${limit} MB attachment limit. Try JPEG, or a smaller area.`);
-	}
-
-	addToComposer({
-		chatSessionId,
-		text,
-		attachments: await Promise.all(
-			images.map(async (image) => ({
-				fileName: image.fileName,
-				mediaType: image.blob.type,
-				data: await blobToBase64(image.blob)
-			}))
-		)
-	});
-}
-
 export async function saveToProject(
 	blob: Blob,
 	fileName: string,

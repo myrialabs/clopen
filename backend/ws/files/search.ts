@@ -55,7 +55,7 @@ export function createSafeRegex(pattern: string, flags: string): RegExp | null {
 }
 
 // Directories to skip during search
-const SKIP_DIRS = new Set([
+export const SKIP_DIRS = new Set([
 	'node_modules', '.git', '.svelte-kit', 'build', 'dist', 'coverage',
 	'.next', '.nuxt', 'target', '.cache', '.output', '__pycache__',
 	'.venv', 'venv', '.tox', '.eggs', '.mypy_cache', 'vendor',

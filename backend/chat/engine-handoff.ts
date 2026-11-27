@@ -33,6 +33,7 @@
 
 import { messageQueries, sessionQueries } from '../database/queries';
 import { getModelsByEngine } from '$shared/constants/engines';
+import { CONTEXT_NOUNS } from '$shared/utils/context-document';
 import { debug } from '$shared/utils/logger';
 import type {
 	EngineType,
@@ -326,6 +327,7 @@ function renderEntries(entries: Entry[], clearedToolUseIds: Set<string>, support
 /** Its number first, so `@2` in the replayed text still points at it. */
 function describeAttachment(att: ImageBlock | DocumentBlock | FileBlock): string {
 	const number = att.index ? `@${att.index} ` : '';
+	if (att.type === 'file' && att.source) return `${number}${CONTEXT_NOUNS[att.source.kind]} "${att.source.label}"`;
 	if (att.title) return `${number}${att.title} (${att.mediaType})`;
 	return `${number}${att.mediaType}`;
 }
@@ -444,4 +446,30 @@ export function buildEngineHandoff(
  */
 export function withHandoff(prompt: UserMessage, blocks: UserContentBlock[]): UserMessage {
 	return { ...prompt, content: [...blocks, ...prompt.content] };
+}
+
+/**
+ * A chat's active branch as plain text — what `@` mentioning that chat in
+ * another one attaches. The same rendering the handoff uses, uncleared: it is
+ * read from a file, so its size costs a read rather than context.
+ */
+export function renderBranchTranscript(chatSessionId: string): { text: string; turns: number } | null {
+	let messages: UnifiedMessage[];
+	try {
+		const head = sessionQueries.getHead(chatSessionId);
+		if (!head) return null;
+		messages = messageQueries
+			.getPathToRoot(head)
+			.map(row => parse(row.data))
+			.filter((msg): msg is UnifiedMessage => msg !== null);
+	} catch (error) {
+		debug.error('chat', 'Transcript: failed to read branch:', error);
+		return null;
+	}
+	const entries = collect(messages);
+	if (!entries.length) return null;
+	// Attachments are named, not carried: the transcript is text.
+	const render = renderEntries(entries, new Set(), { image: true, document: true });
+	const turns = entries.filter(e => e.kind === 'user' || e.kind === 'assistant').length;
+	return { text: render.lines.join('\n\n'), turns };
 }

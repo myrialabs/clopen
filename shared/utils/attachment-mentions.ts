@@ -37,17 +37,44 @@ export function rewriteMentions(text: string, replace: (index: number) => number
 	});
 }
 
+/** Stands in for a token being deleted, until the space around it is tidied. */
+const DROPPED = '\u0000';
+
 /**
- * The text after attachment `removed` (1-based) is taken out of `count`: later
- * numbers move down one, and the removed file's own tokens become its name so
- * what the sentence was about is not lost.
+ * Rewrite tokens, deleting the ones `next` answers `false` for together with
+ * the space they leave: "compare @1 with @2" without @2 reads "compare @1
+ * with", not "compare @1 with ".
  */
-export function removeMention(text: string, removed: number, count: number, removedName: string): string {
-	return rewriteMentions(text, (index) => {
-		if (index > count) return null;
-		if (index === removed) return `"${removedName}"`;
-		return index > removed ? index - 1 : null;
+function rewriteDropping(text: string, next: (index: number) => number | false | null): string {
+	const marked = rewriteMentions(text, (index) => {
+		const answer = next(index);
+		return answer === false ? DROPPED : answer;
 	});
+	if (!marked.includes(DROPPED)) return marked;
+	return marked.replace(/[ \t]*\u0000[ \t]*/g, (match: string, offset: number, whole: string) => {
+		const before = whole[offset - 1];
+		const after = whole[offset + match.length];
+		// Between two words one space stays; at the edge of a line, none.
+		const between = before !== undefined && before !== '\n' && after !== undefined && after !== '\n';
+		return between && /^[ \t]/.test(match) && /[ \t]$/.test(match) ? ' ' : '';
+	});
+}
+
+/**
+ * The text after attachment `removed` (1-based) is taken out of `count`: its
+ * own tokens are deleted — the file is gone, and so is the reference — and
+ * later numbers move down one.
+ */
+export function removeMention(text: string, removed: number, count: number): string {
+	return rewriteDropping(text, (index) => {
+		if (index === removed) return false;
+		return index > removed && index <= count ? index - 1 : null;
+	});
+}
+
+/** Every token naming one of `count` attachments, deleted — they were all removed. */
+export function removeAllMentions(text: string, count: number): string {
+	return rewriteDropping(text, (index) => (index >= 1 && index <= count ? false : null));
 }
 
 /** Text written against its own attachments, appended after `offset` others. */

@@ -10,6 +10,8 @@
 	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatFileSize } from '$frontend/utils/format';
 	import { mentionToken } from '$shared/utils/attachment-mentions';
+	import { contextNoun, describeContext } from '$shared/utils/context-document';
+	import { CONTEXT_ICONS } from '$frontend/utils/context-icons';
 	import type { FileAttachment } from '../composables/use-file-handling.svelte';
 
 	interface Props {
@@ -18,9 +20,11 @@
 		pendingCount?: number;
 		onRemove: (id: string) => void;
 		onClearAll: () => void;
+		/** The `@N` the caret is on in the message: its card is marked and brought into view. */
+		highlighted?: number | null;
 	}
 
-	const { attachedFiles, pendingCount = 0, onRemove, onClearAll }: Props = $props();
+	const { attachedFiles, pendingCount = 0, onRemove, onClearAll, highlighted = null }: Props = $props();
 
 	const totalSize = $derived(attachedFiles.reduce((sum, attachment) => sum + attachment.file.size, 0));
 
@@ -77,6 +81,14 @@
 		};
 	});
 
+	// The card the caret's `@N` names scrolls into view.
+	$effect(() => {
+		const number = highlighted;
+		const el = scroller;
+		if (!number || !el) return;
+		el.querySelector<HTMLElement>(`[data-attachment-number="${number}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' });
+	});
+
 	// A newly attached file scrolls into view at the end of the row.
 	let lastCount = 0;
 	$effect(() => {
@@ -99,7 +111,7 @@
 		<div class="flex items-center gap-2 px-3 pt-2 text-xs text-slate-500 dark:text-slate-400">
 			<span class="min-w-0 truncate">
 				{attachedFiles.length} {attachedFiles.length === 1 ? 'file' : 'files'}{#if attachedFiles.length > 0}&nbsp;· {formatFileSize(totalSize)}{/if}{#if pendingCount > 0}&nbsp;· reading {pendingCount}…{/if}
-				<span class="hidden sm:inline">&nbsp;· type <span class="font-mono text-violet-600 dark:text-violet-400">@</span> to mention one</span>
+				<span class="hidden sm:inline">&nbsp;· type <span class="font-mono text-violet-600 dark:text-violet-400">@</span> to mention one or add more</span>
 			</span>
 			{#if attachedFiles.length > 1}
 				<button
@@ -122,17 +134,21 @@
 				aria-label="Attached files"
 			>
 				{#each attachedFiles as attachment, i (attachment.id)}
+					{@const name = attachment.context ? describeContext(attachment.context) : attachment.file.name}
 					<div
 						role="listitem"
-						class="group relative flex items-center shrink-0 w-48 h-14 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900"
+						data-attachment-number={i + 1}
+						class="group relative flex items-center shrink-0 w-48 h-14 rounded-lg border bg-white dark:bg-slate-900 transition-shadow {highlighted === i + 1
+							? 'border-violet-500 ring-2 ring-violet-500/40'
+							: 'border-slate-200 dark:border-slate-700'}"
 					>
 						<button
 							type="button"
 							onclick={() => openViewer(i)}
 							disabled={!attachment.base64}
 							class="flex items-center gap-2 min-w-0 flex-1 h-full pl-1.5 pr-1 rounded-l-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:cursor-default disabled:hover:bg-transparent text-left"
-							title="Preview {attachment.file.name}"
-							aria-label="Preview attachment {mentionToken(i + 1)}, {attachment.file.name}"
+							title="Preview {name}"
+							aria-label="Preview attachment {mentionToken(i + 1)}, {name}"
 						>
 							<span class="relative flex items-center justify-center w-10 h-10 shrink-0 rounded-md overflow-hidden bg-slate-100 dark:bg-slate-800">
 								{#if attachment.type === 'image' && attachment.previewUrl && !brokenThumbnails.has(attachment.id)}
@@ -142,6 +158,8 @@
 										class="w-full h-full object-cover"
 										onerror={() => (brokenThumbnails = new Set(brokenThumbnails).add(attachment.id))}
 									/>
+								{:else if attachment.context}
+									<Icon name={CONTEXT_ICONS[attachment.context.kind]} class="w-5 h-5 text-violet-600 dark:text-violet-400" />
 								{:else}
 									<Icon name={getAttachmentIcon(attachment.file.name, attachment.file.type)} class="w-6 h-6" />
 								{/if}
@@ -150,8 +168,10 @@
 								</span>
 							</span>
 							<span class="flex flex-col min-w-0">
-								<span class="text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{attachment.file.name}</span>
-								<span class="text-3xs text-slate-500 dark:text-slate-400">{formatFileSize(attachment.file.size)}</span>
+								<span class="text-xs font-medium text-slate-700 dark:text-slate-200 truncate">{attachment.context?.label ?? attachment.file.name}</span>
+								<span class="text-3xs text-slate-500 dark:text-slate-400 truncate">
+									{#if attachment.context}{contextNoun(attachment.context.kind)} · {/if}{formatFileSize(attachment.file.size)}
+								</span>
 							</span>
 						</button>
 						<button
@@ -159,7 +179,7 @@
 							onclick={() => onRemove(attachment.id)}
 							class="flex items-center justify-center w-8 h-full shrink-0 rounded-r-lg text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
 							title="Remove"
-							aria-label="Remove {attachment.file.name}"
+							aria-label="Remove {name}"
 						>
 							<Icon name="lucide:x" class="w-3.5 h-3.5" />
 						</button>

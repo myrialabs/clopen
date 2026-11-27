@@ -14,7 +14,7 @@
 	import { openSettingsModal, settingsSections } from '$frontend/stores/ui/settings-modal.svelte';
 	import { getCommandActions } from '$frontend/config/command-registry';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
-	import { bestFuzzyScore } from '$frontend/utils/fuzzy';
+	import { bestFuzzyScore } from '$shared/utils/fuzzy';
 	import { usageBoost, recordCommandUsage } from '$frontend/stores/ui/command-usage.svelte';
 	import ws from '$frontend/utils/ws';
 	import { debug } from '$shared/utils/logger';

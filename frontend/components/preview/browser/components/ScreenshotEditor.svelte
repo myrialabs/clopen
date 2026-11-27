@@ -14,7 +14,7 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type { PageColors } from '$frontend/utils/preview-constants';
-	import { hasOpenChat, type ScreenshotImage } from '$frontend/services/preview/browser/screenshot.service';
+	import type { ScreenshotImage } from '$frontend/services/preview/browser/screenshot.service';
 	import {
 		canFrame,
 		encodeCanvas,
@@ -95,7 +95,6 @@
 	const canRedo = $derived(!!currentEdits && currentEdits.index < currentEdits.history.length - 1);
 	const frameable = $derived(!!current && canFrame(current.meta) && !edit.crop);
 	const multiple = $derived((images?.length ?? 0) > 1);
-	const chatOpen = $derived(hasOpenChat());
 
 	/** One stroke unit, scaled to the image so marks read the same on any size. */
 	const unit = $derived(current ? Math.max(1, current.width / 600) : 1);
@@ -380,7 +379,7 @@
 		onDeliver(action, outputs);
 		outputs
 			.then(() => {
-				if (action === 'attach' || action === 'save') close();
+				if (action === 'save') close();
 			})
 			.catch((error) => debug.warn('preview', 'Screenshot export failed:', error))
 			.finally(() => (isWorking = false));
@@ -422,14 +421,15 @@
 			<div class="min-w-0">
 				<h2 class="text-base font-bold text-slate-900 dark:text-slate-100">Screenshot</h2>
 				{#if current}
-					<p class="truncate text-xs text-slate-500">
-						{current.meta.title || current.meta.url} · {current.width}×{current.height}
+					<!-- What was captured, not the page's title: a title runs as long as the site likes. -->
+					<p class="truncate text-xs text-slate-500" title={current.meta.title || current.meta.url}>
+						{deviceLabel[current.meta.deviceSize] ?? current.meta.deviceSize} · {current.width}×{current.height}
 					</p>
 				{/if}
 			</div>
 			<button
 				type="button"
-				class="rounded-lg p-1.5 text-slate-500 transition-colors hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
+				class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-slate-500 transition-colors hover:bg-violet-500/10 hover:text-slate-900 dark:hover:text-slate-100"
 				onclick={close}
 				aria-label="Close"
 			>
@@ -602,17 +602,8 @@
 	{#snippet footer()}
 		<div class="flex w-full flex-wrap items-center justify-end gap-2">
 			{#if multiple}
-				<span class="mr-auto text-xs text-slate-500">Download, attach and save apply to all {images?.length} images</span>
+				<span class="mr-auto text-xs text-slate-500">Download and save apply to all {images?.length} images</span>
 			{/if}
-			<button
-				type="button"
-				onclick={() => deliver('copy')}
-				disabled={isWorking}
-				class="flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-700 transition-colors hover:bg-slate-100 disabled:opacity-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-			>
-				<Icon name="lucide:copy" class="h-4 w-4" />
-				Copy
-			</button>
 			<button
 				type="button"
 				onclick={() => deliver('download')}
@@ -634,13 +625,12 @@
 			</button>
 			<button
 				type="button"
-				onclick={() => deliver('attach')}
-				disabled={isWorking || !chatOpen}
+				onclick={() => deliver('copy')}
+				disabled={isWorking}
 				class="flex items-center gap-1.5 rounded-lg bg-violet-600 px-3 py-1.5 text-sm font-medium text-white transition-colors hover:bg-violet-700 disabled:opacity-50"
-				title={chatOpen ? 'Add to the open chat’s message box' : 'Open a chat first'}
 			>
-				<Icon name="lucide:paperclip" class="h-4 w-4" />
-				Attach to chat
+				<Icon name="lucide:copy" class="h-4 w-4" />
+				Copy
 			</button>
 		</div>
 	{/snippet}
