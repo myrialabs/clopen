@@ -13,7 +13,6 @@ import type { PageColors } from '$frontend/utils/preview-constants';
 import type { PreviewScreenshotSettings } from '$shared/types/stores/settings';
 import { debug } from '$shared/utils/logger';
 import {
-	attachToChat,
 	canvasToBlob,
 	captureResponsive,
 	clipboardBlocker,
@@ -29,9 +28,10 @@ import {
 } from '$frontend/services/preview/browser/screenshot.service';
 import { hasDeviceFrame, renderInDeviceFrame } from '$shared/utils/device-frame';
 import { screenshotContext, screenshotFileName, type ScreenshotMeta } from './screenshot-naming';
+import { captureToChat } from '$frontend/services/chat/mentions';
 
-export type ScreenshotDelivery = 'copy' | 'download' | 'attach' | 'save';
-export type ScreenshotMenuAction = ScreenshotDelivery | 'annotate' | 'region' | 'element' | 'devices';
+export type ScreenshotDelivery = 'copy' | 'download' | 'save';
+export type ScreenshotMenuAction = ScreenshotDelivery | 'annotate' | 'region' | 'element' | 'devices' | 'mention-tab' | 'mention-element';
 export type ScreenshotSelectMode = 'region' | 'element';
 
 /** A finished picture, ready to hand over. */
@@ -110,6 +110,8 @@ export async function frameImage(
 export function createScreenshotController(deps: ControllerDeps) {
 	let busy = $state(false);
 	let selectMode = $state<ScreenshotSelectMode | null>(null);
+	/** What the element picker is open for: a screenshot, or a chat mention. */
+	let selectPurpose = $state<'screenshot' | 'mention'>('screenshot');
 	let editorImages = $state<ScreenshotImage[] | null>(null);
 
 	function requireContext(): CaptureContext {
@@ -193,18 +195,6 @@ export function createScreenshotController(deps: ControllerDeps) {
 			case 'download':
 				for (const output of list) downloadImage(output.blob, screenshotFileName(output.meta, extensionOf(output.blob)));
 				return;
-			case 'attach':
-				await attachToChat(
-					list.map((output) => ({ blob: output.blob, fileName: screenshotFileName(output.meta, extensionOf(output.blob)) })),
-					screenshotContext(list.map((output) => output.meta))
-				);
-				addNotification({
-					type: 'success',
-					title: list.length > 1 ? 'Screenshots attached' : 'Screenshot attached',
-					message: 'Added to the message box of the open chat',
-					duration: 3000
-				});
-				return;
 			case 'save':
 				for (const output of list) await saveOutput(output);
 				return;
@@ -214,7 +204,6 @@ export function createScreenshotController(deps: ControllerDeps) {
 	const failureTitle: Record<ScreenshotDelivery, string> = {
 		copy: 'Could not copy the screenshot',
 		download: 'Could not download the screenshot',
-		attach: 'Could not attach the screenshot',
 		save: 'Could not save the screenshot'
 	};
 
@@ -274,6 +263,9 @@ export function createScreenshotController(deps: ControllerDeps) {
 		get selectMode() {
 			return selectMode;
 		},
+		get selectPurpose() {
+			return selectPurpose;
+		},
 		get editorImages() {
 			return editorImages;
 		},
@@ -286,7 +278,6 @@ export function createScreenshotController(deps: ControllerDeps) {
 			switch (action) {
 				case 'copy':
 				case 'download':
-				case 'attach':
 				case 'save':
 					quick(action);
 					return;
@@ -295,8 +286,18 @@ export function createScreenshotController(deps: ControllerDeps) {
 					return;
 				case 'region':
 				case 'element':
+					selectPurpose = 'screenshot';
 					selectMode = action;
 					return;
+				case 'mention-element':
+					selectPurpose = 'mention';
+					selectMode = 'element';
+					return;
+				case 'mention-tab': {
+					const context = deps.context();
+					if (context) void captureToChat('preview-tab', { tabId: context.tabId });
+					return;
+				}
 				case 'devices':
 					void captureDevices();
 					return;
@@ -315,6 +316,11 @@ export function createScreenshotController(deps: ControllerDeps) {
 				case 'screenshot-annotate':
 					void annotate();
 					return true;
+				case 'mention-element': {
+					const context = deps.context();
+					if (context) void captureToChat('preview-element', { tabId: context.tabId, x: point.x, y: point.y, depth: 0 });
+					return true;
+				}
 				default:
 					return false;
 			}
@@ -323,11 +329,18 @@ export function createScreenshotController(deps: ControllerDeps) {
 		/** The area or element the picker settled on. */
 		completeSelection(target: ScreenshotTarget): void {
 			selectMode = null;
+			const context = deps.context();
+			if (selectPurpose === 'mention' && target.kind === 'element' && context) {
+				selectPurpose = 'screenshot';
+				void captureToChat('preview-element', { tabId: context.tabId, x: target.x, y: target.y, depth: target.depth ?? 0 });
+				return;
+			}
 			void annotate(target);
 		},
 
 		cancelSelection(): void {
 			selectMode = null;
+			selectPurpose = 'screenshot';
 		},
 
 		closeEditor(): void {

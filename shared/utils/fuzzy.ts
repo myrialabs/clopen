@@ -1,5 +1,6 @@
 /**
- * Lightweight fuzzy subsequence matching for the Command Palette.
+ * Lightweight fuzzy subsequence matching for the Command Palette and the
+ * chat composer's `@` picker.
  *
  * Pure, local, and synchronous — no engine round-trip — so Quick Search stays
  * instant. Scoring rewards exact/prefix hits, consecutive runs, and matches at

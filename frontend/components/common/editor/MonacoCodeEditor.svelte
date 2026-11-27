@@ -12,6 +12,7 @@
 	import { THEMES, getThemeName, registerThemes } from './monaco-themes';
 	import { detectLanguageFromFilename as detectLang } from './monaco-languages';
 	import { EDITOR_CHROME, editorFontMetrics } from './editor-options';
+	import { addMentionAction } from './mention-selection';
 
 	interface Props {
 		value: string;
@@ -195,6 +196,8 @@
 
 	const setupEditorEventHandlers = () => {
 		if (!monacoEditor) return;
+
+		addMentionAction(monacoEditor, () => ({ path, language }));
 
 		monacoEditor.onDidChangeModelContent(() => {
 			const newValue = monacoEditor.getValue();

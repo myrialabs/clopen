@@ -27,6 +27,7 @@ import {
 	type ScreenshotSource,
 	type ScreenshotTarget
 } from './browser-screenshot';
+import { describeElementAt, type DescribedElement } from './element-describe';
 import { debug } from '$shared/utils/logger';
 import { emitToPreviewWatchers, forgetAgentCursor, rememberAgentCursor } from '../../ws/preview/watchers';
 import { sleep } from '$shared/utils/async';
@@ -959,6 +960,12 @@ export class BrowserPreviewService extends EventEmitter {
 	async screenshotElementAt(tabId: string, x: number, y: number, depth: number): Promise<ElementAtPoint | null> {
 		const tab = await this.screenshotTab(tabId);
 		return elementAtPoint(tab.page, x, y, depth);
+	}
+
+	/** The element under a viewport point, described for a chat mention. */
+	async describeElementAt(tabId: string, x: number, y: number, depth: number): Promise<DescribedElement | null> {
+		const tab = await this.screenshotTab(tabId);
+		return describeElementAt(tab.page, x, y, depth);
 	}
 
 	/**

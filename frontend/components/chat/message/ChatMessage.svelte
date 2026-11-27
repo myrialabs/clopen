@@ -21,6 +21,8 @@
 	import { startEdit, shouldDimMessage, type EditAttachment } from '$frontend/stores/ui/edit-mode.svelte';
 	import { debug } from '$shared/utils/logger';
 	import { rewriteMentions } from '$shared/utils/attachment-mentions';
+	import { CONTEXT_MEDIA_TYPE, fileReferenceDocument, isReferenceKind, textToBase64 } from '$shared/utils/context-document';
+	import { captureToChat } from '$frontend/services/chat/mentions';
 	import ws from '$frontend/utils/ws';
 	import MessageBubbleClassic from './variants/classic/MessageBubble.svelte';
 	import MessageBubbleCompact from './variants/compact/MessageBubble.svelte';
@@ -321,6 +323,13 @@
 		await executeRestore(resolutions);
 	}
 
+	// A user or assistant message can be attached to the one being written —
+	// "do what this said", or quoting an answer back.
+	const canMention = $derived((roleCategory === 'user' || roleCategory === 'assistant') && !!messageId);
+	function handleMention() {
+		if (messageId) void captureToChat('chat-message', { messageId });
+	}
+
 	// Handle edit button click
 	async function handleEdit() {
 		// Not saved yet as far as this client knows — nothing to rewind to.
@@ -352,6 +361,15 @@
 						data: item.data,
 						mediaType,
 						fileName: item.title || `${item.type === 'image' ? 'image' : 'document'}-${found.length + 1}.${extension}`
+					}));
+				} else if (item.type === 'file' && item.source && isReferenceKind(item.source.kind) && item.source.path) {
+					// A mentioned project file was never copied: mention it again.
+					const document = fileReferenceDocument(item.source.path);
+					found.push(Promise.resolve({
+						type: 'document',
+						data: textToBase64(document.text),
+						mediaType: CONTEXT_MEDIA_TYPE,
+						fileName: document.fileName
 					}));
 				} else if (item.type === 'file') {
 					// Saved to the session's folder rather than kept in the message: read it back.
@@ -447,6 +465,7 @@
 			onCopy={copyToClipboard}
 			onRestore={handleRestore}
 			onEdit={handleEdit}
+			onMention={canMention ? handleMention : undefined}
 		/>
 	</div>
 {:else}
@@ -481,6 +500,7 @@
 					onRestore={handleRestore}
 					onEdit={handleEdit}
 					onShowDebug={openDebugInfoModal}
+					onMention={canMention ? handleMention : undefined}
 				/>
 			</div>
 

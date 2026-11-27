@@ -17,6 +17,8 @@
 	import TerminalTabs from './TerminalTabs.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import { PtyTerminal } from '@myrialabs/ptykit/svelte';
+	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { mentionTerminalSelection } from '$frontend/services/chat/mentions';
 	import type { ComponentProps } from 'svelte';
 
 	// The shared client is a dist PtyKitClient; <PtyTerminal> (shipped as source)
@@ -36,9 +38,23 @@
 
 	let isCancelling = $state(false);
 
-	// Live xterm instances per tab, kept only so handleClear can clear the client
-	// screen directly. Theme/font size are applied reactively by <PtyTerminal>.
-	const terminals = new Map<string, { clear?: () => void }>();
+	/** The parts of an xterm this component uses. */
+	interface XtermLike {
+		clear?: () => void;
+		hasSelection?: () => boolean;
+		getSelection?: () => string;
+		clearSelection?: () => void;
+		onSelectionChange?: (listener: () => void) => { dispose(): void };
+	}
+
+	// Live xterm instances per tab, so handleClear can clear the client screen
+	// directly and a selection can be sent to the chat. Theme/font size are
+	// applied reactively by <PtyTerminal>.
+	const terminals = new Map<string, XtermLike>();
+	const selectionListeners = new Map<string, { dispose(): void }>();
+
+	/** The tab whose output has text selected, offering to mention it. */
+	let selectedIn = $state<string | null>(null);
 
 	const fontSize = $derived(Math.round(settings.fontSize * 0.9));
 
@@ -88,7 +104,34 @@
 
 	function onTerminalReady(sessionId: string, ctx: { terminal: any; session: any }) {
 		registerSession(sessionId, ctx.session);
-		terminals.set(sessionId, ctx.terminal);
+		const terminal = ctx.terminal as XtermLike;
+		terminals.set(sessionId, terminal);
+		selectionListeners.get(sessionId)?.dispose();
+		const listener = terminal.onSelectionChange?.(() => {
+			const has = !!terminal.hasSelection?.() && !!terminal.getSelection?.().trim();
+			if (has) selectedIn = sessionId;
+			else if (selectedIn === sessionId) selectedIn = null;
+		});
+		if (listener) selectionListeners.set(sessionId, listener);
+	}
+
+	function forgetTerminal(sessionId: string) {
+		terminals.delete(sessionId);
+		selectionListeners.get(sessionId)?.dispose();
+		selectionListeners.delete(sessionId);
+		if (selectedIn === sessionId) selectedIn = null;
+	}
+
+	function mentionSelection() {
+		const sessionId = selectedIn;
+		if (!sessionId) return;
+		const text = terminals.get(sessionId)?.getSelection?.() ?? '';
+		const session = terminalStore.sessions.find((entry) => entry.id === sessionId);
+		if (!text.trim() || !session) return;
+		if (mentionTerminalSelection({ name: session.name, directory: session.directory, text })) {
+			terminals.get(sessionId)?.clearSelection?.();
+			selectedIn = null;
+		}
 	}
 
 	function handleClear() {
@@ -116,7 +159,7 @@
 		// a reused tab id would then re-attach the still-running old process.
 		const closed = await terminalStore.closeSession(sessionId);
 		unregisterSession(sessionId);
-		terminals.delete(sessionId);
+		forgetTerminal(sessionId);
 		if (closed && isLastSession) {
 			await handleNewSession();
 		}
@@ -135,7 +178,7 @@
 		for (const sessionId of terminalStore.sessions.map((session) => session.id)) {
 			await terminalStore.closeSession(sessionId);
 			unregisterSession(sessionId);
-			terminals.delete(sessionId);
+			forgetTerminal(sessionId);
 		}
 
 		if (terminalStore.sessions.length === 0) {
@@ -238,6 +281,20 @@
 					{/if}
 				</div>
 			{/each}
+
+			<!-- Selected output can be sent to the chat, the way picking it from `@` would. -->
+			{#if selectedIn && selectedIn === activeSessionId}
+				<button
+					type="button"
+					onmousedown={(event) => event.preventDefault()}
+					onclick={mentionSelection}
+					class="absolute top-2 right-4 z-10 inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-slate-200 dark:border-slate-700 bg-white/95 dark:bg-slate-900/95 text-xs font-sans font-medium text-slate-700 dark:text-slate-200 shadow-sm hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+					title="Attach the selected output to the message box"
+				>
+					<Icon name="lucide:at-sign" class="w-3.5 h-3.5 text-violet-600 dark:text-violet-400" />
+					Mention in chat
+				</button>
+			{/if}
 		</div>
 	{:else}
 		<div class="flex-1 flex items-center justify-center font-mono">

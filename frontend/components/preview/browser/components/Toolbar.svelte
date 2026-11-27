@@ -1,6 +1,7 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import ScreenshotMenu from './ScreenshotMenu.svelte';
+	import ToolbarMenu, { type ToolbarMenuItem } from './ToolbarMenu.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import type { ScreenshotMenuAction } from '../core/screenshot-controller.svelte';
 	import { onDestroy } from 'svelte';
@@ -100,6 +101,25 @@
 				? `Close ${closableTabs.length} tabs (${lockedTabCount} controlled by an agent stay open)`
 				: 'Close all tabs'
 	);
+
+	// Into the chat as a mention: the page (address, errors, a picture) or one element of it.
+	const mentionItems = $derived<ToolbarMenuItem[]>([
+		{ id: 'mention-tab', label: 'Mention this tab', icon: 'lucide:app-window', enabled: hasOpenChat },
+		{ id: 'mention-element', label: 'Mention an element…', icon: 'lucide:square-dashed-mouse-pointer', enabled: hasOpenChat }
+	]);
+
+	// Used now and then, so kept out of the row next to the address.
+	const moreItems = $derived<ToolbarMenuItem[]>([
+		...(url ? [{ id: 'external', label: 'Open in your browser', icon: 'lucide:external-link' as const }] : []),
+		{ id: 'browsing-data', label: 'Browsing data', icon: 'lucide:cookie' },
+		{ id: 'diagnostics', label: 'Diagnostics', icon: 'lucide:activity' }
+	]);
+
+	function handleMoreSelect(id: string) {
+		if (id === 'external') handleOpenInExternalBrowser();
+		else if (id === 'browsing-data') onOpenBrowsingData();
+		else if (id === 'diagnostics') onOpenDiagnostics();
+	}
 
 	let urlInputElement = $state<HTMLInputElement | undefined>();
 	let tabStripElement = $state<HTMLDivElement | undefined>();
@@ -591,34 +611,22 @@
 				</button>
 			{/if}
 
+			<ToolbarMenu
+				icon="lucide:at-sign"
+				title={hasOpenChat ? 'Mention in chat' : 'Mention in chat — open a chat first'}
+				heading="Mention in chat"
+				items={mentionItems}
+				disabled={!url || !sessionId}
+				onSelect={(id) => onScreenshotAction(id as ScreenshotMenuAction)}
+			/>
+
 			<ScreenshotMenu
 				disabled={!url || !sessionId}
 				busy={screenshotBusy}
 				fullPageAvailable={screenshotFullPageAvailable}
 				frameAvailable={screenshotFrameAvailable}
-				{hasOpenChat}
 				onAction={onScreenshotAction}
 			/>
-
-			<button
-				type="button"
-				onclick={() => onOpenBrowsingData()}
-				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
-				title="Preview browsing data"
-				aria-label="Preview browsing data"
-			>
-				<Icon name="lucide:cookie" class="h-4 w-4" />
-			</button>
-
-			<button
-				type="button"
-				onclick={() => onOpenDiagnostics()}
-				class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
-				title="Preview diagnostics"
-				aria-label="Preview diagnostics"
-			>
-				<Icon name="lucide:activity" class="h-4 w-4" />
-			</button>
 
 			<button
 				type="button"
@@ -640,17 +648,7 @@
 				{/if}
 			</button>
 
-			{#if url}
-				<button
-					type="button"
-					onclick={() => handleOpenInExternalBrowser()}
-					class="flex items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800 dark:hover:bg-slate-800 dark:hover:text-slate-100 h-7 w-7"
-					title="Open in your browser"
-					aria-label="Open in your browser"
-				>
-					<Icon name="lucide:external-link" class="h-4 w-4" />
-				</button>
-			{/if}
+			<ToolbarMenu icon="lucide:ellipsis-vertical" title="More" items={moreItems} onSelect={handleMoreSelect} />
 		</div>
 	</div>
 

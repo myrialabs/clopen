@@ -67,7 +67,7 @@ const TURN_FILE_SCHEMA = t.Object({
 });
 
 /** Parse a snapshot's stored changes, treating unreadable JSON as "no changes". */
-function parseSessionChanges(raw: unknown): SessionScopedChanges {
+export function parseSessionChanges(raw: unknown): SessionScopedChanges {
 	if (typeof raw !== 'string' || raw === '') return {};
 	try {
 		return JSON.parse(raw) as SessionScopedChanges;
@@ -77,7 +77,7 @@ function parseSessionChanges(raw: unknown): SessionScopedChanges {
 }
 
 /** Read a blob as text, or null when it is missing or not text. */
-async function readTextBlob(hash: string): Promise<string | null> {
+export async function readTextBlob(hash: string): Promise<string | null> {
 	if (!hash) return null;
 	try {
 		const buf = await blobStore.readBlob(hash);
@@ -92,7 +92,7 @@ async function readTextBlob(hash: string): Promise<string | null> {
  * changes are still on disk. Empty when the chat was restored to before its
  * first message.
  */
-function activeCheckpoints(sessionId: string): DatabaseMessage[] {
+export function activeCheckpoints(sessionId: string): DatabaseMessage[] {
 	const allMessages = messageQueries.getAllBySessionId(sessionId);
 	if (allMessages.length === 0) return [];
 

@@ -36,9 +36,11 @@
 	import MentionMenu, { type MentionItem } from './components/MentionMenu.svelte';
 	import EngineModelPicker from './components/EngineModelPicker.svelte';
 	import SlashCommandMenu from './components/SlashCommandMenu.svelte';
-	import WorkItemRefMenu from './components/WorkItemRefMenu.svelte';
 	import { hostingStore } from '$frontend/stores/features/hosting.svelte';
-	import type { WorkItem } from '$shared/types/work';
+	import { searchMentions, captureMention, type MentionResults } from '$frontend/services/chat/mentions';
+	import { CONTEXT_ICONS } from '$frontend/utils/context-icons';
+	import { describeContext } from '$shared/utils/context-document';
+	import type { MentionCandidate } from '$shared/types/mentions';
 	import ConflictResolutionModal from '$frontend/components/checkpoint/ConflictResolutionModal.svelte';
 	import { skillsStore, type AvailableSkill } from '$frontend/stores/features/skills.svelte';
 
@@ -55,7 +57,7 @@
 	import { useChatDropTarget } from './composables/use-chat-drop-zone.svelte';
 	import { getAttachmentIcon } from '$frontend/utils/file-icon-mappings';
 	import { formatFileSize } from '$frontend/utils/format';
-	import { mentionToken, removeMention, rewriteMentions, shiftMentions } from '$shared/utils/attachment-mentions';
+	import { mentionToken, removeAllMentions, removeMention, shiftMentions } from '$shared/utils/attachment-mentions';
 
 	let messageText = $state('');
 	// Where the caret is in the box, for the `@` picker.
@@ -66,7 +68,7 @@
 	// Shared by the textarea and its sizing mirror: identical classes mean
 	// identical width, font and padding, so the measurement can't drift.
 	const textareaClass =
-		'w-full px-4 pt-2 pb-4 border-0 bg-transparent resize-none focus:outline-none text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 text-base leading-relaxed';
+		'w-full px-4 pt-3 pb-2 border-0 bg-transparent resize-none focus:outline-none text-slate-900 dark:text-slate-100 placeholder-slate-500 dark:placeholder-slate-400 text-base leading-relaxed';
 	let fileInputElement: HTMLInputElement;
 
 	// Initialize composables
@@ -225,103 +227,169 @@
 		inputState.saveText();
 	}
 
-	// --- `#` references (typing "#12" attaches that issue or pull request) ---
-	let refActiveIndex = $state(0);
-	let refDismissed = $state(false);
-	let refItems = $state<WorkItem[]>([]);
-	let refLoading = $state(false);
-	let refGeneration = 0;
-
-	// Only at the END of the text and after whitespace, so a "#" inside a
-	// heading, a colour or a URL fragment never opens the picker.
-	const refQuery = $derived.by(() => {
-		if (!hostingStore.offersWork || slashQuery !== null) return null;
-		const m = /(?:^|\s)#([A-Za-z0-9-]{0,40})$/.exec(messageText);
-		return m ? m[1] : null;
-	});
-	const refOpen = $derived(refQuery !== null && !refDismissed);
-
-	// The picker needs to know which service the repository is on even when the
-	// Git panel has never been opened. Cheap and local — remotes against accounts.
+	// The `@` picker lists the repository's issues, so it needs to know which
+	// service the repository is on even when the Git panel has never been
+	// opened. Cheap and local — remotes against accounts.
 	$effect(() => {
 		if (projectState.currentProject?.id) untrack(() => void hostingStore.load());
 	});
 
-	$effect(() => {
-		const query = refQuery;
-		if (query === null) {
-			refDismissed = false;
-			refActiveIndex = 0;
-			refItems = [];
-			return;
-		}
-		const generation = ++refGeneration;
-		refLoading = true;
-		const handle = setTimeout(async () => {
-			const items = await hostingStore.searchWorkItems(query);
-			if (generation !== refGeneration) return;
-			refItems = items;
-			refLoading = false;
-			if (refActiveIndex >= items.length) refActiveIndex = 0;
-		}, 200);
-		return () => clearTimeout(handle);
-	});
-
-	// --- `@` mentions (typing "@" lists what can be mentioned: the attachments) ---
-	// Read at the caret (see `caret` above), not the end of the text: a mention
-	// is often added to a sentence already written.
+	// --- `@` mentions ---
+	// Typing "@" lists everything a message can point at: its own files, and
+	// whatever in the workspace can be attached as a snapshot (see
+	// services/chat/mentions). Read at the caret (see `caret` above), not the
+	// end of the text: a mention is often added to a sentence already written.
 	let mentionActiveIndex = $state(0);
 	let mentionDismissed = $state(false);
+	/** The list opened from the root — "Terminals", "Commits", one database. */
+	let mentionCategory = $state<{ id: string; label: string } | null>(null);
+	let mentionResults = $state<MentionResults>({ items: [], categories: [] });
+	let mentionLoading = $state(false);
+	let mentionGeneration = 0;
 
 	function syncCaret() {
 		if (textareaElement) caret = textareaElement.selectionStart ?? messageText.length;
 	}
 
 	const mentionMatch = $derived.by(() => {
-		if (slashQuery !== null || fileHandling.attachedFiles.length === 0) return null;
+		if (slashQuery !== null || !hasActiveProject) return null;
 		const before = messageText.slice(0, caret);
-		const m = /(?:^|[\s([{"'])@([^\s@]{0,40})$/.exec(before);
+		const m = /(?:^|[\s([{"'])@([^\s@]{0,120})$/.exec(before);
 		if (!m) return null;
-		return { query: m[1].toLowerCase(), start: before.length - m[1].length - 1 };
+		return { query: m[1], start: before.length - m[1].length - 1 };
 	});
 
-	const mentionItems = $derived.by((): MentionItem[] => {
+	/**
+	 * The attachment whose `@N` the caret is on — being typed, or moved over —
+	 * so its card can be shown. Null when the caret is on no such token.
+	 */
+	const caretAttachment = $derived.by(() => {
+		const left = /(?:^|[\s([{"'“‘])@(\d{0,4})$/.exec(messageText.slice(0, caret));
+		if (!left) return null;
+		const digits = left[1] + (/^\d*/.exec(messageText.slice(caret))?.[0] ?? '');
+		const number = Number(digits);
+		return digits && number >= 1 && number <= fileHandling.attachedFiles.length ? number : null;
+	});
+
+	type MentionRow =
+		| { item: MentionItem; action: 'attachment' }
+		| { item: MentionItem; action: 'browse'; category: { id: string; label: string } }
+		| { item: MentionItem; action: 'capture'; candidate: MentionCandidate };
+
+	const mentionRows = $derived.by((): MentionRow[] => {
 		const match = mentionMatch;
 		if (!match) return [];
-		const query = match.query;
-		return fileHandling.attachedFiles
-			.map((attachment, i): MentionItem => ({
-				key: attachment.id,
-				group: 'Attachments',
-				token: mentionToken(i + 1),
-				label: attachment.file.name,
-				detail: formatFileSize(attachment.file.size),
-				icon: getAttachmentIcon(attachment.file.name, attachment.file.type),
-				thumbnailUrl: attachment.type === 'image' ? attachment.previewUrl : undefined
-			}))
-			.filter((item) => !query || item.token.slice(1).startsWith(query) || item.label.toLowerCase().includes(query));
+		const query = match.query.toLowerCase();
+		const rows: MentionRow[] = [];
+
+		if (!mentionCategory) {
+			fileHandling.attachedFiles.forEach((attachment, i) => {
+				const token = mentionToken(i + 1);
+				const label = attachment.context ? describeContext(attachment.context) : attachment.file.name;
+				if (query && !token.slice(1).startsWith(query) && !label.toLowerCase().includes(query)) return;
+				rows.push({
+					action: 'attachment',
+					item: {
+						key: `attachment:${attachment.id}`,
+						group: 'Attached to this message',
+						token,
+						label,
+						detail: attachment.context?.detail ?? formatFileSize(attachment.file.size),
+						icon: attachment.context ? CONTEXT_ICONS[attachment.context.kind] : getAttachmentIcon(attachment.file.name, attachment.file.type),
+						thumbnailUrl: attachment.type === 'image' ? attachment.previewUrl : undefined
+					}
+				});
+			});
+		}
+
+		for (const candidate of mentionResults.items) {
+			rows.push({
+				action: candidate.browse ? 'browse' : 'capture',
+				candidate,
+				category: candidate.browse ? { id: candidate.browse, label: candidate.label } : undefined,
+				item: { key: candidate.key, group: candidate.group, label: candidate.label, detail: candidate.detail, icon: candidate.icon, browse: !!candidate.browse }
+			} as MentionRow);
+		}
+
+		for (const category of mentionResults.categories) {
+			rows.push({
+				action: 'browse',
+				category: { id: category.id, label: category.label },
+				item: { key: `category:${category.id}`, group: 'Browse', label: category.label, detail: category.detail, icon: category.icon, browse: true }
+			});
+		}
+		return rows;
 	});
-	const mentionOpen = $derived(mentionMatch !== null && !mentionDismissed && mentionItems.length > 0);
+
+	const mentionItems = $derived(mentionRows.map((row) => row.item));
+	const mentionOpen = $derived(mentionMatch !== null && !mentionDismissed && (mentionRows.length > 0 || mentionLoading || mentionCategory !== null));
+
+	// Look up what matches, a beat after the typing stops. A newer lookup wins.
+	$effect(() => {
+		const match = mentionMatch;
+		const category = mentionCategory;
+		const dismissed = mentionDismissed;
+		if (!match || dismissed) {
+			mentionGeneration++;
+			mentionLoading = false;
+			return;
+		}
+		const generation = ++mentionGeneration;
+		mentionLoading = true;
+		const handle = setTimeout(async () => {
+			const results = await searchMentions(match.query, category?.id ?? null);
+			if (generation !== mentionGeneration) return;
+			mentionResults = results;
+			mentionLoading = false;
+		}, category ? 0 : 120);
+		return () => clearTimeout(handle);
+	});
 
 	$effect(() => {
 		if (mentionMatch === null) {
 			mentionDismissed = false;
 			mentionActiveIndex = 0;
-		} else if (mentionActiveIndex >= mentionItems.length) {
+			mentionCategory = null;
+			mentionResults = { items: [], categories: [] };
+		} else if (mentionActiveIndex >= mentionRows.length) {
 			mentionActiveIndex = 0;
 		}
 	});
 
-	function selectMention(item: MentionItem) {
+	/** Replace the `@query` being typed with `text`, leaving the caret after it. */
+	function replaceMentionQuery(text: string): number | null {
 		const match = mentionMatch;
-		if (!match) return;
+		if (!match) return null;
 		const after = messageText.slice(caret);
-		const spacer = after.startsWith(' ') ? '' : ' ';
-		const next = `${messageText.slice(0, match.start)}${item.token}${spacer}${after}`;
-		const position = match.start + item.token.length + 1;
+		const spacer = text.endsWith('@') || after.startsWith(' ') ? '' : ' ';
+		const next = `${messageText.slice(0, match.start)}${text}${spacer}${after}`;
+		const position = match.start + text.length + spacer.length;
 		setMessageText(next);
 		inputState.saveText();
-		mentionDismissed = true;
+		requestAnimationFrame(() => {
+			if (!textareaElement) return;
+			textareaElement.focus();
+			textareaElement.setSelectionRange(position, position);
+			caret = position;
+			adjustTextareaHeight();
+		});
+		return match.start;
+	}
+
+	/**
+	 * The `@` button: write an "@" at the caret — with a space before it when
+	 * it would otherwise run into a word — so the picker opens as if typed.
+	 */
+	function startMention() {
+		if (!textareaElement) return;
+		const at = textareaElement.selectionStart ?? messageText.length;
+		const end = textareaElement.selectionEnd ?? at;
+		const before = messageText.slice(0, at);
+		const insert = before && !/[\s([{"']$/.test(before) ? ' @' : '@';
+		setMessageText(before + insert + messageText.slice(end));
+		mentionDismissed = false;
+		const position = at + insert.length;
+		inputState.saveText();
 		requestAnimationFrame(() => {
 			if (!textareaElement) return;
 			textareaElement.focus();
@@ -331,36 +399,85 @@
 		});
 	}
 
-	/** UTF-8 text as base64, the form attachments are stored in. */
-	function utf8Base64(text: string): string {
-		const bytes = new TextEncoder().encode(text);
-		let binary = '';
-		for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-		return btoa(binary);
+	function openMentionCategory(category: { id: string; label: string }) {
+		mentionCategory = category;
+		mentionResults = { items: [], categories: [] };
+		mentionActiveIndex = 0;
+		// What was typed searched the root; the list opens unfiltered.
+		replaceMentionQuery('@');
 	}
 
+	function closeMentionCategory() {
+		mentionCategory = null;
+		mentionResults = { items: [], categories: [] };
+		mentionActiveIndex = 0;
+	}
+
+	function selectMention(item: MentionItem) {
+		const row = mentionRows.find((entry) => entry.item.key === item.key);
+		if (!row) return;
+		if (row.action === 'browse') {
+			openMentionCategory(row.category);
+			return;
+		}
+		if (row.action === 'attachment') {
+			mentionDismissed = true;
+			replaceMentionQuery(item.token!);
+			return;
+		}
+		void captureIntoMessage(row.candidate);
+	}
+
+	let captureCount = 0;
+
 	/**
-	 * Swap the typed `#query` for the item's number, and attach the item itself
-	 * as a markdown file — title, state, description and the latest discussion —
-	 * so the agent reads the issue rather than guessing what "#12" means.
+	 * Attach a snapshot of what was picked and write its `@N` where the `@`
+	 * was typed. The snapshot takes a moment — a terminal's scrollback, a
+	 * diff, a page element — so a placeholder holds the spot in the text and
+	 * the attachment row holds a card's place; typing carries on meanwhile.
 	 */
-	async function selectWorkItemRef(item: WorkItem) {
-		refDismissed = true;
-		setMessageText(messageText.replace(/#([A-Za-z0-9-]{0,40})$/, `#${item.identifier} `));
-		textareaElement?.focus();
-		adjustTextareaHeight();
-		inputState.saveText();
+	async function captureIntoMessage(candidate: MentionCandidate) {
+		const placeholder = `@(adding ${candidate.label.slice(0, 40)}…${++captureCount > 1 ? ` ${captureCount}` : ''})`;
+		mentionDismissed = true;
+		mentionCategory = null;
+		replaceMentionQuery(placeholder);
+		const release = fileHandling.holdPlace();
 		try {
-			const doc = await hostingStore.workItemMarkdown(item);
-			if (!doc) return;
-			if (fileHandling.attachedFiles.some((file) => file.file.name === doc.fileName)) return;
-			const attachment = attachmentFromBase64({ fileName: doc.fileName, mediaType: 'text/markdown', base64: utf8Base64(doc.text) });
-			if (!attachment) return;
-			fileHandling.replaceAttachments([...fileHandling.attachedFiles, attachment]);
+			const captured = await captureMention(candidate.kind, candidate.ref);
+			const restored = captured
+				.map((a) => attachmentFromBase64({ fileName: a.fileName, mediaType: a.mediaType, base64: a.data }))
+				.filter((a): a is FileAttachment => a !== null);
+			if (restored.length === 0) throw new Error('Nothing was captured');
+			const first = fileHandling.attachedFiles.length + 1;
+			fileHandling.replaceAttachments([...fileHandling.attachedFiles, ...restored]);
 			inputState.saveAttachments(fileHandling.attachedFiles);
+			// A capture can bring more than one file — a page and its picture —
+			// and every one of them is named.
+			swapPlaceholder(placeholder, restored.map((_, i) => mentionToken(first + i)).join(' '));
 		} catch (error) {
-			debug.warn('chat', 'Could not attach the referenced item:', error);
-			addNotification({ type: 'error', title: 'Could not attach', message: `#${item.identifier} could not be read.`, duration: 4000 });
+			swapPlaceholder(placeholder, '');
+			addNotification({
+				type: 'error',
+				title: 'Could not attach',
+				message: `${candidate.label}: ${error instanceof Error ? error.message : String(error)}`,
+				duration: 5000
+			});
+		} finally {
+			release();
+		}
+	}
+
+	/** Put the token where its placeholder is — or at the end, if the placeholder was edited away. */
+	function swapPlaceholder(placeholder: string, token: string) {
+		const at = messageText.indexOf(placeholder);
+		if (at !== -1) {
+			const before = messageText.slice(0, at);
+			let after = messageText.slice(at + placeholder.length);
+			// Nothing to write: take the space that followed it too.
+			if (!token && after.startsWith(' ') && (before === '' || before.endsWith(' '))) after = after.slice(1);
+			replaceTextKeepingDraft(before + token + after);
+		} else if (token) {
+			replaceTextKeepingDraft(messageText.trim() ? `${messageText.trimEnd()} ${token} ` : `${token} `);
 		}
 	}
 
@@ -370,17 +487,54 @@
 	// and saves the rest into the session's folder, naming it in the prompt.
 
 	// Every change to the attachments is saved to the draft right after it.
-	async function afterAttachmentChange(change: Promise<void> | void) {
+	async function afterAttachmentChange(change: Promise<unknown> | void) {
 		await change;
 		inputState.saveAttachments(fileHandling.attachedFiles);
 	}
-	const handleFileInputChange = (event: Event) => afterAttachmentChange(fileHandling.handleFileInputChange(event));
-	const handlePaste = (event: ClipboardEvent) => afterAttachmentChange(fileHandling.handlePaste(event));
+
+	/**
+	 * Files added by paste, drop or the file picker are written into the text
+	 * as their `@N`: where the caret is when the box has focus (a paste mid
+	 * sentence), otherwise at the end.
+	 */
+	async function addFilesWithMentions(adding: Promise<FileAttachment[]>) {
+		const focused = typeof document !== 'undefined' && document.activeElement === textareaElement;
+		const at = focused ? (textareaElement?.selectionStart ?? messageText.length) : null;
+		const added = await adding;
+		inputState.saveAttachments(fileHandling.attachedFiles);
+		writeMentionsFor(added, at);
+	}
+
+	/** Write the `@N` of attachments already in the list, at `at` or at the end. */
+	function writeMentionsFor(attachments: FileAttachment[], at: number | null) {
+		const tokens = attachments
+			.map((attachment) => fileHandling.attachedFiles.findIndex((file) => file.id === attachment.id))
+			.filter((index) => index !== -1)
+			.map((index) => mentionToken(index + 1));
+		if (tokens.length === 0) return;
+		const text = tokens.join(' ');
+		const position = at === null ? messageText.length : Math.min(at, messageText.length);
+		const before = messageText.slice(0, position);
+		const after = messageText.slice(position);
+		const lead = before && !/\s$/.test(before) ? ' ' : '';
+		const trail = after.startsWith(' ') ? '' : ' ';
+		replaceTextKeepingDraft(`${before}${lead}${text}${trail}${after}`);
+		const caretAt = before.length + lead.length + text.length + trail.length;
+		if (at !== null) {
+			requestAnimationFrame(() => {
+				textareaElement?.setSelectionRange(caretAt, caretAt);
+				caret = caretAt;
+			});
+		}
+	}
+
+	const handleFileInputChange = (event: Event) => addFilesWithMentions(fileHandling.handleFileInputChange(event));
+	const handlePaste = (event: ClipboardEvent) => addFilesWithMentions(fileHandling.handlePaste(event));
 
 	// Files dropped anywhere on the chat panel land here.
 	useChatDropTarget((files) => {
 		if (!hasActiveProject) return;
-		void afterAttachmentChange(fileHandling.processFiles(files));
+		void addFilesWithMentions(fileHandling.processFiles(files));
 	});
 
 	/** Put text in the box as if typed: saved, and the box re-fitted. */
@@ -398,13 +552,12 @@
 		const position = files.findIndex((file) => file.id === id);
 		if (position === -1) return;
 		const removed = files[position];
-		replaceTextKeepingDraft(removeMention(messageText, position + 1, files.length, removed.file.name));
+		replaceTextKeepingDraft(removeMention(messageText, position + 1, files.length));
 		void afterAttachmentChange(fileHandling.removeAttachment(id));
 	}
 
 	function handleClearAllAttachments() {
-		const names = fileHandling.attachedFiles.map((file) => file.file.name);
-		replaceTextKeepingDraft(rewriteMentions(messageText, (index) => (index <= names.length ? `"${names[index - 1]}"` : null)));
+		replaceTextKeepingDraft(removeAllMentions(messageText, fileHandling.attachedFiles.length));
 		void afterAttachmentChange(fileHandling.clearAllAttachments());
 	}
 
@@ -418,49 +571,35 @@
 	const handleKeyDown = (event: KeyboardEvent) => {
 		// The `@` picker owns navigation keys while it is open.
 		if (mentionOpen) {
-			if (event.key === 'ArrowDown') {
+			const count = mentionRows.length;
+			if (event.key === 'ArrowDown' && count > 0) {
 				event.preventDefault();
-				mentionActiveIndex = (mentionActiveIndex + 1) % mentionItems.length;
+				mentionActiveIndex = (mentionActiveIndex + 1) % count;
 				return;
 			}
-			if (event.key === 'ArrowUp') {
+			if (event.key === 'ArrowUp' && count > 0) {
 				event.preventDefault();
-				mentionActiveIndex = (mentionActiveIndex - 1 + mentionItems.length) % mentionItems.length;
+				mentionActiveIndex = (mentionActiveIndex - 1 + count) % count;
 				return;
 			}
-			if (event.key === 'Enter' || event.key === 'Tab') {
+			if ((event.key === 'Enter' || event.key === 'Tab') && count > 0) {
 				event.preventDefault();
-				selectMention(mentionItems[mentionActiveIndex]);
+				selectMention(mentionRows[mentionActiveIndex].item);
 				return;
 			}
 			if (event.key === 'Escape') {
 				event.preventDefault();
-				mentionDismissed = true;
+				if (mentionCategory) closeMentionCategory();
+				else mentionDismissed = true;
 				return;
 			}
-		}
-		// The `#` picker owns navigation keys while it has something to pick.
-		if (refOpen && refItems.length > 0) {
-			if (event.key === 'ArrowDown') {
+			// Backspace on an empty query inside a list goes back to the root, not
+			// through the `@`.
+			if (event.key === 'Backspace' && mentionCategory && mentionMatch?.query === '') {
 				event.preventDefault();
-				refActiveIndex = (refActiveIndex + 1) % refItems.length;
+				closeMentionCategory();
 				return;
 			}
-			if (event.key === 'ArrowUp') {
-				event.preventDefault();
-				refActiveIndex = (refActiveIndex - 1 + refItems.length) % refItems.length;
-				return;
-			}
-			if (event.key === 'Enter' || event.key === 'Tab') {
-				event.preventDefault();
-				void selectWorkItemRef(refItems[refActiveIndex]);
-				return;
-			}
-		}
-		if (refOpen && event.key === 'Escape') {
-			event.preventDefault();
-			refDismissed = true;
-			return;
 		}
 		// Slash menu owns navigation keys while it's open.
 		if (slashOpen) {
@@ -501,14 +640,27 @@
 		chatActions.handleCancelEdit();
 	};
 
-	/** Add a message's text and attachments to what is in the box already. */
-	function appendToComposer(incomingText: string, attachments: { fileName: string; mediaType: string; data: string }[]) {
+	/**
+	 * Add a message's text and attachments to what is in the box already. A
+	 * mention sent from elsewhere also gets its `@N` written into the text.
+	 */
+	function appendToComposer(
+		incomingText: string,
+		attachments: { fileName: string; mediaType: string; data: string }[],
+		mention = false
+	) {
 		const restored = attachments
 			.map((a) => attachmentFromBase64({ fileName: a.fileName, mediaType: a.mediaType, base64: a.data }))
 			.filter((a): a is FileAttachment => a !== null);
+		const first = fileHandling.attachedFiles.length + 1;
 		// Its `@1` meant its own first file, which now follows the ones already here.
-		const text = shiftMentions(incomingText, fileHandling.attachedFiles.length, restored.length);
-		if (text) setMessageText(messageText.trim() ? `${messageText.trimEnd()}\n\n${text}` : text);
+		let text = shiftMentions(incomingText, fileHandling.attachedFiles.length, restored.length);
+		const tokens = restored.map((_, i) => mentionToken(first + i)).join(' ');
+		if (mention && restored.length > 0) text = text ? `${text} ${tokens} ` : `${tokens} `;
+		if (text) {
+			const joiner = mention ? ' ' : '\n\n';
+			setMessageText(messageText.trim() ? `${messageText.trimEnd()}${joiner}${text}` : text);
+		}
 		if (restored.length > 0) {
 			fileHandling.replaceAttachments([...fileHandling.attachedFiles, ...restored]);
 			inputState.saveAttachments(fileHandling.attachedFiles);
@@ -541,7 +693,7 @@
 		const chatSessionId = sessionState.currentSession?.id;
 		if (!chatSessionId || !chatInputState.pending.some((m) => m.chatSessionId === chatSessionId)) return;
 		untrack(() => {
-			for (const message of takeComposerAdditions(chatSessionId)) appendToComposer(message.text, message.attachments);
+			for (const message of takeComposerAdditions(chatSessionId)) appendToComposer(message.text, message.attachments, message.mention);
 		});
 	});
 
@@ -738,6 +890,7 @@
 		<!-- Attached files: one sideways-scrolling row, numbered for `@N` -->
 		<FileAttachmentPreview
 			attachedFiles={fileHandling.attachedFiles}
+			highlighted={caretAttachment}
 			pendingCount={fileHandling.pendingCount}
 			onRemove={handleRemoveAttachment}
 			onClearAll={handleClearAllAttachments}
@@ -747,8 +900,12 @@
 			<MentionMenu
 				items={mentionItems}
 				activeIndex={mentionActiveIndex}
+				loading={mentionLoading}
+				title={mentionCategory?.label ?? null}
+				query={mentionMatch?.query ?? ''}
 				onselect={selectMention}
 				onhover={(i) => (mentionActiveIndex = i)}
+				onback={closeMentionCategory}
 			/>
 		{/if}
 
@@ -762,16 +919,6 @@
 			/>
 		{/if}
 
-		{#if refOpen}
-			<WorkItemRefMenu
-				items={refItems}
-				activeIndex={refActiveIndex}
-				isLoading={refLoading}
-				serviceName={hostingStore.providerName ?? 'the repository'}
-				onselect={(item) => void selectWorkItemRef(item)}
-				onhover={(i) => (refActiveIndex = i)}
-			/>
-		{/if}
 
 		<!-- Main input area (files are dropped on the whole chat panel, see ChatPanel) -->
 		<div
@@ -792,10 +939,8 @@
 				<!-- Edit Mode Indicator (own edit, or who else is editing) -->
 				<EditModeIndicator onCancel={handleCancelEdit} />
 
-				<!-- Engine/Model Picker -->
-				<EngineModelPicker />
-
-				<div class="flex items-end">
+				<!-- The text takes the whole width; what to send it with, and how, sit in one row below it -->
+				<div class="flex">
 					<div class="relative flex-1 min-w-0 flex">
 						<textarea
 							bind:this={sizingMirror}
@@ -825,8 +970,15 @@
 							autocomplete="off"
 						></textarea>
 					</div>
+				</div>
 
-					<!-- Action buttons -->
+				<!-- Toolbar: every picker is always visible with its choice. They wrap among themselves when the
+				     box is narrow; the buttons keep their own column at the bottom right and are never alone. -->
+				<div class="flex items-end gap-2 pl-3 pr-2 pb-2">
+					<div class="flex min-w-0 flex-1 flex-wrap items-center gap-x-0.5">
+						<EngineModelPicker />
+					</div>
+
 					<ChatInputActions
 						isLoading={appState.isLoading}
 						isCancelling={appState.isCancelling}
@@ -839,6 +991,7 @@
 						onSubmit={handleSubmit}
 						onCancel={chatActions.cancelRequest}
 						onAttachFile={() => fileHandling.handleFileSelect(fileInputElement)}
+						onMention={startMention}
 					/>
 				</div>
 			</div>

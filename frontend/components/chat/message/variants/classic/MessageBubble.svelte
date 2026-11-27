@@ -27,7 +27,8 @@
 		onCopy,
 		onRestore,
 		onEdit,
-		onShowDebug
+		onShowDebug,
+		onMention
 	}: {
 		message: FrontendMessage;
 		messageTimestamp: string;
@@ -40,6 +41,7 @@
 		onRestore: () => void;
 		onEdit: () => void;
 		onShowDebug: () => void;
+		onMention?: () => void;
 	} = $props();
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
@@ -98,6 +100,7 @@
 			{onRestore}
 			{onEdit}
 			{onShowDebug}
+			{onMention}
 		/>
 
 		<!-- Message Content -->

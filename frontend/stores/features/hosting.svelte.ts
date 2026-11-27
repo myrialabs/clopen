@@ -24,9 +24,7 @@ import type {
 	HostRemote
 } from '$shared/types/git-hosting';
 import type { CheckRun, WorkItem, WorkItemDetail } from '$shared/types/work';
-
-/** What one referenced item may add to a prompt — enough to act on, not the whole thread. */
-const REFERENCE_BUDGET = 12 * 1024;
+import { buildContextDocument, type ContextDocument } from '$shared/utils/context-document';
 
 /** How each service is named in copy, before any account says otherwise. */
 export const HOST_NAMES: Record<GitHostKind, string> = {
@@ -277,7 +275,7 @@ export const hostingStore = {
 	},
 
 	/**
-	 * Issues and pull requests matching what was typed after `#`, for the chat
+	 * Issues and pull requests matching what was typed after `@`, for the chat
 	 * composer. Both kinds, open first, numbers matched exactly before titles.
 	 */
 	async searchWorkItems(query: string): Promise<WorkItem[]> {
@@ -302,10 +300,11 @@ export const hostingStore = {
 	},
 
 	/**
-	 * One item as a markdown document an agent can read: what it is, where it
-	 * lives, its description and the latest discussion, cut to a budget.
+	 * One item as the context document an `@` mention attaches: what it is,
+	 * where it lives, its description and the whole discussion. Saved as a
+	 * file for the engine, so the thread is not cut to fit a prompt.
 	 */
-	async workItemMarkdown(item: WorkItem): Promise<{ fileName: string; text: string } | null> {
+	async workItemDocument(item: WorkItem): Promise<ContextDocument | null> {
 		const projectId = state.projectId;
 		const account = this.primaryAccount;
 		if (!projectId || !account?.offersWork) return null;
@@ -317,33 +316,26 @@ export const hostingStore = {
 		})) as WorkItemDetail;
 
 		const noun = item.kind === 'pull-request' ? this.prNoun.long : 'issue';
-		const lines = [
-			`# ${noun[0]!.toUpperCase()}${noun.slice(1)} #${detail.identifier}: ${detail.title}`,
-			'',
-			`- URL: ${detail.url}`,
-			`- State: ${detail.state}`,
-			...(detail.author ? [`- Author: ${detail.author}`] : []),
-			...(detail.headBranch ? [`- Branch: ${detail.headBranch} → ${detail.baseBranch ?? ''}`] : []),
-			...(detail.labels.length ? [`- Labels: ${detail.labels.join(', ')}`] : []),
-			...(detail.assignees.length ? [`- Assignees: ${detail.assignees.join(', ')}`] : []),
-			'',
-			'## Description',
-			'',
-			detail.body.trim() || '_No description._'
-		];
-		let text = lines.join('\n');
-		// The newest comments matter most; earlier ones are dropped first.
-		const comments = detail.comments.slice(-15);
-		const rendered: string[] = [];
-		for (const comment of [...comments].reverse()) {
-			const block = `### ${comment.author} · ${comment.createdAt.slice(0, 10)}${comment.path ? ` · ${comment.path}` : ''}\n\n${comment.body.trim()}`;
-			if (text.length + rendered.join('\n\n').length + block.length > REFERENCE_BUDGET) break;
-			rendered.unshift(block);
-		}
-		if (rendered.length) text += `\n\n## Discussion${rendered.length < detail.comments.length ? ` (latest ${rendered.length} of ${detail.comments.length})` : ''}\n\n${rendered.join('\n\n')}`;
-		if (text.length > REFERENCE_BUDGET) text = `${text.slice(0, REFERENCE_BUDGET)}\n\n… truncated`;
-		const prefix = item.kind === 'pull-request' ? this.prNoun.short.toLowerCase() : 'issue';
-		return { fileName: `${prefix}-${detail.identifier}.md`, text };
+		const discussion = detail.comments
+			.map((comment) => `### ${comment.author} · ${comment.createdAt.slice(0, 10)}${comment.path ? ` · ${comment.path}` : ''}\n\n${comment.body.trim()}`)
+			.join('\n\n');
+		return buildContextDocument({
+			kind: 'work-item',
+			label: `#${detail.identifier} ${detail.title}`,
+			detail: `${noun} · ${detail.state}`,
+			facts: [
+				['URL', detail.url],
+				['State', detail.state],
+				['Author', detail.author],
+				['Branch', detail.headBranch ? `${detail.headBranch} → ${detail.baseBranch ?? ''}` : null],
+				['Labels', detail.labels.join(', ')],
+				['Assignees', detail.assignees.join(', ')]
+			],
+			sections: [
+				{ title: 'Description', body: detail.body.trim() || '_No description._' },
+				...(discussion ? [{ title: `Discussion (${detail.comments.length})`, body: discussion }] : [])
+			]
+		});
 	},
 
 	get intents(): Record<HostingIntent, number> {

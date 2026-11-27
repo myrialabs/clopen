@@ -7,6 +7,7 @@
 	import { initMonaco, createModel } from './monaco-loader';
 	import { getThemeName, registerThemes } from './monaco-themes';
 	import { EDITOR_CHROME, editorFontMetrics, DEFAULT_FONT_SCALE } from './editor-options';
+	import { addMentionAction } from './mention-selection';
 	import {
 		ChangeNavigator,
 		changeMarkerDecorations,
@@ -321,6 +322,10 @@
 					// model has moved it onto the redo stack.
 					queueMicrotask(report);
 				})
+			);
+			editorDisposables.push(
+				addMentionAction(modEditor, () => ({ path: modifiedPath, language, lineNumbers: modifiedLineNumbers })),
+				addMentionAction(origEditor, () => ({ path: originalPath ?? modifiedPath, language, lineNumbers: originalLineNumbers }))
 			);
 			// VS Code's own chord for walking a diff, on both panes.
 			for (const target of [modEditor, origEditor]) {

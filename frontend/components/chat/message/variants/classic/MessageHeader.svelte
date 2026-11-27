@@ -26,7 +26,8 @@
 		onCopy,
 		onRestore,
 		onEdit,
-		onShowDebug
+		onShowDebug,
+		onMention
 	}: {
 		message: FrontendMessage;
 		messageTimestamp: string;
@@ -39,6 +40,8 @@
 		onRestore: () => void;
 		onEdit: () => void;
 		onShowDebug: () => void;
+		/** Attach this message to the message being written, as `@N`. */
+		onMention?: () => void;
 	} = $props();
 
 	// Undo and edit act on the saved message; there is none while a turn runs
@@ -105,6 +108,16 @@
 			>
 				<Icon name={isCopied ? "lucide:check" : "lucide:copy"} class="w-3.5 h-3.5" />
 			</button>
+			{#if onMention && !unconfirmed}
+				<button
+					onclick={onMention}
+					class="inline-flex p-1.5 rounded-md hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+					aria-label="Mention in the message box"
+					title="Mention in the message box"
+				>
+					<Icon name="lucide:at-sign" class="w-3.5 h-3.5" />
+				</button>
+			{/if}
 		{/if}
 
 		<!-- Undo and Edit buttons for user messages (disabled saat streaming) -->

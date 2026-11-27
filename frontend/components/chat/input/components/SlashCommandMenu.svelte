@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { fitAbove } from '$frontend/utils/fit-above';
 	import type { AvailableSkill } from '$frontend/stores/features/skills.svelte';
 
 	interface Props {
@@ -14,11 +15,12 @@
 </script>
 
 <div
+	data-fit-above-menu
 	class="absolute bottom-full left-0 mb-2 w-full max-w-xl z-50 overflow-hidden rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 shadow-lg"
 	role="listbox"
 	aria-label="Commands"
 >
-	<div class="max-h-64 overflow-y-auto py-1">
+	<div use:fitAbove={{ max: 256, chrome: 2 + 12, key: commands.length }} class="overflow-y-auto py-1">
 		{#each commands as command, i (command.slug)}
 			<button
 				type="button"

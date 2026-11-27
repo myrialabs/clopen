@@ -823,14 +823,19 @@
 
 </script>
 
-<div class="flex flex-wrap items-center gap-1.5 px-4 pt-2 pb-0.5">
+<!--
+	No wrapper of its own: the chips are items of the composer's toolbar cell,
+	which wraps them when the box is narrow. Every choice stays visible; nothing
+	is collapsed to an icon or scrolled out of sight.
+-->
+<div class="contents">
 	<button
 		bind:this={triggerButton}
 		type="button"
-		class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150 min-w-0
-			bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
-			text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
-			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+		class="flex shrink-0 items-center gap-1 h-7 px-1.5 pointer-coarse:h-7 text-xs rounded-lg transition-all duration-150
+			bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 aria-expanded:bg-slate-100 dark:aria-expanded:bg-slate-800
+			text-slate-600 dark:text-slate-400
+			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
 		onclick={toggleDropdown}
 		disabled={appState.isLoading}
 		aria-haspopup="listbox"
@@ -850,11 +855,12 @@
 			<button
 				bind:this={accountTriggerButton}
 				type="button"
-				class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
-					bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
-					text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
-					disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+				class="flex shrink-0 items-center gap-1 h-7 px-1.5 pointer-coarse:h-7 text-xs rounded-lg transition-all duration-150
+					bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 aria-expanded:bg-slate-100 dark:aria-expanded:bg-slate-800
+			text-slate-600 dark:text-slate-400
+			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
 				onclick={toggleAccountDropdown}
+				title={currentAccount?.name || 'Account'}
 				disabled={appState.isLoading || accountSwitching}
 				aria-haspopup="listbox"
 				aria-expanded={showAccountDropdown}
@@ -871,7 +877,7 @@
 		{:else}
 			<button
 				type="button"
-				class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-colors
+				class="flex shrink-0 items-center gap-1 h-7 px-1.5 pointer-coarse:h-7 text-xs rounded-lg transition-colors
 					bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40
 					border border-amber-200 dark:border-amber-700/50 cursor-pointer"
 				onclick={connectAccount}
@@ -889,11 +895,12 @@
 		<button
 			bind:this={ocAccountTriggerButton}
 			type="button"
-			class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
-				bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
-				text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
-				disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+			class="flex shrink-0 items-center gap-1 h-7 px-1.5 pointer-coarse:h-7 text-xs rounded-lg transition-all duration-150
+				bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 aria-expanded:bg-slate-100 dark:aria-expanded:bg-slate-800
+			text-slate-600 dark:text-slate-400
+			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
 			onclick={toggleOCAccountDropdown}
+			title={currentOCAccount?.name || 'Account'}
 			disabled={appState.isLoading || accountSwitching}
 			aria-haspopup="listbox"
 			aria-expanded={showOCAccountDropdown}
@@ -916,10 +923,10 @@
 		<button
 			bind:this={reasoningTriggerButton}
 			type="button"
-			class="flex items-center gap-1.5 px-2 py-1 pointer-coarse:min-h-8 text-xs rounded-lg transition-all duration-150
-				bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700
-				text-slate-600 dark:text-slate-400 border border-slate-200 dark:border-slate-700
-				disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-slate-100 dark:disabled:hover:bg-slate-800"
+			class="flex shrink-0 items-center gap-1 h-7 px-1.5 pointer-coarse:h-7 text-xs rounded-lg transition-all duration-150
+				bg-transparent hover:bg-slate-100 dark:hover:bg-slate-800 aria-expanded:bg-slate-100 dark:aria-expanded:bg-slate-800
+			text-slate-600 dark:text-slate-400
+			disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
 			onclick={toggleReasoningDropdown}
 			disabled={appState.isLoading || !currentReasoningControl}
 			title="Reasoning effort"

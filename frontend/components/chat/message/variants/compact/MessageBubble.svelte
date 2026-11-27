@@ -27,6 +27,7 @@
 		onCopy,
 		onRestore,
 		onEdit,
+		onMention,
 	}: {
 		message: FrontendMessage;
 		messageTimestamp: string;
@@ -38,6 +39,8 @@
 		onCopy: () => void;
 		onRestore: () => void;
 		onEdit: () => void;
+		/** Attach this message to the message being written, as `@N`. */
+		onMention?: () => void;
 	} = $props();
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
@@ -167,6 +170,16 @@
 				>
 					<Icon name={isCopied ? "lucide:check" : "lucide:copy"} class="w-3.5 h-3.5" />
 				</button>
+				{#if onMention && !unconfirmed}
+					<button
+						type="button"
+						onclick={(e) => { e.stopPropagation(); onMention(); }}
+						class="flex p-0.5 rounded transition-colors hover:bg-slate-200 dark:hover:bg-slate-700"
+						title="Mention in the message box"
+					>
+						<Icon name="lucide:at-sign" class="w-3.5 h-3.5" />
+					</button>
+				{/if}
 				{#if !isLastUserMessage}
 					<button
 						type="button"

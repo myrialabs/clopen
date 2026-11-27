@@ -308,7 +308,7 @@
 			<div class="h-0.5 w-12 rounded transition-all duration-150 {isDragging ? 'bg-violet-600 scale-110' : 'bg-violet-500/30'}"></div>
 		</button>
 		<div class="min-h-[80px] overflow-hidden flex flex-col" style="flex: {1 - editorRatio} 1 0;">
-			<ResultPanel result={result} error={errorMsg} running={running} />
+			<ResultPanel result={result} error={errorMsg} running={running} query={queryText} source={[driver, database].filter(Boolean).join(' · ')} />
 		</div>
 	</div>
 </div>
