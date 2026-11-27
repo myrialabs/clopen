@@ -35,6 +35,18 @@ export function getCompactSummary(message: FrontendMessage): string | undefined 
   return _compactSummaryMap.get(message);
 }
 
+// Module-level map for how long each reasoning block took (rebuilt each groupMessages call)
+let _reasoningDurationMap = new WeakMap<FrontendMessage, number>();
+
+/**
+ * How long the model thought: a reasoning message is written once its block
+ * ends, so the time since the message before it is the time spent on it.
+ * Unknown for the first message loaded.
+ */
+export function getReasoningDuration(message: FrontendMessage): number | undefined {
+  return _reasoningDurationMap.get(message);
+}
+
 // Extract text content from a user message
 function extractUserTextContent(message: FrontendMessage): string {
   if (message.type !== 'user' || !('content' in message)) return '';
@@ -70,6 +82,8 @@ export function groupMessages(messages: FrontendMessage[]): {
 
   // Rebuild compact summary map each call
   _compactSummaryMap = new WeakMap<FrontendMessage, string>();
+  _reasoningDurationMap = new WeakMap<FrontendMessage, number>();
+  let previousCreatedAt: string | null = null;
 
   messages.forEach(message => {
     // Skip messages that should be filtered
@@ -79,6 +93,16 @@ export function groupMessages(messages: FrontendMessage[]): {
 
     // Intercept ALL sub-agent messages (any parentToolUseId !== null)
     const parentToolId = getParentToolUseId(message);
+
+    // Sub-agents run alongside the main thread; their timestamps say nothing about it.
+    if (!parentToolId) {
+      if (message.type === 'reasoning' && previousCreatedAt) {
+        const durationMs = Date.parse(message.createdAt) - Date.parse(previousCreatedAt);
+        if (Number.isFinite(durationMs) && durationMs >= 0) _reasoningDurationMap.set(message, durationMs);
+      }
+      if (message.type !== 'stream_event') previousCreatedAt = message.createdAt;
+    }
+
     if (parentToolId) {
       if (activityParentToolUseIds.has(parentToolId)) {
         if (!subAgentMap.has(parentToolId)) {

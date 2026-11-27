@@ -10,12 +10,15 @@
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import { isUnconfirmedMessage } from '$frontend/utils/unconfirmed-messages';
 	import type { IconName } from '$shared/types/ui/icons';
+	import type { ToolStatus } from '$frontend/utils/chat/tool-status';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import MessageFormatter from '../../../formatters/MessageFormatter.svelte';
 	import Tools from '../../../formatters/Tools.svelte';
 	import TextMessage from '../../../formatters/TextMessage.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
 	import { HIDDEN_TOOLS } from '../../../tools/registry';
+	import { getReasoningDuration } from '$frontend/utils/chat/message-grouper';
+	import { formatDuration } from '$frontend/utils/format';
 	import type { KnownToolName } from '$shared/types/unified';
 
 	const {
@@ -34,7 +37,7 @@
 		isLastUserMessage?: boolean;
 		roleConfig: { gradient: string; icon: IconName; name: string };
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
-		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
+		agentStatus: ToolStatus | null;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
@@ -96,6 +99,38 @@
 		return () => clearInterval(interval);
 	});
 	const thinkingDots = $derived('.'.repeat(thinkingDotCount));
+
+	// How long the model has been, or was, thinking — beside the label, like a tool's duration.
+	let now = $state(Date.now());
+	$effect(() => {
+		if (!isThinkingInProgress) return;
+		now = Date.now();
+		const interval = setInterval(() => { now = Date.now(); }, 1000);
+		return () => clearInterval(interval);
+	});
+	const reasoningDurationMs = $derived.by(() => {
+		if (roleCategory !== 'reasoning') return undefined;
+		if (isThinkingInProgress) {
+			const elapsed = now - Date.parse(message.createdAt);
+			return Number.isFinite(elapsed) && elapsed >= 1000 ? elapsed : undefined;
+		}
+		return getReasoningDuration(message);
+	});
+	const reasoningDuration = $derived(reasoningDurationMs !== undefined ? formatDuration(reasoningDurationMs) : '');
+	const reasoningText = $derived(
+		message.type === 'reasoning' || message.type === 'stream_event' ? (message.text || '').trim() : ''
+	);
+	let reasoningOpen = $state(false);
+	let reasoningScroll: HTMLDivElement | undefined = $state();
+
+	// Follow the thought as it streams in, while the reader is at the bottom.
+	$effect(() => {
+		if (!reasoningOpen || !isThinkingInProgress || !reasoningScroll) return;
+		void reasoningText;
+		const el = reasoningScroll;
+		const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 16;
+		if (atBottom) tick().then(() => { el.scrollTop = el.scrollHeight; });
+	});
 
 	// ─── Agent message parsing ─────────────────────────────────────────────────
 	type ContentItem = { type: string; id?: string; [key: string]: any };
@@ -272,16 +307,34 @@
 		class="text-slate-900 dark:text-slate-100 {roleCategory === 'system' ? 'max-h-48 overflow-y-auto pr-2' : ''} py-1"
 	>
 		{#if roleCategory === 'reasoning'}
-			<!-- Reasoning row — same icon, indent, color and font as the tool rows -->
-			<div class="flex items-start gap-2 py-[2px] min-w-0">
-				<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
+			<!-- Reasoning row — same icon, indent, color and font as the tool rows; opens to the thought -->
+			<div
+				class="flex items-start gap-2 py-[2px] min-w-0 {reasoningText ? 'cursor-pointer' : ''}"
+				role={reasoningText ? 'button' : undefined}
+				tabindex={reasoningText ? 0 : undefined}
+				aria-expanded={reasoningText ? reasoningOpen : undefined}
+				onclick={() => { if (reasoningText) reasoningOpen = !reasoningOpen; }}
+				onkeydown={(e) => { if (e.key === 'Enter' && reasoningText) reasoningOpen = !reasoningOpen; }}
+			>
+				<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center z-10 {isThinkingInProgress ? 'text-violet-500 dark:text-violet-400' : 'text-slate-500 dark:text-slate-400'}">
 					<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
-					<Icon name="lucide:sparkles" class="relative w-[13px] h-[13px]" />
+					<Icon name="lucide:sparkles" class="relative w-[13px] h-[13px] {isThinkingInProgress ? 'animate-pulse' : ''}" />
 				</span>
 				<span class="text-[12px] text-slate-500 dark:text-slate-400">
-					{#if isThinkingInProgress}Thinking{thinkingDots}{:else}Thought for a moment{/if}
+					{#if isThinkingInProgress}Thinking{thinkingDots}{:else if reasoningDuration}Thought for {reasoningDuration}{:else}Thought for a moment{/if}
 				</span>
+				{#if isThinkingInProgress && reasoningDuration}
+					<span class="text-[10px] text-slate-400 dark:text-slate-500 tabular-nums shrink-0 mt-[2px]">{reasoningDuration}</span>
+				{/if}
 			</div>
+			{#if reasoningOpen && reasoningText}
+				<div
+					bind:this={reasoningScroll}
+					class="ml-[22px] mt-0.5 mb-1 max-h-60 overflow-y-auto text-[12px] italic text-slate-500 dark:text-slate-400 leading-relaxed prose-compact"
+				>
+					<TextMessage content={reasoningText} />
+				</div>
+			{/if}
 		{:else}
 			<MessageFormatter {message} />
 		{/if}

@@ -26,7 +26,8 @@ export function processToolMessage(
   const modifiedContent = message.content
     .map((block): AssistantContentBlock | null => {
       if (block.type === 'tool_use') {
-        return processToolUse(block, toolUseMap, backgroundBashMap, subAgentMap, skillPromptMap);
+        const processed = processToolUse(block, toolUseMap, backgroundBashMap, subAgentMap, skillPromptMap);
+        return processed && withDuration(processed, toolUseMap);
       }
       return block;
     })
@@ -36,6 +37,19 @@ export function processToolMessage(
     ...message,
     content: modifiedContent
   };
+}
+
+// How long the call took: from the message that made it to the one that
+// answered it. A background launch answers at once, so it has none.
+function withDuration(block: ToolUseBlock, toolUseMap: Map<string, ToolGroup>): ToolUseBlock {
+  if (block.durationMs !== undefined) return block;
+  const input = block.input as { runInBackground?: boolean } | undefined;
+  if (input?.runInBackground) return block;
+  const group = toolUseMap.get(block.id);
+  if (!group?.toolResultMessage) return block;
+  const durationMs = Date.parse(group.toolResultMessage.createdAt) - Date.parse(group.toolUseMessage.createdAt);
+  if (!Number.isFinite(durationMs) || durationMs < 0) return block;
+  return { ...block, durationMs } as ToolUseBlock;
 }
 
 // Process individual tool_use block
