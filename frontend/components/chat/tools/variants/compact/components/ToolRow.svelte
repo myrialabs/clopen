@@ -4,6 +4,9 @@
 	import { getFolderIcon } from '$frontend/utils/folder-icon-mappings';
 	import { revealFile } from '$frontend/stores/ui/file-peek.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
+	import RailIcon from './RailIcon.svelte';
+	import { useCompactTool } from './context';
+	import RowMeta from './RowMeta.svelte';
 
 	interface DiffStat {
 		additions?: number;
@@ -31,15 +34,9 @@
 		detail?: string;
 		/** Extra tag chips shown after label */
 		chips?: string[];
-		/** Whether this row has expandable content (adds chevron) */
-		expandable?: boolean;
-		/** Whether the expandable content is shown */
-		expanded?: boolean;
-		/** Called when header row is clicked (for expandable rows) */
-		onclick?: () => void;
 	}
 
-	let {
+	const {
 		icon,
 		label,
 		filePath = '',
@@ -50,9 +47,6 @@
 		inlineCode = '',
 		detail = '',
 		chips = [],
-		expandable = false,
-		expanded = $bindable(false),
-		onclick,
 	}: Props = $props();
 
 	const displayName = $derived(fileName || (filePath ? filePath.split(/[/\\]/).pop() || filePath : ''));
@@ -64,6 +58,18 @@
 	const hasFile = $derived(Boolean(displayName));
 	const hasDiff = $derived(Boolean(diff && (diff.additions || diff.deletions)));
 
+	// The icon's colour carries the outcome; the two that ask something of the
+	// reader (it stopped early, it waits on you) also say so.
+	const tool = useCompactTool();
+	const statusTag = $derived.by(() => {
+		switch (tool?.status) {
+			case 'interrupted': return { text: 'stopped', class: 'text-slate-400 dark:text-slate-500' };
+			case 'waiting': return { text: 'waiting', class: 'text-amber-500 dark:text-amber-400' };
+			default: return null;
+		}
+	});
+	const expandable = $derived(tool?.hasDetails ?? false);
+
 	function handleFileClick(e: MouseEvent) {
 		e.stopPropagation();
 		if (!filePath) return;
@@ -71,10 +77,7 @@
 	}
 
 	function handleRowClick() {
-		if (expandable) {
-			expanded = !expanded;
-			onclick?.();
-		}
+		if (expandable) tool?.toggle();
 	}
 </script>
 
@@ -83,19 +86,20 @@
 	class="flex items-start gap-2 py-[2px] min-w-0 {expandable ? 'cursor-pointer' : ''}"
 	role={expandable ? 'button' : undefined}
 	tabindex={expandable ? 0 : undefined}
+	aria-expanded={expandable ? tool?.expanded : undefined}
 	onclick={handleRowClick}
 	onkeydown={(e) => e.key === 'Enter' && handleRowClick()}
 >
 	<!-- Operation icon — sits on the timeline rail (node masks it), top-aligned with the first line -->
-	<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
-		<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
-		<Icon name={icon} class="relative w-[13px] h-[13px]" />
-	</span>
+	<RailIcon {icon} />
 
 	<!-- Row content: label + file pill + diff + meta -->
 	<div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 flex-1 min-w-0">
 		<!-- Action label -->
 		<span class="text-[12px] text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">{label}</span>
+
+		<!-- How long it took — beside the label, before the content that may wrap -->
+		<RowMeta />
 
 		<!-- Inline highlighted code (pattern, command, query). A single logical line stays an inline
 		     pill (may wrap visually); a multi-line command becomes a per-line block on its own row. -->
@@ -145,9 +149,14 @@
 			<span class="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap shrink-0 font-mono">{chip}</span>
 		{/each}
 
+		{#if statusTag}
+			<span class="text-[10px] font-medium whitespace-nowrap shrink-0 {statusTag.class}">{statusTag.text}</span>
+		{/if}
+
 		<!-- Right meta -->
 		{#if meta}
 			<span class="text-[10px] text-slate-400 dark:text-slate-500 min-w-0 break-all">{meta}</span>
 		{/if}
+
 	</div>
 </div>

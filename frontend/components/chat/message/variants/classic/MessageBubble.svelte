@@ -12,6 +12,7 @@
 	import { tick } from 'svelte';
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
+	import type { ToolStatus } from '$frontend/utils/chat/tool-status';
 	import Card from '$frontend/components/common/display/Card.svelte';
 	import MessageFormatter from '../../../formatters/MessageFormatter.svelte';
 	import MessageHeader from './MessageHeader.svelte';
@@ -23,6 +24,7 @@
 		roleConfig,
 		roleCategory,
 		agentStatus,
+		agentDurationMs,
 		formatTime,
 		onCopy,
 		onRestore,
@@ -35,7 +37,9 @@
 		isLastUserMessage?: boolean;
 		roleConfig: { gradient: string; icon: IconName; name: string };
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
-		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
+		agentStatus: ToolStatus | null;
+		/** How long the message's tool calls took, once all have answered. */
+		agentDurationMs?: number;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
@@ -95,6 +99,7 @@
 			{roleConfig}
 			{roleCategory}
 			{agentStatus}
+			{agentDurationMs}
 			{formatTime}
 			{onCopy}
 			{onRestore}

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 
-import { formatRelativeTime } from './format';
+import { formatDuration, formatRelativeTime } from './format';
 
 const NOW = new Date('2026-09-07T12:00:00Z').getTime();
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -29,5 +29,26 @@ describe('formatRelativeTime', () => {
 
 	it('returns an empty string for an unparseable value instead of "NaN ago"', () => {
 		expect(formatRelativeTime('not a date', NOW)).toBe('');
+	});
+});
+
+describe('formatDuration', () => {
+	it('keeps tenths below ten seconds and never shows a zero duration', () => {
+		expect(formatDuration(30)).toBe('0.1s');
+		expect(formatDuration(2_340)).toBe('2.3s');
+		expect(formatDuration(9_940)).toBe('9.9s');
+		expect(formatDuration(9_960)).toBe('10s');
+	});
+
+	it('drops to whole seconds, then minutes and hours', () => {
+		expect(formatDuration(12_400)).toBe('12s');
+		expect(formatDuration(125_000)).toBe('2m 5s');
+		expect(formatDuration(180_000)).toBe('3m');
+		expect(formatDuration(3_900_000)).toBe('1h 5m');
+	});
+
+	it('returns an empty string for a negative or unparseable span', () => {
+		expect(formatDuration(-5)).toBe('');
+		expect(formatDuration(Number.NaN)).toBe('');
 	});
 });

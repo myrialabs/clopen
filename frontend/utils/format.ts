@@ -54,3 +54,19 @@ export function formatRelativeTime(iso: string, now: number = Date.now()): strin
 		...(sameYear ? {} : { year: 'numeric' })
 	});
 }
+
+/**
+ * How long something took, as short as stays readable: tenths of a second
+ * while those matter, then whole seconds, then minutes and hours.
+ */
+export function formatDuration(ms: number): string {
+	if (!Number.isFinite(ms) || ms < 0) return '';
+	const tenths = Math.round(ms / 100);
+	if (tenths < 100) return `${(Math.max(1, tenths) / 10).toFixed(1)}s`;
+	const seconds = Math.round(ms / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return seconds % 60 ? `${minutes}m ${seconds % 60}s` : `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	return minutes % 60 ? `${hours}h ${minutes % 60}m` : `${hours}h`;
+}

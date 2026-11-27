@@ -485,6 +485,7 @@ export interface ToolResult {
  * ToolUseBlock is the unified type for tool invocations in assistant messages.
  *
  * It includes enrichment fields (result, subActivities, etc.) directly.
+ * `durationMs` (result time minus call time) exists only on display copies.
  * These are null/empty when the message is first created from the engine,
  * and get populated by the message grouper when preparing for display.
  *
@@ -505,6 +506,7 @@ type KnownToolUseBlock = {
 		subActivities: SubAgentActivity[];
 		skillPrompt: string | null;
 		interrupted: boolean;
+		durationMs?: number;
 	};
 }[KnownToolName];
 
@@ -517,6 +519,7 @@ export interface McpToolUseBlock {
 	subActivities: SubAgentActivity[];
 	skillPrompt: string | null;
 	interrupted: boolean;
+	durationMs?: number;
 }
 
 export interface UnknownToolUseBlock {
@@ -528,6 +531,7 @@ export interface UnknownToolUseBlock {
 	subActivities: SubAgentActivity[];
 	skillPrompt: string | null;
 	interrupted: boolean;
+	durationMs?: number;
 }
 
 export type ToolUseBlock = KnownToolUseBlock | McpToolUseBlock | UnknownToolUseBlock;

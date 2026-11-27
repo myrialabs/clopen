@@ -12,8 +12,10 @@
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
 	import { isUnconfirmedMessage } from '$frontend/utils/unconfirmed-messages';
 	import type { IconName } from '$shared/types/ui/icons';
+	import type { ToolStatus } from '$frontend/utils/chat/tool-status';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import { appState } from '$frontend/stores/core/app.svelte';
+	import { formatDuration } from '$frontend/utils/format';
 
 	const {
 		message,
@@ -22,6 +24,7 @@
 		roleConfig,
 		roleCategory,
 		agentStatus,
+		agentDurationMs,
 		formatTime,
 		onCopy,
 		onRestore,
@@ -34,7 +37,9 @@
 		isLastUserMessage?: boolean;
 		roleConfig: { gradient: string; icon: IconName; name: string };
 		roleCategory: 'user' | 'assistant' | 'agent' | string;
-		agentStatus: 'processing' | 'waiting' | 'success' | 'error' | null;
+		agentStatus: ToolStatus | null;
+		/** How long the message's tool calls took, once all have answered. */
+		agentDurationMs?: number;
 		formatTime: (timestamp?: string) => string;
 		onCopy: () => void;
 		onRestore: () => void;
@@ -91,7 +96,14 @@
 					<span title="Agent encountered an error">
 						<Icon name="lucide:x" class="w-3 h-3 text-red-500 dark:text-red-400" />
 					</span>
+				{:else if agentStatus === 'interrupted'}
+					<span title="Stopped before it finished">
+						<Icon name="lucide:circle-slash" class="w-3 h-3 text-slate-400 dark:text-slate-500" />
+					</span>
 				{/if}
+			{/if}
+			{#if agentDurationMs !== undefined}
+				<span class="text-xs text-slate-400 dark:text-slate-500 tabular-nums" title="How long the tool calls took">{formatDuration(agentDurationMs)}</span>
 			{/if}
 		</div>
 	</div>

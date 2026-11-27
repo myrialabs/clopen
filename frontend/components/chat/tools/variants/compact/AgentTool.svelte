@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { tick } from 'svelte';
 	import type { ToolUseBlock, AgentInput, SubAgentToolActivity } from '$shared/types/unified';
-	import Icon from '$frontend/components/common/display/Icon.svelte';
+	import { RailIcon, RowMeta, useCompactTool } from './components';
 
 	const { toolInput }: { toolInput: ToolUseBlock } = $props();
 	const input = $derived(toolInput.input as AgentInput);
@@ -10,6 +10,9 @@
 	const subagentType = $derived(input.subagentType || 'general-purpose');
 	const subMessages = $derived(toolInput.subActivities);
 	const toolUseCount = $derived(subMessages?.filter(a => a.type === 'tool_use').length ?? 0);
+
+	const tool = useCompactTool();
+	const expandable = $derived(tool?.hasDetails ?? false);
 
 	let scrollContainer: HTMLDivElement | undefined = $state();
 	let stickToBottom = $state(true);
@@ -43,14 +46,19 @@
 </script>
 
 <div class="min-w-0">
-	<!-- Header row — matches ToolRow layout -->
-	<div class="flex items-start gap-2 py-[2px] min-w-0">
-		<span class="relative shrink-0 w-[14px] mt-[1px] flex items-center justify-center text-slate-500 dark:text-slate-400 z-10">
-			<span class="absolute inset-0 -m-[3px] rounded bg-slate-50 dark:bg-slate-900"></span>
-			<Icon name="lucide:waypoints" class="relative w-[13px] h-[13px]" />
-		</span>
+	<!-- Header row — matches ToolRow layout, opens the prompt and result -->
+	<div
+		class="flex items-start gap-2 py-[2px] min-w-0 {expandable ? 'cursor-pointer' : ''}"
+		role={expandable ? 'button' : undefined}
+		tabindex={expandable ? 0 : undefined}
+		aria-expanded={expandable ? tool?.expanded : undefined}
+		onclick={() => expandable && tool?.toggle()}
+		onkeydown={(e) => e.key === 'Enter' && expandable && tool?.toggle()}
+	>
+		<RailIcon icon="lucide:waypoints" />
 		<div class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 flex-1 min-w-0">
 			<span class="text-[12px] text-slate-500 dark:text-slate-400 whitespace-nowrap shrink-0">Agent</span>
+			<RowMeta />
 			<span class="text-[12px] text-slate-700 dark:text-slate-200 min-w-0 break-words">{description || subagentType}</span>
 			<span class="text-[10px] text-slate-400 dark:text-slate-500 whitespace-nowrap">{subagentType}</span>
 			{#if toolUseCount > 0}

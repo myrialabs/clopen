@@ -11,6 +11,7 @@
 
 <script lang="ts">
 	import type { FrontendMessage } from '$frontend/stores/core/sessions.svelte';
+	import type { ToolUseBlock } from '$shared/types/unified';
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import type { IconName } from '$shared/types/ui/icons';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
@@ -30,6 +31,7 @@
 	import DebugModal from '../modal/DebugModal.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import ConflictResolutionModal from '$frontend/components/checkpoint/ConflictResolutionModal.svelte';
+	import { combineToolStatuses, getToolStatus, type ToolStatus } from '$frontend/utils/chat/tool-status';
 	import { snapshotService } from '$frontend/services/snapshot/snapshot.service';
 	import type { RestoreConflict, ConflictResolution } from '$frontend/services/snapshot/snapshot.service';
 
@@ -159,30 +161,30 @@
 		}
 	}
 
-	// Detect agent processing status
-	// When stream is no longer active (not loading) and tools don't have results,
-	// mark them as failed (cancelled/interrupted) instead of perpetually "processing"
-	const agentStatus = $derived.by((): 'processing' | 'waiting' | 'success' | 'error' | null => {
+	// One status for the message's tool calls — the same per-call rule the
+	// compact timeline shows on each node.
+	const agentStatus = $derived.by((): ToolStatus | null => {
 		if (roleCategory !== 'agent') return null;
+		if (message.type !== 'assistant' || !('content' in message)) return null;
+		const live = {
+			isLoading: appState.isLoading,
+			isWaitingInput: appState.isWaitingInput,
+			messages: sessionState.messages
+		};
+		return combineToolStatuses(
+			message.content.filter((c): c is ToolUseBlock => c.type === 'tool_use').map((tool) => getToolStatus(tool, live))
+		);
+	});
 
-		if (message.type === 'assistant' && 'content' in message) {
-			const toolUses = message.content.filter((c) => c.type === 'tool_use');
-
-			if (toolUses.length === 0) return null;
-
-			const allHaveResults = toolUses.every((tool) => tool.type === 'tool_use' && (tool as any).result);
-
-			if (!allHaveResults) {
-				if (appState.isWaitingInput) return 'waiting';
-				return appState.isLoading ? 'processing' : 'error';
-			}
-
-			const hasError = toolUses.some((tool) => tool.type === 'tool_use' && (tool as any).result?.isError === true);
-
-			return hasError ? 'error' : 'success';
-		}
-
-		return null;
+	// How long the message's calls took: they run side by side, so the longest.
+	// Unknown until every call has answered.
+	const agentDurationMs = $derived.by((): number | undefined => {
+		if (roleCategory !== 'agent' || message.type !== 'assistant' || !('content' in message)) return undefined;
+		const durations = message.content
+			.filter((c): c is ToolUseBlock => c.type === 'tool_use')
+			.map((tool) => tool.durationMs);
+		if (durations.length === 0 || durations.some((d) => d === undefined)) return undefined;
+		return Math.max(...(durations as number[]));
 	});
 
 	const roleConfig = $derived.by((): { gradient: string; icon: IconName; name: string } => {
@@ -451,7 +453,7 @@
 		{#if isRailMessage}
 			<!-- Continuous timeline rail — bridges the gap to adjacent rail messages -->
 			<div
-				class="absolute -z-10 w-px bg-slate-200 dark:bg-slate-700/60 left-[7px] {railConnectUp ? 'top-0' : 'top-[14px]'} {railConnectDown ? '-bottom-2' : 'bottom-[10px]'}"
+				class="absolute -z-10 w-0.5 rounded-full bg-slate-300 dark:bg-slate-700 left-[6px] {railConnectUp ? 'top-0' : 'top-[14px]'} {railConnectDown ? '-bottom-2' : 'bottom-[10px]'}"
 			></div>
 		{/if}
 		<MessageBubbleCompact
@@ -495,6 +497,7 @@
 					{roleConfig}
 					{roleCategory}
 					{agentStatus}
+					{agentDurationMs}
 					{formatTime}
 					onCopy={copyToClipboard}
 					onRestore={handleRestore}
