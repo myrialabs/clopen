@@ -336,6 +336,17 @@ export const memoryQueueQueries = {
 		return Number(result.changes ?? 0);
 	},
 
+	/**
+	 * Follow a project to its new folder. Only rows for its main tree change: a
+	 * turn that ran in a worktree carries the worktree's own path, which a move
+	 * of the project folder leaves where it is.
+	 */
+	repointProject(projectId: string, oldPath: string, newPath: string): void {
+		getDatabase()
+			.prepare(`UPDATE memory_extraction_queue SET project_path = ? WHERE project_id = ? AND project_path = ?`)
+			.run(newPath, projectId, oldPath);
+	},
+
 	/** Drop everything queued, for "clear all data" and for tests. */
 	clear(): void {
 		getDatabase().prepare(`DELETE FROM memory_extraction_queue`).run();

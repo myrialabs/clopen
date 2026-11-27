@@ -2,15 +2,18 @@
 	import Icon from '$frontend/components/common/display/Icon.svelte';
 	import Modal from '$frontend/components/common/overlay/Modal.svelte';
 	import type { Project } from '$shared/types/database/schema';
+	import { isHomeProject } from '$shared/utils/home-project';
 	import ws from '$frontend/utils/ws';
 
 	interface Props {
 		isOpen: boolean;
 		onClose: () => void;
 		project: Project | null;
+		/** Offered next to the name; Home has no folder of its own to rename. */
+		onRename?: (project: Project) => void;
 	}
 
-	let { isOpen = $bindable(), onClose, project }: Props = $props();
+	let { isOpen = $bindable(), onClose, project, onRename }: Props = $props();
 
 	interface InfoData {
 		project: Project;
@@ -197,7 +200,20 @@
 						<Icon name="lucide:folder" class="w-5 h-5 text-violet-600 dark:text-violet-400" />
 					</div>
 					<div class="flex-1 min-w-0 flex flex-col gap-0.5">
-						<p class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{data.project.name}</p>
+						<div class="flex items-center gap-1 min-w-0">
+							<p class="text-sm font-semibold text-slate-900 dark:text-slate-100 truncate">{data.project.name}</p>
+							{#if onRename && !isHomeProject(data.project)}
+								<button
+									type="button"
+									class="shrink-0 w-5 h-5 flex items-center justify-center rounded text-slate-400 hover:text-violet-600 hover:bg-violet-500/10 transition-colors"
+									onclick={() => data && onRename(data.project)}
+									title="Rename project"
+									aria-label="Rename project"
+								>
+									<Icon name="lucide:pencil" class="w-3 h-3" />
+								</button>
+							{/if}
+						</div>
 						<div class="flex items-center gap-1 min-w-0">
 							<p class="text-xs font-mono text-slate-500 dark:text-slate-400 truncate" title={data.project.path}>
 								{data.project.path}

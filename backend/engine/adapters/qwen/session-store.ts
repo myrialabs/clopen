@@ -57,8 +57,17 @@ function resolveCliCwd(projectPath: string): string {
 	}
 }
 
+/**
+ * The directory the CLI keeps a cwd's chats in, for that exact cwd string —
+ * no symlink resolution, so a caller relocating a project's chats can name
+ * the old path after it is gone.
+ */
+export function getQwenProjectDir(cwd: string): string {
+	return path.join(QWEN_PROJECTS_DIR, sanitizeCwd(cwd));
+}
+
 function getSessionStatePath(projectPath: string, sessionId: string): string {
-	return path.join(QWEN_PROJECTS_DIR, sanitizeCwd(resolveCliCwd(projectPath)), 'chats', `${sessionId}.jsonl`);
+	return path.join(getQwenProjectDir(resolveCliCwd(projectPath)), 'chats', `${sessionId}.jsonl`);
 }
 
 export function sessionStateExists(projectPath: string, sessionId: string): boolean {

@@ -1,6 +1,7 @@
 /**
  * Managing folders from a chat while adding a project: making, renaming and
- * deleting work on ordinary folders, never on a project's or above home.
+ * deleting work on ordinary folders, never on a project's or above home. A
+ * project's own folder is renamed through the project, which moves with it.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
@@ -9,7 +10,8 @@ import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 import { initializeDatabase, closeDatabase } from '$backend/database';
 import { projectQueries } from '$backend/database/queries';
-import { createControlContext, getControlAction, runControlAction } from './index';
+import { createControlContext, getControlAction, registerControlRouter, runControlAction } from './index';
+import { projectsRouter } from '$backend/ws/projects';
 
 const admin = { id: 'folders-admin', name: 'Admin', role: 'admin' } as never;
 const ctx = () => createControlContext(admin, { projectId: 'none', sessionId: null });
@@ -19,6 +21,8 @@ let projectId: string;
 
 beforeAll(async () => {
 	await initializeDatabase();
+	// The project rename goes through the same WebSocket route the web UI uses.
+	registerControlRouter(projectsRouter);
 	root = mkdtempSync(join(tmpdir(), 'clopen-folders-'));
 	mkdirSync(join(root, 'project'));
 	projectId = projectQueries.create({ name: 'folders-test', path: join(root, 'project'), created_at: new Date().toISOString(), last_opened_at: new Date().toISOString() } as never).id;
@@ -63,5 +67,26 @@ describe('folders while adding a project', () => {
 		expect(existsSync(join(root, 'project'))).toBe(true);
 		const menu = await runControlAction(ctx(), 'projects.browse', { path: join(root, 'project') });
 		expect(menu.choices?.some((choice) => choice.action === 'projects.delete-folder')).toBe(false);
+		expect(menu.choices?.some((choice) => choice.action === 'projects.rename')).toBe(true);
+	});
+
+	it('renames a project with its folder: asks for the name, then moves both', async () => {
+		projectQueries.list(projectId);
+		const asked = await runControlAction(ctx(), 'projects.rename', { projectId });
+		expect(asked.ask).toMatchObject({ action: 'projects.rename', key: 'name', args: { projectId } });
+
+		const done = await runControlAction(ctx(), 'projects.rename', { projectId, name: 'project-renamed' });
+		expect(done.text).toContain('Renamed to');
+		expect(existsSync(join(root, 'project-renamed'))).toBe(true);
+		expect(existsSync(join(root, 'project'))).toBe(false);
+		expect(projectQueries.getById(projectId)).toMatchObject({ name: 'project-renamed', path: join(root, 'project-renamed') });
+
+		// A plain folder rename of a project's folder hands over to the project rename.
+		const handed = await runControlAction(ctx(), 'projects.rename-folder', { path: join(root, 'project-renamed'), name: 'x' });
+		expect(handed.choices?.[0]).toMatchObject({ action: 'projects.rename', args: { projectId } });
+		expect(existsSync(join(root, 'project-renamed'))).toBe(true);
+
+		await runControlAction(ctx(), 'projects.rename', { projectId, name: 'project' });
+		expect(projectQueries.getById(projectId)?.path).toBe(join(root, 'project'));
 	});
 });

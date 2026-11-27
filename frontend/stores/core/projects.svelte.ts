@@ -14,6 +14,8 @@ import { debug } from '$shared/utils/logger';
 import { cleanupProjectState } from '$frontend/utils/project-state-cleanup';
 import {
 	activateProjectWorkspace,
+	reloadProjectWorkspace,
+	flushWorkspaceSave,
 	raiseSwitchBarrier,
 	lowerSwitchBarrier,
 	beginProjectSwitch,
@@ -123,6 +125,15 @@ export async function setCurrentProject(project: Project | null) {
 	const currentProjectId = projectState.currentProject?.id;
 	const newProjectId = project?.id;
 	const isProjectSwitch = currentProjectId !== newProjectId;
+
+	// A project whose folder is gone would open onto nothing: every panel
+	// would fail against a path that is not there. Offer to locate the folder
+	// (or remove the project) instead — whichever surface asked to open it.
+	if (project?.missing && isProjectSwitch) {
+		const { openMissingProject } = await import('$frontend/stores/ui/project-move.svelte');
+		openMissingProject(project);
+		return;
+	}
 
 	if (!isProjectSwitch) {
 		// Same project — no transition, just refresh the record.
@@ -525,13 +536,11 @@ export async function loadProjects(restoreProjectId?: string | null) {
 	}
 }
 
-export async function createProject(projectData: Omit<Project, 'id' | 'created_at'>) {
+/** Add the folder at `path` as a project; it is named after the folder. */
+export async function createProject(path: string) {
 	try {
 		// Create project via WebSocket
-		const project = await ws.http('projects:create', {
-			name: projectData.name,
-			path: projectData.path
-		});
+		const project = await ws.http('projects:create', { path });
 
 		if (project) {
 			addProject(project);
@@ -567,9 +576,144 @@ export function searchProjects(query: string): Project[] {
 }
 
 // ========================================
+// MOVING A PROJECT
+// ========================================
+
+/** What is running in a project's main tree — what a move would have to stop. */
+export interface ProjectUsage {
+	chats: number;
+	terminals: number;
+}
+
+export type ProjectMoveRequest = { kind: 'rename'; name: string } | { kind: 'relocate'; path: string };
+
+export type ProjectMoveOutcome =
+	| { status: 'busy'; usage: ProjectUsage }
+	| { status: 'moved'; project: Project; previousPath: string; warnings: string[] };
+
+/**
+ * Moves this device started. Every device hears `projects:updated`, but only
+ * the others need telling what happened — this one is looking at the dialog.
+ */
+const ownMoves = new Set<string>();
+
+/**
+ * Rename a project's folder, or point the project at the folder it moved to.
+ * Resolves `busy` without changing anything while work runs there, unless
+ * `force` asks the server to stop that work first.
+ */
+export async function requestProjectMove(
+	project: Project,
+	request: ProjectMoveRequest,
+	force = false
+): Promise<ProjectMoveOutcome> {
+	// The server re-roots the saved workspace at the new folder; anything still
+	// waiting to be saved has to be on the server before it does.
+	flushWorkspaceSave();
+	ownMoves.add(project.id);
+	try {
+		const outcome: ProjectMoveOutcome =
+			request.kind === 'rename'
+				? await ws.http('projects:rename', { id: project.id, name: request.name, force })
+				: await ws.http('projects:relocate', { id: project.id, path: request.path, force });
+		if (outcome.status === 'moved') await applyProjectMove(outcome.project);
+		return outcome;
+	} finally {
+		ownMoves.delete(project.id);
+	}
+}
+
+/**
+ * Adopt a project's new record. When its folder changed, everything holding
+ * the old path lets go: the terminal context (its shells were stopped), and —
+ * if the project is open here — the whole workspace, rebuilt at the new path.
+ * Idempotent, so the response and the broadcast can both arrive.
+ */
+export async function applyProjectMove(project: Project): Promise<void> {
+	const index = projectState.projects.findIndex((p) => p.id === project.id);
+	if (index === -1) return;
+	const previous = projectState.projects[index];
+	projectState.projects[index] = project;
+	updateRecentProjects();
+
+	const isCurrent = projectState.currentProject?.id === project.id;
+	if (previous.path === project.path) {
+		if (isCurrent) projectState.currentProject = withRootOverride(project);
+		return;
+	}
+
+	try {
+		const { terminalProjectManager } = await import('$frontend/services/terminal');
+		terminalProjectManager.cleanupProjectContext(project.id);
+	} catch (error) {
+		debug.error('project', 'Could not drop the terminal context of a moved project:', error);
+	}
+
+	if (!isCurrent) return;
+	await reloadProjectWorkspace(project.id, () => {
+		projectState.currentProject = withRootOverride(project);
+	});
+}
+
+let projectEventsReady = false;
+
+/** Follow moves made on other devices, and notice folders that went missing. */
+function initProjectEvents(): void {
+	if (projectEventsReady || typeof window === 'undefined') return;
+	projectEventsReady = true;
+
+	ws.on('projects:updated', async ({ project, previousPath }) => {
+		const known = projectState.projects.find((p) => p.id === project.id);
+		const fromHere = ownMoves.has(project.id);
+		await applyProjectMove(project);
+		if (fromHere || !known) return;
+		const { addNotification } = await import('$frontend/stores/ui/notification.svelte');
+		const renamed = known.name !== project.name;
+		addNotification({
+			type: 'info',
+			title: renamed ? 'Project renamed' : 'Project folder moved',
+			message: renamed
+				? `"${known.name}" is now "${project.name}".`
+				: `"${project.name}" now points to ${project.path} (was ${previousPath}).`,
+			duration: 6000
+		});
+	});
+
+	// A folder can vanish while Clopen is in the background (renamed in Finder,
+	// deleted in a terminal). Re-check when the window comes back.
+	let lastCheck = 0;
+	window.addEventListener('focus', () => {
+		const now = Date.now();
+		if (now - lastCheck < 10_000) return;
+		lastCheck = now;
+		void refreshMissingFolders();
+	});
+}
+
+/** Refresh which projects' folders are gone, leaving everything else as it is. */
+export async function refreshMissingFolders(): Promise<void> {
+	try {
+		const projects: Project[] = await ws.http('projects:list');
+		const missing = new Map(projects.map((p) => [p.id, Boolean(p.missing)]));
+		for (const project of projectState.projects) {
+			const next = missing.get(project.id);
+			if (next !== undefined && Boolean(project.missing) !== next) project.missing = next;
+		}
+	} catch (error) {
+		debug.warn('project', 'Could not re-check project folders:', error);
+	}
+}
+
+// ========================================
 // INITIALIZATION
 // ========================================
 
 export async function initializeProjects(restoreProjectId?: string | null) {
+	initProjectEvents();
 	await loadProjects(restoreProjectId);
+	// Restored onto a project whose folder has gone since the last visit.
+	if (projectState.currentProject?.missing) {
+		const { openMissingProject } = await import('$frontend/stores/ui/project-move.svelte');
+		openMissingProject(projectState.currentProject);
+	}
 }

@@ -25,6 +25,9 @@ import {
 import { createArchiveOperation, extractArchiveOperation } from '../../files/file-archive';
 import { stat as fsStat, readdir as fsReaddir, rename as fsRename } from 'node:fs/promises';
 import { resolveFilePath } from './path-access';
+import { projectAtFolder, protectedFolderReason } from '../../projects/folder-guard';
+import { moveProject } from '../../projects/move';
+import { basename, dirname } from 'node:path';
 
 export const writeHandler = createRouter()
 	// Write file operation
@@ -218,6 +221,8 @@ export const writeHandler = createRouter()
 		if (!stats.isDirectory()) {
 			throw new Error('Path is not a directory');
 		}
+		const reason = protectedFolderReason(dirPath);
+		if (reason) throw new Error(`This folder cannot be deleted: ${reason}.`);
 		const entries = await fsReaddir(dirPath);
 		if (entries.length > 0) {
 			throw new Error('Directory is not empty');
@@ -231,6 +236,11 @@ export const writeHandler = createRouter()
 	// fs.rename directly
 	// because Bun.file(...).exists() returns false for directories, which
 	// makes the generic renameOperation unusable here.
+	//
+	// A folder that is a project moves WITH its project (the picker sends a
+	// listed project through projects:rename; one removed from the list but
+	// kept for restoring lands here). A folder holding a project, the home
+	// folder and Clopen's data never move.
 	.http('files:rename-directory', {
 		data: t.Object({
 			oldPath: t.String(),
@@ -255,6 +265,23 @@ export const writeHandler = createRouter()
 		if (!oldStats.isDirectory()) {
 			throw new Error('Source path is not a directory');
 		}
+
+		const project = projectAtFolder(oldPath);
+		if (project) {
+			if (dirname(newPath) !== dirname(oldPath)) throw new Error('A project folder can only be renamed in place.');
+			const outcome = await moveProject(project.id, { kind: 'rename', name: basename(newPath) });
+			if (outcome.status === 'busy') {
+				throw new Error('This folder is a project with chats or terminals still running. Stop them and try again.');
+			}
+			return {
+				message: 'Directory renamed successfully',
+				oldPath,
+				newPath: outcome.project.path,
+				modified: (await fsStat(outcome.project.path)).mtime.toISOString()
+			};
+		}
+		const reason = protectedFolderReason(oldPath);
+		if (reason) throw new Error(`This folder cannot be renamed: ${reason}.`);
 
 		// Reject only when the destination is a genuinely different entry. On
 		// case-insensitive filesystems (default on macOS and Windows) a

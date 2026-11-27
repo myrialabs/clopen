@@ -110,6 +110,22 @@ export function cleanupProjectSessions(projectId: string): number {
 	return killed;
 }
 
+/**
+ * Shells still running in a project's main tree. Worktrees are left out: they
+ * live in their own folders, which a rename of the project folder never moves.
+ */
+export function countLiveMainTreeSessions(projectId: string): number {
+	return ptyKitManager.list(makeScopeKey(projectId)).filter((session) => session.status === 'active').length;
+}
+
+/** Kill every PTY session in a project's main tree, leaving its worktrees alone. */
+export function cleanupMainTreeSessions(projectId: string): number {
+	const namespace = makeScopeKey(projectId);
+	const killed = killNamespace(namespace);
+	knownNamespaces.delete(namespace);
+	return killed;
+}
+
 /** Kill every PTY session inside one worktree — used when it is deleted. */
 export function cleanupWorktreeSessions(projectId: string, worktreeId: string): number {
 	const namespace = makeScopeKey(projectId, worktreeId);

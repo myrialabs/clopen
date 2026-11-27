@@ -73,6 +73,12 @@ export const projectQueries = {
 		`).run(now, id);
 	},
 
+	/** Point a project at another folder. Its name is always its folder's. */
+	relocate(id: string, path: string, name: string): void {
+		const db = getDatabase();
+		db.prepare(`UPDATE projects SET path = ?, name = ? WHERE id = ?`).run(path, name, id);
+	},
+
 	/** The project-wide default profile, or null. */
 	getDefaultProfileId(id: string): number | null {
 		const db = getDatabase();
