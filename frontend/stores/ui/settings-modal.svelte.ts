@@ -30,7 +30,8 @@ export type SettingsSection =
 	| 'files'
 	| 'machine'
 	| 'storage'
-	| 'system';
+	| 'system'
+	| 'support';
 
 /** Sidebar grouping. Sections are rendered under their group header. */
 export type SettingsGroup =
@@ -255,6 +256,13 @@ export const settingsSections: SettingsSectionMeta[] = [
 		label: 'Updates',
 		icon: 'lucide:settings-2',
 		description: 'Version and updates',
+		group: 'system'
+	},
+	{
+		id: 'support',
+		label: 'Support Clopen',
+		icon: 'lucide:heart',
+		description: 'Help fund development',
 		group: 'system'
 	}
 ];

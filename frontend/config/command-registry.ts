@@ -270,5 +270,14 @@ export function getCommandActions(): CommandAction[] {
 		run: () => openSettingsModal()
 	});
 
+	actions.push({
+		id: 'support-clopen',
+		label: 'Support Clopen',
+		description: 'Donate to fund development',
+		icon: 'lucide:heart',
+		keywords: ['donate', 'donation', 'sponsor', 'fund', 'crypto', 'bitcoin', 'ethereum', 'usdt', 'solana', 'saweria'],
+		run: () => openSettingsModal('support')
+	});
+
 	return actions;
 }

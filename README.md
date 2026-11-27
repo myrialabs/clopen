@@ -221,7 +221,8 @@ If Clopen is useful to you, consider supporting its development:
 | Solana (SOL) | `Ev3P4KLF1PNC5C9rZYP8M3DdssyBQAQAiNJkvNmPQPVs` |
 | Ethereum (ERC-20) | `0x61D826e5b666AA5345302EEEd485Acca39b1AFCF` |
 | USDT (TRC-20) | `TLH49i3EoVKhFyLb6u2JUXZWScK7uzksdC` |
-| Saweria | [saweria.co/myrialabs](https://saweria.co/myrialabs) |
+| USDC (BNB Smart Chain, BEP-20) | `0x61D826e5b666AA5345302EEEd485Acca39b1AFCF` |
+| Saweria (Indonesia) | [saweria.co/myrialabs](https://saweria.co/myrialabs) |
 
 ---
 
