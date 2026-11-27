@@ -5,16 +5,14 @@
  * - SERVER_ENV: saved server configuration values
  * - getCleanSpawnEnv(): clean environment for child processes
  *
- * Strategy: parse .env to get key-value pairs, then compare each against
- * process.env. If process.env[key] still equals the .env value, Bun set it
- * (or system happened to match) — either way safe to remove. If values
- * differ, something else changed it after .env load — keep it.
- * Runtime vars (npm_*, VITE_*, etc.) are always removed.
+ * Configuration comes from the shell environment and the CLI flags only —
+ * there is no .env file. Child processes get the user's environment minus
+ * what Clopen itself injected (its own server variables) and what the
+ * runtime injected (npm_*, VITE_*, etc.).
  *
  * No platform-specific code — works on Linux, macOS, Windows, WSL.
  */
 
-import { readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 
@@ -61,47 +59,27 @@ export const SERVER_ENV = {
 	isDevelopment: isDev,
 } as const;
 
-// ── .env parsing ────────────────────────────────────────────────────
-
-/**
- * Parse a .env file at the given path into a key-value record.
- * Returns an empty object if the file doesn't exist or can't be read.
- */
-export function loadEnvFile(envPath: string): Record<string, string> {
-	const result: Record<string, string> = {};
-	try {
-		const content = readFileSync(envPath, 'utf-8');
-		for (const line of content.split('\n')) {
-			let trimmed = line.trim();
-			if (!trimmed || trimmed.startsWith('#')) continue;
-			if (trimmed.startsWith('export ')) trimmed = trimmed.substring(7).trim();
-			const eqIdx = trimmed.indexOf('=');
-			if (eqIdx <= 0) continue;
-			const key = trimmed.substring(0, eqIdx).trim();
-			let value = trimmed.substring(eqIdx + 1).trim();
-			if ((value.startsWith('"') && value.endsWith('"')) ||
-				(value.startsWith("'") && value.endsWith("'"))) {
-				value = value.slice(1, -1);
-			}
-			result[key] = value;
-		}
-	} catch {
-		// .env doesn't exist or can't be read
-	}
-	return result;
-}
-
-// Capture once at import time — read from CWD which is set to the clopen
-// installation directory when spawned via bin/clopen.ts (cwd: __dirname).
-const dotEnv = new Map(Object.entries(loadEnvFile(join(process.cwd(), '.env'))));
-
 // ── Filter definitions ──────────────────────────────────────────────
 
 /** Prefixes always injected by Bun/npm/Vite runtime. */
 const FILTERED_PREFIXES = ['npm_', 'VITE_'];
 
-/** Specific var names injected by runtime. */
-const FILTERED_NAMES = new Set(['_BUN_WATCHER_CHILD', 'NODE_ENV', 'NODE']);
+/**
+ * Specific var names never passed on: injected by the runtime, or Clopen's own
+ * server variables. The latter describe *this* server — a `clopen` or
+ * `bun run dev` started in a Clopen terminal must pick its own port and host,
+ * not inherit the ones the parent server is bound to.
+ */
+const FILTERED_NAMES = new Set([
+	'_BUN_WATCHER_CHILD',
+	'NODE_ENV',
+	'NODE',
+	'CLOPEN_HOST',
+	'CLOPEN_PORT',
+	'CLOPEN_PORT_FRONTEND',
+	'CLOPEN_PORT_BACKEND',
+	'CLOPEN_DEBUG'
+]);
 
 /** Remove node_modules/.bin entries from PATH. */
 function cleanPath(env: Record<string, string>): void {
@@ -121,15 +99,8 @@ function cleanPath(env: Record<string, string>): void {
 /**
  * Build a clean environment for spawning child processes.
  *
- * For each var in process.env:
- * - Runtime pollution (npm_*, VITE_*, NODE_ENV, NODE, _BUN_WATCHER_CHILD)
- *   → always removed
- * - Key exists in .env AND value still matches .env value
- *   → Bun set it, remove (system value was either same or overwritten)
- * - Key exists in .env BUT value differs from .env value
- *   → something changed it after .env load, keep current value
- * - Key not in .env, not runtime
- *   → system var, keep
+ * Every var in process.env is kept except runtime pollution and Clopen's own
+ * server variables (FILTERED_PREFIXES / FILTERED_NAMES).
  */
 export function getCleanSpawnEnv(): Record<string, string> {
 	const env: Record<string, string> = {};
@@ -138,10 +109,6 @@ export function getCleanSpawnEnv(): Record<string, string> {
 		if (value === undefined) continue;
 		if (FILTERED_NAMES.has(key)) continue;
 		if (FILTERED_PREFIXES.some((p: string) => key.startsWith(p))) continue;
-
-		// .env comparison: remove only if value still matches what .env defined
-		const dotEnvValue = dotEnv.get(key);
-		if (dotEnvValue !== undefined && value === dotEnvValue) continue;
 
 		env[key] = value;
 	}
