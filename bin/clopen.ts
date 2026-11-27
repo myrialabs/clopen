@@ -15,17 +15,15 @@ if (typeof globalThis.Bun === 'undefined') {
  *
  * Handles:
  * - CLI argument parsing
- * - Environment setup (.env from .env.example)
  * - Server startup
  *
  * Note: dist/ is pre-built and included in the published package.
  * Dependencies are installed by the package manager (bun add -g).
  */
 
-import { existsSync, copyFileSync, readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
-import { loadEnvFile } from '../backend/utils/env';
 import { runGitHelper } from '../backend/git/identity/cli';
 import { stopOnSignals, stopRequestedBySignal, supervise } from '../shared/utils/process-supervisor';
 
@@ -93,8 +91,6 @@ process.on('exit', () => {
 // ============================================================
 
 const __dirname = join(import.meta.dir, '..');
-const ENV_EXAMPLE = join(__dirname, '.env.example');
-const ENV_FILE = join(__dirname, '.env');
 const DIST_DIR = join(__dirname, 'dist');
 
 const DEFAULT_PORT = 9141;
@@ -360,12 +356,6 @@ async function clearAllData() {
 // Startup sequence
 // ============================================================
 
-async function setupEnvironment() {
-	if (existsSync(ENV_EXAMPLE)) {
-		copyFileSync(ENV_EXAMPLE, ENV_FILE);
-	}
-}
-
 function ensureBuild() {
 	if (!existsSync(DIST_DIR)) {
 		console.error('❌ Build artifacts not found (dist/ is missing).');
@@ -381,7 +371,8 @@ async function startServer(options: CLIOptions) {
 	// import graph — see bunfig.toml and backend/utils/bun-compat.ts.
 	const startScript = join(__dirname, 'scripts/start.ts');
 
-	const env = { ...process.env, ...loadEnvFile(ENV_FILE) };
+	// Configuration is the shell environment plus the CLI flags, flags winning.
+	const env = { ...process.env };
 	if (options.port) env.CLOPEN_PORT = options.port.toString();
 	if (options.host) env.CLOPEN_HOST = options.host;
 	if (options.log) env.CLOPEN_DEBUG = 'true';
@@ -478,13 +469,11 @@ async function main() {
 		}
 
 		if (options.resetPat) {
-			await setupEnvironment();
 			await recoverOwnerToken();
 			process.exit(0);
 		}
 
 		if (options.clearData) {
-			await setupEnvironment();
 			await clearAllData();
 			process.exit(0);
 		}
@@ -492,7 +481,6 @@ async function main() {
 		// Print header
 		console.log(`\n\x1b[36mClopen\x1b[0m v${getVersion()}\n`);
 
-		await setupEnvironment();
 		ensureBuild();
 		await startServer(options);
 
