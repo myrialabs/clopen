@@ -9,6 +9,10 @@
 	import ws from '$frontend/utils/ws';
 	import { getFileIcon } from '$frontend/utils/file-icon-mappings';
 	import { systemSettings } from '$frontend/stores/features/settings.svelte';
+	import { projectState } from '$frontend/stores/core/projects.svelte';
+	import { openRenameProject } from '$frontend/stores/ui/project-move.svelte';
+	import { isHomeProject } from '$shared/utils/home-project';
+	import type { Project } from '$shared/types/database/schema';
 
 	interface FileItem {
 		name: string;
@@ -557,23 +561,36 @@
 			folderToDelete = null;
 			deleteFolderConfirmName = '';
 
-			// Add a small delay to ensure file system operation is complete
-			await new Promise(resolve => setTimeout(resolve, 100));
-
-			// Reload current directory using the main loadDirectory function
-			if (pathToReload) {
-				loadDirectory(pathToReload);
-			} else {
-				// Fallback to current path if somehow it's empty
-				const fallbackPath = currentPath || '.';
-				loadDirectory(fallbackPath);
-			}
+			// The delete has finished on the server by the time it answers.
+			loadDirectory(pathToReload || currentPath || '.');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to delete folder';
 		}
 	}
 
+	/** The listed project whose folder `path` is, if any. */
+	function projectAt(path: string): Project | undefined {
+		return projectState.projects.find((project) => pathsEqual(project.path, path));
+	}
+
+	/**
+	 * A project's folder is renamed through the project, which carries its
+	 * chats, terminals and history along. Any other folder is renamed here.
+	 */
 	function openRenameDialog(item: FileItem) {
+		const project = projectAt(item.path);
+		if (project) {
+			if (isHomeProject(project)) {
+				error = 'Home cannot be renamed.';
+				return;
+			}
+			openRenameProject(project, (moved, previousPath) => {
+				if (pathsEqual(selectedPath, previousPath)) selectedPath = moved.path;
+				if (showProjectHints) loadRecentProjects();
+				loadDirectory(currentPath || '.');
+			});
+			return;
+		}
 		folderToRename = item;
 		renameFolderName = item.name;
 		showRenameFolder = true;
@@ -611,14 +628,8 @@
 			folderToRename = null;
 			renameFolderName = '';
 
-			await new Promise(resolve => setTimeout(resolve, 100));
-
-			if (pathToReload) {
-				loadDirectory(pathToReload);
-			} else {
-				const fallbackPath = currentPath || '.';
-				loadDirectory(fallbackPath);
-			}
+			// The rename has finished on the server by the time it answers.
+			loadDirectory(pathToReload || currentPath || '.');
 		} catch (err) {
 			error = err instanceof Error ? err.message : 'Failed to rename folder';
 		}
@@ -947,34 +958,41 @@
 						{#if item.type === 'directory'}
 							<div class="flex-shrink-0 flex items-center gap-2">
 								{#if allowFolderActions}
-									<button
-										onclick={(e) => {
-											e.stopPropagation();
-											openRenameDialog(item);
-										}}
-										class="flex p-1.5 rounded-lg hover:bg-violet-100 dark:hover:bg-violet-900/20 transition-colors group"
-										title="Rename folder"
-										aria-label="Rename {item.name}"
-									>
-										<Icon
-											name="lucide:pencil"
-											class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-violet-500 dark:group-hover:text-violet-400"
-										/>
-									</button>
-									<button
-										onclick={(e) => {
-											e.stopPropagation();
-											openDeleteDialog(item);
-										}}
-										class="flex p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors group"
-										title="Delete folder"
-										aria-label="Delete {item.name}"
-									>
-										<Icon
-											name="lucide:trash-2"
-											class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-red-500 dark:group-hover:text-red-400"
-										/>
-									</button>
+									{@const folderProject = projectAt(item.path)}
+									{#if !folderProject || !isHomeProject(folderProject)}
+										<button
+											onclick={(e) => {
+												e.stopPropagation();
+												openRenameDialog(item);
+											}}
+											class="flex p-1.5 rounded-lg hover:bg-violet-100 dark:hover:bg-violet-900/20 transition-colors group"
+											title={folderProject ? 'Rename project and folder' : 'Rename folder'}
+											aria-label="Rename {item.name}"
+										>
+											<Icon
+												name="lucide:pencil"
+												class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-violet-500 dark:group-hover:text-violet-400"
+											/>
+										</button>
+									{/if}
+									<!-- A project's folder is never deleted from here: the project
+									     would be left pointing at nothing. -->
+									{#if !folderProject}
+										<button
+											onclick={(e) => {
+												e.stopPropagation();
+												openDeleteDialog(item);
+											}}
+											class="flex p-1.5 rounded-lg hover:bg-red-100 dark:hover:bg-red-900/20 transition-colors group"
+											title="Delete folder"
+											aria-label="Delete {item.name}"
+										>
+											<Icon
+												name="lucide:trash-2"
+												class="text-sm text-slate-400 dark:text-slate-500 group-hover:text-red-500 dark:group-hover:text-red-400"
+											/>
+										</button>
+									{/if}
 								{/if}
 								<Icon
 									name="lucide:chevron-right"

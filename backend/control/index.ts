@@ -19,7 +19,7 @@ import { Value } from '@sinclair/typebox/value';
 import type { AuthUser } from '$backend/auth/auth-service';
 import { callRouteAs } from './invoke';
 import { CONTROL_GROUP_LABELS, type ControlAction, type ControlContext, type ControlGroup, type ControlResult, type ControlTarget } from './types';
-import { browseFolders, createProject, deleteFolder, goHome, listProjects, makeFolder, openProject, renameFolder } from './actions/projects';
+import { browseFolders, createProject, deleteFolder, goHome, listProjects, makeFolder, openProject, renameFolder, renameProject } from './actions/projects';
 import { deleteSession, dropQueued, listSessions, newSession, openSession, runningSessions, searchSessions, sessionStatus, showQueue, stopSession } from './actions/sessions';
 import { listSkills, runSkill } from './actions/skills';
 import { getFile, turnDiff } from './actions/files';
@@ -57,6 +57,7 @@ export const CONTROL_ACTIONS: readonly ControlAction[] = [
 	renameFolder,
 	deleteFolder,
 	createProject,
+	renameProject,
 	listEngines,
 	listModels,
 	setModel,

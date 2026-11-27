@@ -8,6 +8,7 @@
 	import { projectState, removeProject } from '$frontend/stores/core/projects.svelte';
 	import { getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openRenameProject, openLocateProject } from '$frontend/stores/ui/project-move.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import ToolsMenu from '$frontend/components/workspace/ToolsMenu.svelte';
 	import WorktreeSwitcher from '$frontend/components/worktree/WorktreeSwitcher.svelte';
@@ -94,7 +95,15 @@
 	const contextMenuPinned = $derived(isProjectPinned(contextMenuProject?.id));
 	// Same menu content as Desktop, reached through the row's ⋮ button (and
 	// long-press where the browser fires `contextmenu`).
+	const contextMenuMovable = $derived(Boolean(contextMenuProject) && !isHomeProject(contextMenuProject));
 	const contextMenuItems = $derived<ProjectContextMenuItem[]>([
+		...(contextMenuMovable
+			? [
+					contextMenuProject?.missing
+						? ({ id: 'locate', label: 'Locate folder…', icon: 'lucide:folder-search' } as ProjectContextMenuItem)
+						: ({ id: 'rename', label: 'Rename', icon: 'lucide:pencil' } as ProjectContextMenuItem)
+				]
+			: []),
 		...(contextMenuArchived
 			? [{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' } as ProjectContextMenuItem]
 			: [
@@ -119,6 +128,12 @@
 	function closeProjectContextMenu() {
 		contextMenuProject = null;
 		contextMenuArchived = false;
+	}
+
+	/** Open a project; one whose folder is gone offers Locate or Remove instead. */
+	function openProject(project: Project) {
+		import('$frontend/stores/core/projects.svelte').then((m) => m.setCurrentProject(project));
+		closeProjectMenu();
 	}
 
 	function archiveSingleProject(project: Project) {
@@ -146,6 +161,10 @@
 		} else if (action === 'info') {
 			projectInfoProject = project;
 			showProjectInfo = true;
+		} else if (action === 'rename') {
+			openRenameProject(project);
+		} else if (action === 'locate') {
+			openLocateProject(project);
 		} else if (action === 'delete') {
 			projectToDelete = project;
 			showDeleteDialog = true;
@@ -354,7 +373,7 @@
 				return;
 			}
 
-			const newProject = await ws.http('projects:create', { name: folderName, path: folderPath });
+			const newProject = await ws.http('projects:create', { path: folderPath });
 
 			if (newProject) {
 				const { setCurrentProject } = await import('$frontend/stores/core/projects.svelte');
@@ -615,19 +634,17 @@
 							<button
 								type="button"
 								class="flex items-center gap-3 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left"
-								onclick={() => {
-									import('$frontend/stores/core/projects.svelte').then((m) =>
-										m.setCurrentProject(project)
-									);
-									closeProjectMenu();
-								}}
+								onclick={() => openProject(project)}
 							>
 							<div
 								class="relative w-8 h-8 {isActive
 									? 'bg-violet-200 dark:bg-violet-800/30'
 									: 'bg-violet-100 dark:bg-violet-900/20'} rounded-lg flex items-center justify-center flex-shrink-0"
 							>
-								<Icon name="lucide:folder" class="text-violet-600 dark:text-violet-400 w-4 h-4" />
+								<Icon
+									name={project.missing ? 'lucide:folder-x' : 'lucide:folder'}
+									class="{project.missing ? 'text-amber-500' : 'text-violet-600 dark:text-violet-400'} w-4 h-4"
+								/>
 								<span
 									class="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 {getProjectStatusColor(project.id ?? '')}"
 								></span>
@@ -646,9 +663,13 @@
 										</span>
 									{/if}
 								</div>
-								<p class="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">
-									{project.path}
-								</p>
+								{#if project.missing}
+									<p class="text-xs text-amber-600 dark:text-amber-400 truncate">Folder not found</p>
+								{:else}
+									<p class="text-xs text-slate-500 dark:text-slate-400 truncate font-mono">
+										{project.path}
+									</p>
+								{/if}
 							</div>
 						</button>
 						<!-- Fixed-size pin slot keeps the action buttons position stable. -->
@@ -712,12 +733,7 @@
 									<button
 										type="button"
 										class="flex items-center gap-2 flex-1 min-w-0 bg-transparent border-none cursor-pointer text-left"
-										onclick={() => {
-											import('$frontend/stores/core/projects.svelte').then((m) =>
-												m.setCurrentProject(project)
-											);
-											closeProjectMenu();
-										}}
+										onclick={() => openProject(project)}
 									>
 										<Icon name="lucide:archive" class="text-slate-400 w-4 h-4 shrink-0" />
 										<div class="flex-1 min-w-0">
@@ -866,7 +882,15 @@
 	onClose={closeDeploymentsDialog}
 />
 
-<ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />
+<ProjectInfoModal
+	bind:isOpen={showProjectInfo}
+	onClose={closeProjectInfo}
+	project={projectInfoProject}
+	onRename={(project) => {
+		showProjectInfo = false;
+		openRenameProject(project);
+	}}
+/>
 
 <!-- Archived project context menu (shared ⋮ menu: Restore / Delete) -->
 {#if contextMenuProject}

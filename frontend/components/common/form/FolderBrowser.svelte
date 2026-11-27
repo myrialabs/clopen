@@ -9,9 +9,20 @@
 		onClose: () => void;
 		onSelect: (folderPath: string, folderName: string) => void;
 		currentProjectPath?: string;
+		title?: string;
+		confirmText?: string;
+		initialPath?: string;
 	}
 
-	let { isOpen = $bindable(), onClose, onSelect, currentProjectPath }: Props = $props();
+	let {
+		isOpen = $bindable(),
+		onClose,
+		onSelect,
+		currentProjectPath,
+		title = 'Select Project Folder',
+		confirmText = 'Select Project',
+		initialPath
+	}: Props = $props();
 </script>
 
 <PathBrowser
@@ -19,8 +30,9 @@
 	{onClose}
 	{onSelect}
 	{currentProjectPath}
+	{title}
+	{confirmText}
+	{initialPath}
 	mode="directory"
-	title="Select Project Folder"
-	confirmText="Select Project"
 	showProjectHints
 />

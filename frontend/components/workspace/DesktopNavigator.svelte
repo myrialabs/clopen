@@ -12,6 +12,8 @@
 	import { workspaceState, toggleNavigator } from '$frontend/stores/ui/workspace.svelte';
 	import { addNotification } from '$frontend/stores/ui/notification.svelte';
 	import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+	import { openRenameProject, openLocateProject } from '$frontend/stores/ui/project-move.svelte';
+	import { isHomeProject } from '$shared/utils/home-project';
 	import { projectStatusService } from '$frontend/services/project';
 	import { getProjectStatusColor } from '$frontend/stores/core/presence.svelte';
 	import type { Project } from '$shared/types/database/schema';
@@ -152,7 +154,15 @@
 	);
 
 	const contextMenuPinned = $derived(isProjectPinned(contextMenuProject?.id));
+	const contextMenuMovable = $derived(Boolean(contextMenuProject) && !isHomeProject(contextMenuProject));
 	const contextMenuItems = $derived<ProjectContextMenuItem[]>([
+		...(contextMenuMovable
+			? [
+					contextMenuProject?.missing
+						? ({ id: 'locate', label: 'Locate folder…', icon: 'lucide:folder-search' } as ProjectContextMenuItem)
+						: ({ id: 'rename', label: 'Rename', icon: 'lucide:pencil' } as ProjectContextMenuItem)
+				]
+			: []),
 		...(contextMenuArchived
 			? [{ id: 'restore', label: 'Restore', icon: 'lucide:archive-restore' } as ProjectContextMenuItem]
 			: [
@@ -178,7 +188,7 @@
 		});
 	});
 
-	// Select project
+	// Select project (one whose folder is gone opens the Locate/Remove dialog instead)
 	async function selectProject(project: Project) {
 		await setCurrentProject(project);
 		projectStatusService.startTracking(project.id);
@@ -198,7 +208,7 @@
 				return;
 			}
 
-			const newProject = await ws.http('projects:create', { name: folderName, path: folderPath });
+			const newProject = await ws.http('projects:create', { path: folderPath });
 
 			addProject(newProject);
 			await setCurrentProject(newProject);
@@ -297,6 +307,10 @@
 		if (action === 'info') {
 			projectInfoProject = project;
 			showProjectInfo = true;
+		} else if (action === 'rename') {
+			openRenameProject(project);
+		} else if (action === 'locate') {
+			openLocateProject(project);
 		} else if (action === 'pin') {
 			toggleProjectPin(project.id);
 		} else if (action === 'archive') {
@@ -643,8 +657,8 @@
 							{:else}
 								<div class="relative shrink-0">
 									<Icon
-										name="lucide:folder"
-										class="w-4 h-4 {canReorderProjects() ? 'group-hover:hidden' : ''}"
+										name={project.missing ? 'lucide:folder-x' : 'lucide:folder'}
+										class="w-4 h-4 {project.missing ? 'text-amber-500' : ''} {canReorderProjects() ? 'group-hover:hidden' : ''}"
 									/>
 									{#if canReorderProjects()}
 										<Icon
@@ -661,7 +675,11 @@
 							<div class="flex-1 flex items-center justify-between gap-2 min-w-0">
 								<div class="flex-1 min-w-0">
 									<span class="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
-									<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
+									{#if project.missing}
+										<span class="block text-3xs text-amber-600 dark:text-amber-400 overflow-hidden text-ellipsis whitespace-nowrap leading-tight">Folder not found</span>
+									{:else}
+										<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
+									{/if}
 								</div>
 								<div class="flex items-center gap-1 shrink-0">
 									<!-- Fixed-size pin slot keeps the ⋮ button position stable. -->
@@ -738,7 +756,11 @@
 										<div class="flex-1 flex items-center justify-between gap-2 min-w-0">
 											<div class="flex-1 min-w-0">
 												<span class="block overflow-hidden text-ellipsis whitespace-nowrap">{project.name}</span>
-												<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
+												{#if project.missing}
+													<span class="block text-3xs text-amber-600 dark:text-amber-400 overflow-hidden text-ellipsis whitespace-nowrap leading-tight">Folder not found</span>
+												{:else}
+													<span class="block text-3xs text-slate-400 dark:text-slate-500 overflow-hidden text-ellipsis whitespace-nowrap font-mono leading-tight">{project.path}</span>
+												{/if}
 											</div>
 											<div class="flex items-center gap-1 shrink-0">
 												<button
@@ -854,7 +876,11 @@
 		style="left: {tooltipX}px; top: {tooltipY}px; transform: translateY(-50%);"
 	>
 		<span class="text-xs font-semibold text-slate-900 dark:text-slate-100">{hoveredProject.name}</span>
-		<span class="text-3xs font-mono text-slate-500 dark:text-slate-400">{hoveredProject.path}</span>
+		{#if hoveredProject.missing}
+			<span class="text-3xs text-amber-600 dark:text-amber-400">Folder not found</span>
+		{:else}
+			<span class="text-3xs font-mono text-slate-500 dark:text-slate-400">{hoveredProject.path}</span>
+		{/if}
 	</div>
 {/if}
 
@@ -996,4 +1022,12 @@
 	/>
 {/if}
 
-<ProjectInfoModal bind:isOpen={showProjectInfo} onClose={closeProjectInfo} project={projectInfoProject} />
+<ProjectInfoModal
+	bind:isOpen={showProjectInfo}
+	onClose={closeProjectInfo}
+	project={projectInfoProject}
+	onRename={(project) => {
+		showProjectInfo = false;
+		openRenameProject(project);
+	}}
+/>

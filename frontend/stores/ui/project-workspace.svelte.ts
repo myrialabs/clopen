@@ -533,6 +533,25 @@ export async function activateProjectWorkspace(
 }
 
 /**
+ * Rebuild the active project's workspace in place, for when the project itself
+ * changed underneath it — its folder moved — rather than the user switching.
+ *
+ * Every dock is cleared, restored from the server's blob (which the move
+ * already re-rooted at the new folder) and reloaded, exactly as on a switch.
+ * Nothing is flushed first: the live docks still hold the old folder's paths,
+ * and saving them now would put those paths back.
+ */
+export async function reloadProjectWorkspace(projectId: string, onAfterRestore?: () => void): Promise<void> {
+	if (saveTimer) {
+		clearTimeout(saveTimer);
+		saveTimer = null;
+	}
+	cache.delete(projectId);
+	if (activeProjectId === projectId) activeProjectId = null;
+	await activateProjectWorkspace(projectId, onAfterRestore, beginProjectSwitch());
+}
+
+/**
  * Drop a project's cached blob (e.g. when the project is deleted).
  */
 export function evictProjectWorkspace(projectId: string): void {

@@ -17,6 +17,11 @@ export interface Project {
 	 * install, never deleted. Everything else is `project`.
 	 */
 	kind?: ProjectKind;
+	/**
+	 * The folder is no longer at `path` (moved or deleted outside Clopen).
+	 * Worked out when the project is sent to a client, never stored.
+	 */
+	missing?: boolean;
 }
 
 export type ProjectKind = 'project' | 'home';

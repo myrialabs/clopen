@@ -23,7 +23,7 @@ export function getCursorStoreRoot(): string {
 }
 
 /** Per-project isolated store directory. */
-function getCursorStoreDir(projectPath: string): string {
+export function getCursorStoreDir(projectPath: string): string {
 	return join(getCursorStoreRoot(), projectPath.replace(/[^a-zA-Z0-9]/g, '-') || 'default');
 }
 

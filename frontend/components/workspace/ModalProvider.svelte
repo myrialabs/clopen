@@ -2,6 +2,7 @@
 	import Alert from '$frontend/components/common/feedback/Alert.svelte';
 	import Dialog from '$frontend/components/common/overlay/Dialog.svelte';
 	import CommandPalette from '$frontend/components/common/overlay/CommandPalette.svelte';
+	import ProjectMoveDialog from '$frontend/components/workspace/ProjectMoveDialog.svelte';
 	import { dialogStore, closeAlert, closeConfirm } from '$frontend/stores/ui/dialog.svelte';
 
 	const alertState = $derived(dialogStore.alert);
@@ -9,6 +10,8 @@
 </script>
 
 <CommandPalette />
+
+<ProjectMoveDialog />
 
 <Alert
 	isOpen={alertState.isOpen}
