@@ -254,8 +254,8 @@ export const settingsSections: SettingsSectionMeta[] = [
 	{
 		id: 'system',
 		label: 'Updates',
-		icon: 'lucide:settings-2',
-		description: 'Version and updates',
+		icon: 'lucide:refresh-cw',
+		description: 'Version and release notes',
 		group: 'system'
 	},
 	{

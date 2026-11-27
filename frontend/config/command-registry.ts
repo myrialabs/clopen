@@ -10,6 +10,7 @@ import { toggleNavigator, resetToDefault, showPanel } from '$frontend/stores/ui/
 import { toggleDarkMode } from '$frontend/stores/ui/theme.svelte';
 import { settings, updateSettings, applyFontSize } from '$frontend/stores/features/settings.svelte';
 import { openSettingsModal } from '$frontend/stores/ui/settings-modal.svelte';
+import { checkForUpdate, openWhatsNew } from '$frontend/stores/ui/update.svelte';
 import {
 	openNewProjectDialog,
 	openRemoteAccessDialog,
@@ -268,6 +269,27 @@ export function getCommandActions(): CommandAction[] {
 		icon: 'lucide:settings',
 		keywords: ['preferences', 'config'],
 		run: () => openSettingsModal()
+	});
+
+	actions.push({
+		id: 'check-for-updates',
+		label: 'Check for Updates',
+		description: 'Look for a newer version of Clopen',
+		icon: 'lucide:refresh-cw',
+		keywords: ['update', 'upgrade', 'version', 'release'],
+		run: () => {
+			openSettingsModal('system');
+			void checkForUpdate();
+		}
+	});
+
+	actions.push({
+		id: 'whats-new',
+		label: "What's New in Clopen",
+		description: 'Release notes for the latest versions',
+		icon: 'lucide:sparkles',
+		keywords: ['release notes', 'changelog', 'changes', 'version'],
+		run: () => openWhatsNew()
 	});
 
 	actions.push({
