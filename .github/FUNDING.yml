@@ -1,0 +1,3 @@
+# Shows the Sponsor button on the repository. GitHub has no slot for crypto
+# addresses, so it links to the README's Support section, which lists them all.
+custom: ["https://github.com/myrialabs/clopen#support"]

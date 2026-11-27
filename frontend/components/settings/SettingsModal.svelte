@@ -34,6 +34,7 @@
 	import FilesFoldersSettings from './files/FilesFoldersSettings.svelte';
 	import SystemSettings from './system/SystemSettings.svelte';
 	import StorageSettings from './storage/StorageSettings.svelte';
+	import SupportSettings from './support/SupportSettings.svelte';
 	import AboutDeviceSettings, {
 		prefetchDeviceInfo,
 		prefetchProjectsOverview
@@ -391,6 +392,10 @@
 					{:else if activeSection === 'system'}
 						<div in:fly={{ x: 20, duration: 200 }}>
 							<SystemSettings />
+						</div>
+					{:else if activeSection === 'support'}
+						<div in:fly={{ x: 20, duration: 200 }}>
+							<SupportSettings />
 						</div>
 					{/if}
 				</div>
