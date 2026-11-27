@@ -6,19 +6,16 @@
 import ws, { onWsReconnect } from '$frontend/utils/ws';
 import { systemSettings, updateSystemSettings } from '$frontend/stores/features/settings.svelte';
 import { debug } from '$shared/utils/logger';
-
-interface ReleaseNotes {
-	tag_name: string;
-	body: string;
-	html_url: string;
-	published_at: string;
-}
+import { compareVersions } from '$shared/utils/semver';
+import type { ReleaseNote } from '$shared/types/release-notes';
 
 interface UpdateState {
 	currentVersion: string;
 	latestVersion: string;
 	updateAvailable: boolean;
 	checking: boolean;
+	/** When the last check finished successfully (ms epoch). */
+	lastCheckedAt: number | null;
 	updating: boolean;
 	dismissed: boolean;
 	error: string | null;
@@ -27,10 +24,13 @@ interface UpdateState {
 	updateSuccess: boolean;
 	pendingRestart: boolean;
 	pendingVersions: { from: string; to: string } | null;
-	showRestartModal: boolean;
-	releaseNotes: ReleaseNotes[] | null;
+	releaseNotes: ReleaseNote[] | null;
 	releaseNotesLoading: boolean;
 	releaseNotesError: string | null;
+	/**
+	 * The What's new dialog. One dialog for both moments: before an update it
+	 * previews what is coming, after one it says what landed and how to finish.
+	 */
 	showWhatsNewModal: boolean;
 }
 
@@ -39,6 +39,7 @@ export const updateState = $state<UpdateState>({
 	latestVersion: '',
 	updateAvailable: false,
 	checking: false,
+	lastCheckedAt: null,
 	updating: false,
 	dismissed: false,
 	error: null,
@@ -47,7 +48,6 @@ export const updateState = $state<UpdateState>({
 	updateSuccess: false,
 	pendingRestart: false,
 	pendingVersions: null,
-	showRestartModal: false,
 	releaseNotes: null,
 	releaseNotesLoading: false,
 	releaseNotesError: null,
@@ -69,6 +69,7 @@ export async function checkForUpdate(): Promise<void> {
 		updateState.currentVersion = result.currentVersion;
 		updateState.latestVersion = result.latestVersion;
 		updateState.updateAvailable = result.updateAvailable;
+		updateState.lastCheckedAt = Date.now();
 
 		// Restore pending restart state from backend (survives page refresh)
 		if (result.pendingRestart && result.pendingUpdate) {
@@ -76,7 +77,7 @@ export async function checkForUpdate(): Promise<void> {
 			updateState.pendingVersions = { from: result.pendingUpdate.fromVersion, to: result.pendingUpdate.toVersion };
 			updateState.updateSuccess = true;
 			updateState.latestVersion = result.pendingUpdate.toVersion;
-			updateState.showRestartModal = true;
+			updateState.showWhatsNewModal = true;
 			fetchReleaseNotes();
 		}
 
@@ -121,7 +122,7 @@ export async function runUpdate(): Promise<void> {
 		updateState.pendingRestart = true;
 		updateState.pendingVersions = { from: updateState.currentVersion, to: result.newVersion };
 		updateState.latestVersion = result.newVersion;
-		updateState.showRestartModal = true;
+		updateState.showWhatsNewModal = true;
 		fetchReleaseNotes();
 
 		debug.log('server', 'Update completed successfully');
@@ -134,14 +135,25 @@ export async function runUpdate(): Promise<void> {
 	}
 }
 
-/** Fetch the last few release notes (changelog) from GitHub */
+/**
+ * Whether the loaded releases already reach `version`. A list fetched before
+ * a newer release came out does not, so asking again is how the dialog for
+ * that newer release gets its notes instead of showing the old list.
+ */
+function hasNotesFor(version: string): boolean {
+	const releases = updateState.releaseNotes;
+	if (!releases) return false;
+	return !version || releases.some(release => compareVersions(release.version, version) >= 0);
+}
+
+/** Fetch Clopen's recent releases from GitHub, parsed into grouped changes */
 export async function fetchReleaseNotes(): Promise<void> {
-	if (updateState.releaseNotesLoading || updateState.releaseNotes) return;
+	if (updateState.releaseNotesLoading || hasNotesFor(updateState.latestVersion)) return;
 	updateState.releaseNotesLoading = true;
 	updateState.releaseNotesError = null;
 	try {
 		const data = await ws.http('system:get-release-notes', {});
-		updateState.releaseNotes = data as ReleaseNotes[];
+		updateState.releaseNotes = data;
 	} catch (err) {
 		updateState.releaseNotesError = err instanceof Error ? err.message : 'Failed to load release notes';
 		debug.error('server', 'Failed to fetch release notes:', err);
@@ -150,32 +162,39 @@ export async function fetchReleaseNotes(): Promise<void> {
 	}
 }
 
-/** Force-refresh release notes (used by the retry button, ignores the cache guard) */
+/** Fetch release notes again regardless of what is loaded (the retry button) */
 export async function refetchReleaseNotes(): Promise<void> {
 	updateState.releaseNotes = null;
 	await fetchReleaseNotes();
 }
 
-/** Dismiss the "what's new" preview dialog, remembering this version so it won't repeat */
+/** Open the What's new dialog on demand (banner, Settings → Updates). */
+export function openWhatsNew(): void {
+	updateState.showWhatsNewModal = true;
+	fetchReleaseNotes();
+}
+
+/**
+ * Close the What's new dialog. For an available update, remember the version so
+ * the preview does not pop up again for it; after an update, the dialog stays
+ * reachable from the banner until the restart.
+ */
 export function dismissWhatsNew(): void {
 	updateState.showWhatsNewModal = false;
-	updateSystemSettings({ lastSeenReleaseNotesVersion: updateState.latestVersion });
+	if (updateState.updateAvailable && !updateState.pendingRestart) {
+		updateSystemSettings({ lastSeenReleaseNotesVersion: updateState.latestVersion });
+	}
+}
+
+/** Releases after `from`, up to and including `to`, newest first. */
+export function releasesBetween(releases: ReleaseNote[], from: string, to: string): ReleaseNote[] {
+	return releases.filter(release => compareVersions(release.version, from) > 0 && compareVersions(release.version, to) <= 0);
 }
 
 /** Dismiss the update banner (not allowed when restart is pending) */
 export function dismissUpdate(): void {
 	if (updateState.pendingRestart) return;
 	updateState.dismissed = true;
-}
-
-/** Show the restart instructions modal */
-export function showRestartModal(): void {
-	updateState.showRestartModal = true;
-}
-
-/** Hide the restart instructions modal */
-export function hideRestartModal(): void {
-	updateState.showRestartModal = false;
 }
 
 // Listen for update-completed broadcast (notifies other tabs/clients)
@@ -186,7 +205,7 @@ ws.on('system:update-completed', (payload) => {
 	updateState.pendingRestart = true;
 	updateState.pendingVersions = { from: payload.fromVersion, to: payload.toVersion };
 	updateState.latestVersion = payload.toVersion;
-	updateState.showRestartModal = true;
+	updateState.showWhatsNewModal = true;
 	updateState.dismissed = false;
 	fetchReleaseNotes();
 });

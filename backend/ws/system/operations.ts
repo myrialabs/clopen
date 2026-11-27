@@ -18,6 +18,8 @@ import { ws } from '$backend/utils/ws';
 import { getClopenDir } from '$backend/utils/index';
 import { resetEnvironment } from '$backend/engine/adapters/claude/environment';
 import { bootstrapAfterDbInit } from '$backend/bootstrap';
+import { fetchReleaseNotes } from '$backend/update/release-notes';
+import { isNewerVersion } from '$shared/utils/semver';
 
 /** In-memory flag: set after successful update, cleared on server restart */
 let pendingUpdate: { fromVersion: string; toVersion: string } | null = null;
@@ -50,20 +52,6 @@ async function fetchLatestVersion(): Promise<string> {
 	}
 	const data = await response.json() as { version: string };
 	return data.version;
-}
-
-/** Simple semver comparison: returns true if latest > current */
-function isNewerVersion(current: string, latest: string): boolean {
-	const currentParts = current.split('.').map(Number);
-	const latestParts = latest.split('.').map(Number);
-
-	for (let i = 0; i < 3; i++) {
-		const c = currentParts[i] || 0;
-		const l = latestParts[i] || 0;
-		if (l > c) return true;
-		if (l < c) return false;
-	}
-	return false;
 }
 
 export const operationsHandler = createRouter()
@@ -105,28 +93,26 @@ export const operationsHandler = createRouter()
 		};
 	})
 
-	// Fetch the last few releases (changelog) from GitHub
+	// Clopen's releases from GitHub, newest first, parsed into grouped changes
 	.http('system:get-release-notes', {
 		data: t.Object({}),
 		response: t.Array(t.Object({
-			tag_name: t.String(),
-			body: t.String(),
-			html_url: t.String(),
-			published_at: t.String()
+			version: t.String(),
+			tagName: t.String(),
+			url: t.String(),
+			publishedAt: t.String(),
+			changes: t.Array(t.Object({
+				kind: t.Union([t.Literal('feature'), t.Literal('improvement'), t.Literal('fix'), t.Literal('other')]),
+				scope: t.Optional(t.String()),
+				summary: t.String(),
+				breaking: t.Boolean(),
+				pullNumber: t.Optional(t.Number()),
+				pullUrl: t.Optional(t.String())
+			})),
+			newContributors: t.Array(t.String()),
+			notes: t.String()
 		}))
-	}, async () => {
-		const response = await fetch('https://api.github.com/repos/myrialabs/clopen/releases?per_page=3');
-		if (!response.ok) {
-			throw new Error(`GitHub API returned ${response.status}`);
-		}
-		const data = await response.json() as Array<{ tag_name: string; body: string; html_url: string; published_at: string }>;
-		return data.map(release => ({
-			tag_name: release.tag_name,
-			body: release.body || '',
-			html_url: release.html_url,
-			published_at: release.published_at
-		}));
-	})
+	}, async () => fetchReleaseNotes())
 
 	// Run package update
 	.http('system:run-update', {
